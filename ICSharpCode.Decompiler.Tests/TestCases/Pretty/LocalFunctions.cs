@@ -1,4 +1,4 @@
-﻿// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -21,9 +21,50 @@ using System.Linq;
 #if CS90
 using System.Runtime.InteropServices;
 #endif
+using System.Threading.Tasks;
 
 namespace LocalFunctions
 {
+	internal class ClosureTest<T> where T : class
+	{
+		private class Service
+		{
+			public void Invoke(Action action)
+			{
+			}
+		}
+
+		private Service _service;
+		private List<T> _items;
+		private object _lock;
+
+		private void Filter(Action<T[]> value)
+		{
+		}
+
+		public void Test()
+		{
+			List<T> itemList = new List<T>();
+			Filter((T[] items) => {
+				_service.Invoke(() => {
+					OnResults(items);
+				});
+			});
+			void OnResults(T[] items)
+			{
+				itemList.Add(items[0]);
+				SetItems();
+			}
+			void SetItems()
+			{
+				lock (_lock)
+				{
+					_items = itemList;
+				}
+			}
+		}
+	}
+
 	internal class LocalFunctions
 	{
 		[AttributeUsage(AttributeTargets.All)]
@@ -37,55 +78,55 @@ namespace LocalFunctions
 			public int MixedLocalFunction<T2>() where T2 : ICloneable, IConvertible
 			{
 #pragma warning disable CS0219
-				T2 t2 = default(T2);
+				T2 t2 = default;
 				object z = this;
-				for (int j = 0; j < 10; j++)
+				for (int i = 0; i < 10; i++)
 				{
-					int i = 0;
-					i += NonStaticMethod6<object>(0);
+					int i2 = 0;
+					i2 += NonStaticMethod<object>(0);
 #if CS90
 					[My]
 					[return: My]
-					int NonStaticMethod6<[My] T3>([My] int unused)
+					int NonStaticMethod<[My] T3>([My] int unused)
 #else
-					int NonStaticMethod6<T3>(int unused)
+					int NonStaticMethod<T3>(int unused)
 #endif
 					{
-						t2 = default(T2);
+						t2 = default;
 						int l = 0;
-						return NonStaticMethod6_1<T1>() + NonStaticMethod6_1<T2>() + z.GetHashCode();
-						int NonStaticMethod6_1<T4>()
+						return NonStaticMethod3<T1>() + NonStaticMethod3<T2>() + z.GetHashCode();
+						int NonStaticMethod3<T4>()
 						{
-							return i + l + NonStaticMethod6<T4>(0) + StaticMethod1<decimal>();
+							return i2 + l + NonStaticMethod<T4>(0) + StaticMethod<decimal>();
 						}
 					}
 				}
-				return MixedLocalFunction<T1>() + MixedLocalFunction<T2>() + StaticMethod1<decimal>() + StaticMethod1<int>() + NonStaticMethod3() + StaticMethod4<object>(null) + StaticMethod5<T1>();
-				int NonStaticMethod3()
+				return MixedLocalFunction<T1>() + MixedLocalFunction<T2>() + StaticMethod<decimal>() + StaticMethod<int>() + NonStaticMethod2() + StaticMethod4<object>(null) + StaticMethod5<T1>();
+				int NonStaticMethod2()
 				{
 					return GetHashCode();
 				}
 #if CS80
-				static int StaticMethod1<T3>() where T3 : struct
+				static int StaticMethod<T3>() where T3 : struct
 #else
-				int StaticMethod1<T3>() where T3 : struct
+				int StaticMethod<T3>() where T3 : struct
 #endif
 				{
-					return typeof(T1).Name.Length + typeof(T2).Name.Length + typeof(T3).Name.Length + StaticMethod1<float>() + StaticMethod1_1<T3, DayOfWeek>() + StaticMethod2_RepeatT2<T2, T3, DayOfWeek>();
+					return typeof(T1).Name.Length + typeof(T2).Name.Length + typeof(T3).Name.Length + StaticMethod<float>() + StaticMethod2<T3, DayOfWeek>() + StaticMethod3<T2, T3, DayOfWeek>();
 				}
 #if CS80
-				static int StaticMethod1_1<T3, T4>() where T3 : struct where T4 : Enum
+				static int StaticMethod2<T3, T4>() where T3 : struct where T4 : Enum
 #else
-				int StaticMethod1_1<T3, T4>() where T3 : struct where T4 : Enum
+				int StaticMethod2<T3, T4>() where T3 : struct where T4 : Enum
 #endif
 				{
-					return typeof(T1).Name.Length + typeof(T2).Name.Length + typeof(T3).Name.Length + typeof(T4).Name.Length + StaticMethod1<float>() + StaticMethod1_1<T3, DayOfWeek>();
+					return typeof(T1).Name.Length + typeof(T2).Name.Length + typeof(T3).Name.Length + typeof(T4).Name.Length + StaticMethod<float>() + StaticMethod2<T3, DayOfWeek>();
 				}
 #pragma warning disable CS8387
 #if CS80
-				static int StaticMethod2_RepeatT2<T2, T3, T4>() where T2 : IConvertible where T3 : struct where T4 : Enum
+				static int StaticMethod3<T2, T3, T4>() where T2 : IConvertible where T3 : struct where T4 : Enum
 #else
-				int StaticMethod2_RepeatT2<T2, T3, T4>() where T2 : IConvertible where T3 : struct where T4 : Enum
+				int StaticMethod3<T2, T3, T4>() where T2 : IConvertible where T3 : struct where T4 : Enum
 #endif
 #pragma warning restore CS8387
 				{
@@ -106,8 +147,8 @@ namespace LocalFunctions
 #endif
 				{
 					int k = 0;
-					return k + NonStaticMethod5_1<T1>();
-					int NonStaticMethod5_1<T4>()
+					return k + NonStaticMethod4<T1>();
+					int NonStaticMethod4<T4>()
 					{
 						return k;
 					}
@@ -117,26 +158,26 @@ namespace LocalFunctions
 
 			public int MixedLocalFunction2Delegate<T2>() where T2 : ICloneable, IConvertible
 			{
-				T2 t2 = default(T2);
+				T2 t2 = default;
 				object z = this;
-				for (int j = 0; j < 10; j++)
+				for (int i = 0; i < 10; i++)
 				{
-					int i = 0;
-					i += StaticInvokeAsFunc(NonStaticMethod6<object>);
-					int NonStaticMethod6<T3>()
+					int i2 = 0;
+					i2 += StaticInvokeAsFunc(NonStaticMethod<object>);
+					int NonStaticMethod<T3>()
 					{
-						t2 = default(T2);
+						t2 = default;
 						int l = 0;
-						return StaticInvokeAsFunc(NonStaticMethod6_1<T1>) + StaticInvokeAsFunc(NonStaticMethod6_1<T2>) + z.GetHashCode();
-						int NonStaticMethod6_1<T4>()
+						return StaticInvokeAsFunc(NonStaticMethod3<T1>) + StaticInvokeAsFunc(NonStaticMethod3<T2>) + z.GetHashCode();
+						int NonStaticMethod3<T4>()
 						{
-							return i + l + StaticInvokeAsFunc(NonStaticMethod6<T4>) + StaticInvokeAsFunc(StaticMethod1<decimal>);
+							return i2 + l + StaticInvokeAsFunc(NonStaticMethod<T4>) + StaticInvokeAsFunc(StaticMethod<decimal>);
 						}
 					}
 				}
 				Console.WriteLine(t2);
-				return StaticInvokeAsFunc(MixedLocalFunction2Delegate<T1>) + StaticInvokeAsFunc(MixedLocalFunction2Delegate<T2>) + StaticInvokeAsFunc(StaticMethod1<decimal>) + StaticInvokeAsFunc(StaticMethod1<int>) + StaticInvokeAsFunc(NonStaticMethod3) + StaticInvokeAsFunc(StaticMethod5<T1>) + new Func<object, int>(StaticMethod4<object>)(null) + StaticInvokeAsFunc2<object>(StaticMethod4<object>) + new Func<Func<object, int>, int>(StaticInvokeAsFunc2<object>)(StaticMethod4<object>);
-				int NonStaticMethod3()
+				return StaticInvokeAsFunc(MixedLocalFunction2Delegate<T1>) + StaticInvokeAsFunc(MixedLocalFunction2Delegate<T2>) + StaticInvokeAsFunc(StaticMethod<decimal>) + StaticInvokeAsFunc(StaticMethod<int>) + StaticInvokeAsFunc(NonStaticMethod2) + StaticInvokeAsFunc(StaticMethod4<T1>) + new Func<object, int>(StaticMethod5<object>)(null) + StaticInvokeAsFunc2<object>(StaticMethod5<object>) + new Func<Func<object, int>, int>(StaticInvokeAsFunc2<object>)(StaticMethod5<object>);
+				int NonStaticMethod2()
 				{
 					return GetHashCode();
 				}
@@ -154,73 +195,73 @@ namespace LocalFunctions
 				int StaticInvokeAsFunc2<T>(Func<T, int> func)
 #endif
 				{
-					return func(default(T));
+					return func(default);
 				}
 #if CS80
-				static int StaticMethod1<T3>() where T3 : struct
+				static int StaticMethod<T3>() where T3 : struct
 #else
-				int StaticMethod1<T3>() where T3 : struct
+				int StaticMethod<T3>() where T3 : struct
 #endif
 				{
-					return typeof(T1).Name.Length + typeof(T2).Name.Length + typeof(T3).Name.Length + StaticInvokeAsFunc(StaticMethod1<float>) + StaticInvokeAsFunc(StaticMethod1_1<T3, DayOfWeek>) + StaticInvokeAsFunc(StaticMethod2_RepeatT2<T2, T3, DayOfWeek>);
+					return typeof(T1).Name.Length + typeof(T2).Name.Length + typeof(T3).Name.Length + StaticInvokeAsFunc(StaticMethod<float>) + StaticInvokeAsFunc(StaticMethod2<T3, DayOfWeek>) + StaticInvokeAsFunc(StaticMethod3<T2, T3, DayOfWeek>);
 				}
 #if CS80
-				static int StaticMethod1_1<T3, T4>() where T3 : struct where T4 : Enum
+				static int StaticMethod2<T3, T4>() where T3 : struct where T4 : Enum
 #else
-				int StaticMethod1_1<T3, T4>() where T3 : struct where T4 : Enum
+				int StaticMethod2<T3, T4>() where T3 : struct where T4 : Enum
 #endif
 				{
-					return typeof(T1).Name.Length + typeof(T2).Name.Length + typeof(T3).Name.Length + typeof(T4).Name.Length + StaticInvokeAsFunc(StaticMethod1<float>) + StaticInvokeAsFunc(StaticMethod1_1<T3, DayOfWeek>);
+					return typeof(T1).Name.Length + typeof(T2).Name.Length + typeof(T3).Name.Length + typeof(T4).Name.Length + StaticInvokeAsFunc(StaticMethod<float>) + StaticInvokeAsFunc(StaticMethod2<T3, DayOfWeek>);
 				}
 #pragma warning disable CS8387
 #if CS80
-				static int StaticMethod2_RepeatT2<T2, T3, T4>() where T2 : IConvertible where T3 : struct where T4 : Enum
+				static int StaticMethod3<T2, T3, T4>() where T2 : IConvertible where T3 : struct where T4 : Enum
 #else
-				int StaticMethod2_RepeatT2<T2, T3, T4>() where T2 : IConvertible where T3 : struct where T4 : Enum
+				int StaticMethod3<T2, T3, T4>() where T2 : IConvertible where T3 : struct where T4 : Enum
 #endif
 #pragma warning restore CS8387
 				{
 					return typeof(T2).Name.Length;
 				}
 #if CS80
-				static int StaticMethod4<T>(T dd)
+				static int StaticMethod4<T3>()
 #else
-				int StaticMethod4<T>(T dd)
-#endif
-				{
-					return 0;
-				}
-#if CS80
-				static int StaticMethod5<T3>()
-#else
-				int StaticMethod5<T3>()
+				int StaticMethod4<T3>()
 #endif
 				{
 					int k = 0;
-					return k + StaticInvokeAsFunc(NonStaticMethod5_1<T1>);
-					int NonStaticMethod5_1<T4>()
+					return k + StaticInvokeAsFunc(NonStaticMethod4<T1>);
+					int NonStaticMethod4<T4>()
 					{
 						return k;
 					}
+				}
+#if CS80
+				static int StaticMethod5<T>(T dd)
+#else
+				int StaticMethod5<T>(T dd)
+#endif
+				{
+					return 0;
 				}
 			}
 
 			public static void Test_CaptureT<T2>()
 			{
 #pragma warning disable CS0219
-				T2 t2 = default(T2);
-				Method1<int>();
-				void Method1<T3>()
+				T2 t2 = default;
+				Method<int>();
+				void Method<T3>()
 				{
-					t2 = default(T2);
+					t2 = default;
 					T2 t2x = t2;
-					T3 t3 = default(T3);
-					Method1_1();
-					void Method1_1()
+					T3 t3 = default;
+					Method2();
+					void Method2()
 					{
-						t2 = default(T2);
+						t2 = default;
 						t2x = t2;
-						t3 = default(T3);
+						t3 = default;
 					}
 				}
 #pragma warning restore CS0219
@@ -229,7 +270,7 @@ namespace LocalFunctions
 			public void TestGenericArgs<T2>() where T2 : List<T2>
 			{
 				ZZ<T2>(null);
-				ZZ2<object>(null);
+				ZZ3<object>(null);
 #if CS80
 				static void Nop<T>(T data)
 #else
@@ -244,25 +285,25 @@ namespace LocalFunctions
 #endif
 				{
 					Nop<List<T2>>(t3);
-					ZZ1<T3>(t3);
-					ZZ3();
-					void ZZ3()
+					ZZ2<T3>(t3);
+					ZZ4();
+					void ZZ4()
 					{
 						Nop<List<T2>>(t3);
 					}
 				}
 #if CS80
-				static void ZZ1<T3>(T3 t3)
+				static void ZZ2<T3>(T3 t3)
 #else
-				void ZZ1<T3>(T3 t3)
+				void ZZ2<T3>(T3 t3)
 #endif
 				{
 					Nop<List<T2>>((List<T2>)(object)t3);
 				}
 #if CS80
-				static void ZZ2<T3>(T3 t3)
+				static void ZZ3<T3>(T3 t3)
 #else
-				void ZZ2<T3>(T3 t3)
+				void ZZ3<T3>(T3 t3)
 #endif
 				{
 					Nop<List<T2>>((List<T2>)(object)t3);
@@ -328,7 +369,7 @@ namespace LocalFunctions
 
 		private int field;
 
-		private Lazy<object> nonCapturinglocalFunctionInLambda = new Lazy<object>(delegate {
+		private Lazy<object> nonCapturinglocalFunctionInLambda = new Lazy<object>(() => {
 			return CreateValue();
 
 #if CS80
@@ -341,7 +382,7 @@ namespace LocalFunctions
 			}
 		});
 
-		private Lazy<object> capturinglocalFunctionInLambda = new Lazy<object>(delegate {
+		private Lazy<object> capturinglocalFunctionInLambda = new Lazy<object>(() => {
 			int x = 42;
 			return Do();
 
@@ -647,7 +688,7 @@ namespace LocalFunctions
 
 		public static int LocalFunctionInLambda(IEnumerable<int> xs)
 		{
-			return xs.First(delegate (int x) {
+			return xs.First((int x) => {
 				return Do();
 
 				bool Do()
@@ -667,6 +708,32 @@ namespace LocalFunctions
 				{
 					yield return i;
 				}
+			}
+		}
+
+		public static async Task<int> AsyncLocalFunction()
+		{
+			return await GetValueAsync() + await GetValueAsync();
+
+#if CS80
+			static async Task<int> GetValueAsync()
+#else
+			async Task<int> GetValueAsync()
+#endif
+			{
+				await Task.Yield();
+				return 1;
+			}
+		}
+
+		public static async Task<int> AsyncLocalFunctionWithCapture(int n)
+		{
+			return await AddAsync();
+
+			async Task<int> AddAsync()
+			{
+				await Task.Yield();
+				return n + 1;
 			}
 		}
 
@@ -695,22 +762,22 @@ namespace LocalFunctions
 
 		public void NestedCapture1()
 		{
-			Method1(null);
+			Method(null);
 
 #if CS80
-			static Action<object> Method1(Action<object> action)
+			static Action<object> Method(Action<object> action)
 #else
-			Action<object> Method1(Action<object> action)
+			Action<object> Method(Action<object> action)
 #endif
 			{
-				return Method1_1;
+				return Method2;
 
-				void Method1_1(object containerBuilder)
+				void Method2(object containerBuilder)
 				{
-					Method1_2(containerBuilder);
+					Method3(containerBuilder);
 				}
 
-				void Method1_2(object containerBuilder)
+				void Method3(object containerBuilder)
 				{
 					action(containerBuilder);
 				}
@@ -727,28 +794,28 @@ namespace LocalFunctions
 #endif
 			{
 				int t0 = 0;
-				return ZZZ_0();
-				int ZZZ_0()
+				return ZZZ();
+				int ZZZ()
 				{
 					t0 = 0;
 					int t2 = t0;
-					return new Func<int>(ZZZ_0_0)();
-					int ZZZ_0_0()
+					return new Func<int>(ZZZ3)();
+					int ZZZ3()
 					{
 						t0 = 0;
 						t2 = 0;
-						return ZZZ_1();
+						return ZZZ2();
 					}
 				}
-				int ZZZ_1()
+				int ZZZ2()
 				{
 					t0 = 0;
-					int t = t0;
-					return new Func<int>(ZZZ_1_0)();
-					int ZZZ_1_0()
+					int t3 = t0;
+					return new Func<int>(ZZZ4)();
+					int ZZZ4()
 					{
 						t0 = 0;
-						t = 0;
+						t3 = 0;
 						return 0;
 					}
 				}
@@ -765,34 +832,34 @@ namespace LocalFunctions
 #endif
 			{
 				int t0 = 0;
-				return ZZZ_0();
-				int ZZZ_0()
+				return ZZZ();
+				int ZZZ()
 				{
 					t0 = 0;
 					int t2 = t0;
-					return ((Func<int>)delegate {
+					return ((Func<int>)(() => {
 						t0 = 0;
 						t2 = 0;
-						return ZZZ_1();
-					})();
+						return ZZZ2();
+					}))();
 				}
-				int ZZZ_1()
+				int ZZZ2()
 				{
 					t0 = 0;
-					int t1 = t0;
+					int t3 = t0;
 #if !OPT
-					Func<int> func = delegate {
+					Func<int> func = () => {
 #else
-					return ((Func<int>)delegate {
+					return ((Func<int>)(() => {
 #endif
 						t0 = 0;
-						t1 = 0;
+						t3 = 0;
 						return 0;
 #if !OPT
 					};
 					return func();
 #else
-					})();
+					}))();
 #endif
 				}
 			}
@@ -808,34 +875,34 @@ namespace LocalFunctions
 #endif
 			{
 				int t0 = 0;
-				return ZZZ_0() + ZZZ_1();
-				int ZZZ_0()
+				return ZZZ() + ZZZ2();
+				int ZZZ()
 				{
 					t0 = 0;
 					int t2 = t0;
-					return ((Func<int>)delegate {
+					return ((Func<int>)(() => {
 						t0 = 0;
 						t2 = 0;
-						return ZZZ_1();
-					})();
+						return ZZZ2();
+					}))();
 				}
-				int ZZZ_1()
+				int ZZZ2()
 				{
 					t0 = 0;
-					int t1 = t0;
+					int t3 = t0;
 #if !OPT
-					Func<int> func = delegate {
+					Func<int> func = () => {
 #else
-					return ((Func<int>)delegate {
+					return ((Func<int>)(() => {
 #endif
 						t0 = 0;
-						t1 = 0;
+						t3 = 0;
 						return 0;
 #if !OPT
 					};
 					return func();
 #else
-					})();
+					}))();
 #endif
 				}
 			}
@@ -844,11 +911,81 @@ namespace LocalFunctions
 #if CS90
 		public void Issue2196()
 		{
-			EnumWindows(IntPtr.Zero, IntPtr.Zero);
+			EnumWindows(0L, 0L);
 
 			[DllImport("user32.dll", CallingConvention = CallingConvention.StdCall, EntryPoint = "EnumWindows")]
-			static extern int EnumWindows(IntPtr hWnd, IntPtr lParam);
+			static extern int EnumWindows(long hWnd, long lParam);
 		}
 #endif
+
+		public int Issue3714_LocalFunctionInsideLambda()
+		{
+			int outer = 1;
+#if !OPT
+			Action action = () => {
+#else
+			((Action)(() => {
+#endif
+				int inner = 2;
+				Local(3);
+				Console.WriteLine(inner);
+				void Local(int d)
+				{
+					inner += d;
+					outer += d;
+				}
+#if !OPT
+			};
+			action();
+#else
+			}))();
+#endif
+			return outer;
+		}
+
+		public void Issue3008_DisplayClassForwardedThroughLocalFunction(int start)
+		{
+			Run();
+			void Run()
+			{
+				int captured = start;
+				A();
+				Console.WriteLine(captured);
+				void A()
+				{
+					captured++;
+					if (captured < 10)
+					{
+						B();
+					}
+				}
+				void B()
+				{
+					captured += 2;
+					A();
+				}
+			}
+		}
+
+		public int LocalFunctionsInOrdinalOrder(int x)
+		{
+			return Beta() + Zed() + _gamma() + alpha();
+			int Beta()
+			{
+				return x + 1;
+			}
+			int Zed()
+			{
+				return x + 2;
+			}
+			int _gamma()
+			{
+				return x + 3;
+			}
+			int alpha()
+			{
+				return x + 4;
+			}
+		}
 	}
 }

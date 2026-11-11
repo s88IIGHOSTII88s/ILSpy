@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2010-2018 AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) 2010-2018 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -29,6 +29,7 @@ using System.Text;
 using ICSharpCode.Decompiler.Metadata;
 using ICSharpCode.Decompiler.TypeSystem;
 using ICSharpCode.Decompiler.TypeSystem.Implementation;
+using ICSharpCode.Decompiler.Util;
 
 using NUnit.Framework;
 
@@ -46,12 +47,12 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 
 		static readonly Lazy<PEFile> mscorlib = new Lazy<PEFile>(
 			delegate {
-				return LoadAssembly(typeof(object).Assembly.Location);
+				return LoadAssembly(Path.Combine(Helpers.Tester.RefAssembliesToolset.GetPath("legacy"), "mscorlib.dll"));
 			});
 
 		static readonly Lazy<PEFile> systemCore = new Lazy<PEFile>(
 			delegate {
-				return LoadAssembly(typeof(System.Linq.Enumerable).Assembly.Location);
+				return LoadAssembly(Path.Combine(Helpers.Tester.RefAssembliesToolset.GetPath("legacy"), "System.Core.dll"));
 			});
 
 		static readonly Lazy<PEFile> testAssembly = new Lazy<PEFile>(
@@ -81,16 +82,16 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		public void SimplePublicClassTest()
 		{
 			ITypeDefinition c = GetTypeDefinition(typeof(SimplePublicClass));
-			Assert.AreEqual(typeof(SimplePublicClass).Name, c.Name);
-			Assert.AreEqual(typeof(SimplePublicClass).FullName, c.FullName);
-			Assert.AreEqual(typeof(SimplePublicClass).Namespace, c.Namespace);
-			Assert.AreEqual(typeof(SimplePublicClass).FullName, c.ReflectionName);
+			Assert.That(c.Name, Is.EqualTo(typeof(SimplePublicClass).Name));
+			Assert.That(c.FullName, Is.EqualTo(typeof(SimplePublicClass).FullName));
+			Assert.That(c.Namespace, Is.EqualTo(typeof(SimplePublicClass).Namespace));
+			Assert.That(c.ReflectionName, Is.EqualTo(typeof(SimplePublicClass).FullName));
 
-			Assert.AreEqual(Accessibility.Public, c.Accessibility);
-			Assert.IsFalse(c.IsAbstract);
-			Assert.IsFalse(c.IsSealed);
-			Assert.IsFalse(c.IsStatic);
-			Assert.IsFalse(c.HasAttribute(KnownAttribute.SpecialName));
+			Assert.That(c.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(!c.IsAbstract);
+			Assert.That(!c.IsSealed);
+			Assert.That(!c.IsStatic);
+			Assert.That(!c.HasAttribute(KnownAttribute.SpecialName));
 		}
 
 		[Test]
@@ -99,17 +100,17 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 			ITypeDefinition c = GetTypeDefinition(typeof(SimplePublicClass));
 
 			IMethod method = c.Methods.Single(m => m.Name == "Method");
-			Assert.AreEqual(typeof(SimplePublicClass).FullName + ".Method", method.FullName);
-			Assert.AreSame(c, method.DeclaringType);
-			Assert.AreEqual(Accessibility.Public, method.Accessibility);
-			Assert.AreEqual(SymbolKind.Method, method.SymbolKind);
-			Assert.IsFalse(method.IsVirtual);
-			Assert.IsFalse(method.IsStatic);
-			Assert.AreEqual(0, method.Parameters.Count);
-			Assert.AreEqual(0, method.GetAttributes().Count());
-			Assert.IsTrue(method.HasBody);
-			Assert.IsNull(method.AccessorOwner);
-			Assert.IsFalse(method.HasAttribute(KnownAttribute.SpecialName));
+			Assert.That(method.FullName, Is.EqualTo(typeof(SimplePublicClass).FullName + ".Method"));
+			Assert.That(method.DeclaringType, Is.SameAs(c));
+			Assert.That(method.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(method.SymbolKind, Is.EqualTo(SymbolKind.Method));
+			Assert.That(!method.IsVirtual);
+			Assert.That(!method.IsStatic);
+			Assert.That(method.Parameters.Count, Is.EqualTo(0));
+			Assert.That(method.GetAttributes().Count(), Is.EqualTo(0));
+			Assert.That(method.HasBody);
+			Assert.That(method.AccessorOwner, Is.Null);
+			Assert.That(!method.HasAttribute(KnownAttribute.SpecialName));
 		}
 
 		[Test]
@@ -118,17 +119,17 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 			ITypeDefinition c = GetTypeDefinition(typeof(SimplePublicClass));
 
 			IMethod method = c.Methods.Single(m => m.IsConstructor);
-			Assert.AreEqual(typeof(SimplePublicClass).FullName + "..ctor", method.FullName);
-			Assert.AreSame(c, method.DeclaringType);
-			Assert.AreEqual(Accessibility.Public, method.Accessibility);
-			Assert.AreEqual(SymbolKind.Constructor, method.SymbolKind);
-			Assert.IsFalse(method.IsVirtual);
-			Assert.IsFalse(method.IsStatic);
-			Assert.AreEqual(0, method.Parameters.Count);
-			Assert.AreEqual(0, method.GetAttributes().Count());
-			Assert.IsTrue(method.HasBody);
-			Assert.IsNull(method.AccessorOwner);
-			Assert.IsFalse(method.HasAttribute(KnownAttribute.SpecialName));
+			Assert.That(method.FullName, Is.EqualTo(typeof(SimplePublicClass).FullName + "..ctor"));
+			Assert.That(method.DeclaringType, Is.SameAs(c));
+			Assert.That(method.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(method.SymbolKind, Is.EqualTo(SymbolKind.Constructor));
+			Assert.That(!method.IsVirtual);
+			Assert.That(!method.IsStatic);
+			Assert.That(method.Parameters.Count, Is.EqualTo(0));
+			Assert.That(method.GetAttributes().Count(), Is.EqualTo(0));
+			Assert.That(method.HasBody);
+			Assert.That(method.AccessorOwner, Is.Null);
+			Assert.That(!method.HasAttribute(KnownAttribute.SpecialName));
 		}
 
 		[Test]
@@ -137,26 +138,26 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 			ITypeDefinition c = GetTypeDefinition(typeof(SimplePublicClass));
 
 			IMethod method = c.Methods.Single(m => m.IsDestructor);
-			Assert.AreEqual(typeof(SimplePublicClass).FullName + ".Finalize", method.FullName);
-			Assert.AreSame(c, method.DeclaringType);
-			Assert.AreEqual(Accessibility.Protected, method.Accessibility);
-			Assert.AreEqual(SymbolKind.Destructor, method.SymbolKind);
-			Assert.IsFalse(method.IsVirtual);
-			Assert.IsFalse(method.IsStatic);
-			Assert.AreEqual(0, method.Parameters.Count);
-			Assert.AreEqual(1, method.GetAttributes().Count());
-			Assert.IsTrue(method.HasBody);
-			Assert.IsNull(method.AccessorOwner);
-			Assert.IsFalse(method.HasAttribute(KnownAttribute.SpecialName));
+			Assert.That(method.FullName, Is.EqualTo(typeof(SimplePublicClass).FullName + ".Finalize"));
+			Assert.That(method.DeclaringType, Is.SameAs(c));
+			Assert.That(method.Accessibility, Is.EqualTo(Accessibility.Protected));
+			Assert.That(method.SymbolKind, Is.EqualTo(SymbolKind.Destructor));
+			Assert.That(!method.IsVirtual);
+			Assert.That(!method.IsStatic);
+			Assert.That(method.Parameters.Count, Is.EqualTo(0));
+			Assert.That(method.GetAttributes().Count(), Is.EqualTo(1));
+			Assert.That(method.HasBody);
+			Assert.That(method.AccessorOwner, Is.Null);
+			Assert.That(!method.HasAttribute(KnownAttribute.SpecialName));
 		}
 
 		[Test]
 		public void DynamicType()
 		{
 			ITypeDefinition testClass = GetTypeDefinition(typeof(DynamicTest));
-			Assert.AreEqual(SpecialType.Dynamic, testClass.Fields.Single(f => f.Name == "DynamicField").ReturnType);
-			Assert.AreEqual(SpecialType.Dynamic, testClass.Properties.Single().ReturnType);
-			Assert.AreEqual(0, testClass.Properties.Single().GetAttributes().Count());
+			Assert.That(testClass.Fields.Single(f => f.Name == "DynamicField").ReturnType, Is.EqualTo(SpecialType.Dynamic));
+			Assert.That(testClass.Properties.Single().ReturnType, Is.EqualTo(SpecialType.Dynamic));
+			Assert.That(testClass.Properties.Single().GetAttributes().Count(), Is.EqualTo(0));
 		}
 
 		[Test]
@@ -165,26 +166,26 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 			ITypeDefinition testClass = GetTypeDefinition(typeof(DynamicTest));
 
 			IMethod m1 = testClass.Methods.Single(me => me.Name == "DynamicGenerics1");
-			Assert.AreEqual("System.Collections.Generic.List`1[[dynamic]]", m1.ReturnType.ReflectionName);
-			Assert.AreEqual("System.Action`3[[System.Object],[dynamic[]],[System.Object]]", m1.Parameters[0].Type.ReflectionName);
+			Assert.That(m1.ReturnType.ReflectionName, Is.EqualTo("System.Collections.Generic.List`1[[dynamic]]"));
+			Assert.That(m1.Parameters[0].Type.ReflectionName, Is.EqualTo("System.Action`3[[System.Object],[dynamic[]],[System.Object]]"));
 
 			IMethod m2 = testClass.Methods.Single(me => me.Name == "DynamicGenerics2");
-			Assert.AreEqual("System.Action`3[[System.Object],[dynamic],[System.Object]]", m2.Parameters[0].Type.ReflectionName);
+			Assert.That(m2.Parameters[0].Type.ReflectionName, Is.EqualTo("System.Action`3[[System.Object],[dynamic],[System.Object]]"));
 
 			IMethod m3 = testClass.Methods.Single(me => me.Name == "DynamicGenerics3");
-			Assert.AreEqual("System.Action`3[[System.Int32],[dynamic],[System.Object]]", m3.Parameters[0].Type.ReflectionName);
+			Assert.That(m3.Parameters[0].Type.ReflectionName, Is.EqualTo("System.Action`3[[System.Int32],[dynamic],[System.Object]]"));
 
 			IMethod m4 = testClass.Methods.Single(me => me.Name == "DynamicGenerics4");
-			Assert.AreEqual("System.Action`3[[System.Int32[]],[dynamic],[System.Object]]", m4.Parameters[0].Type.ReflectionName);
+			Assert.That(m4.Parameters[0].Type.ReflectionName, Is.EqualTo("System.Action`3[[System.Int32[]],[dynamic],[System.Object]]"));
 
 			IMethod m5 = testClass.Methods.Single(me => me.Name == "DynamicGenerics5");
-			Assert.AreEqual("System.Action`3[[System.Int32*[]],[dynamic],[System.Object]]", m5.Parameters[0].Type.ReflectionName);
+			Assert.That(m5.Parameters[0].Type.ReflectionName, Is.EqualTo("System.Action`3[[System.Int32*[]],[dynamic],[System.Object]]"));
 
 			IMethod m6 = testClass.Methods.Single(me => me.Name == "DynamicGenerics6");
-			Assert.AreEqual("System.Action`3[[System.Object],[dynamic],[System.Object]]&", m6.Parameters[0].Type.ReflectionName);
+			Assert.That(m6.Parameters[0].Type.ReflectionName, Is.EqualTo("System.Action`3[[System.Object],[dynamic],[System.Object]]&"));
 
 			IMethod m7 = testClass.Methods.Single(me => me.Name == "DynamicGenerics7");
-			Assert.AreEqual("System.Action`3[[System.Int32[][,]],[dynamic],[System.Object]]", m7.Parameters[0].Type.ReflectionName);
+			Assert.That(m7.Parameters[0].Type.ReflectionName, Is.EqualTo("System.Action`3[[System.Int32[][,]],[dynamic],[System.Object]]"));
 		}
 
 		[Test]
@@ -192,7 +193,88 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition testClass = GetTypeDefinition(typeof(DynamicTest));
 			IMethod m1 = testClass.Methods.Single(me => me.Name == "DynamicGenerics1");
-			Assert.AreEqual(0, m1.Parameters[0].GetAttributes().Count());
+			Assert.That(m1.Parameters[0].GetAttributes().Count(), Is.EqualTo(0));
+		}
+
+		[Test]
+		public void LifetimeAnnotations()
+		{
+			ITypeDefinition type = GetTypeDefinition(typeof(LifetimeAnnotationTests));
+
+			IParameter explicitScopedRef = type.Methods.Single(m => m.Name == "ExplicitScopedRef").Parameters.Single();
+			Assert.That(explicitScopedRef.Lifetime.DeclaredScope, Is.EqualTo(ScopedKind.ScopedRef));
+			Assert.That(explicitScopedRef.GetEffectiveScope(), Is.EqualTo(ScopedKind.ScopedRef));
+			Assert.That(explicitScopedRef.Lifetime.HasUnscopedRefAttribute, Is.False);
+			Assert.That(explicitScopedRef.Lifetime.ScopedRef, Is.True);
+
+			IParameter explicitScopedValue = type.Methods.Single(m => m.Name == "ExplicitScopedValue").Parameters.Single();
+			Assert.That(explicitScopedValue.Lifetime.DeclaredScope, Is.EqualTo(ScopedKind.ScopedValue));
+			Assert.That(explicitScopedValue.GetEffectiveScope(), Is.EqualTo(ScopedKind.ScopedValue));
+			Assert.That(explicitScopedValue.Lifetime.HasUnscopedRefAttribute, Is.False);
+			Assert.That(explicitScopedValue.Lifetime.ScopedRef, Is.True);
+
+			IParameter implicitScopedRef = type.Methods.Single(m => m.Name == "ImplicitScopedRef").Parameters.Single();
+			Assert.That(implicitScopedRef.Lifetime.DeclaredScope, Is.EqualTo(ScopedKind.None));
+			Assert.That(implicitScopedRef.GetEffectiveScope(), Is.EqualTo(ScopedKind.ScopedRef));
+			Assert.That(implicitScopedRef.Lifetime.HasUnscopedRefAttribute, Is.False);
+			Assert.That(implicitScopedRef.Lifetime.ScopedRef, Is.False);
+
+			IParameter unscopedRef = type.Methods.Single(m => m.Name == "UnscopedRef").Parameters.Single();
+			Assert.That(unscopedRef.Lifetime.DeclaredScope, Is.EqualTo(ScopedKind.None));
+			Assert.That(unscopedRef.GetEffectiveScope(), Is.EqualTo(ScopedKind.None));
+			Assert.That(unscopedRef.Lifetime.HasUnscopedRefAttribute, Is.True);
+			Assert.That(unscopedRef.GetAttributes().Any(a =>
+				a.AttributeType.FullName == "System.Diagnostics.CodeAnalysis.UnscopedRefAttribute"), Is.True);
+
+			var paramsRefStruct = new DefaultParameter(type, "values", isParams: true);
+			Assert.That(paramsRefStruct.GetEffectiveScope(), Is.EqualTo(ScopedKind.ScopedValue));
+
+			IMethod instanceMethod = type.Methods.Single(m => m.Name == "InstanceMethod");
+			Assert.That(instanceMethod.GetThisParameterScope(), Is.EqualTo(ScopedKind.ScopedRef));
+			Assert.That(instanceMethod.HasAttribute(KnownAttribute.UnscopedRef), Is.False);
+
+			IMethod unscopedMethod = type.Methods.Single(m => m.Name == "UnscopedMethod");
+			Assert.That(unscopedMethod.GetThisParameterScope(), Is.EqualTo(ScopedKind.None));
+			Assert.That(unscopedMethod.HasAttribute(KnownAttribute.UnscopedRef), Is.True);
+
+			IProperty unscopedProperty = type.Properties.Single(p => p.Name == "UnscopedProperty");
+			Assert.That(unscopedProperty.Getter.GetThisParameterScope(), Is.EqualTo(ScopedKind.None));
+			Assert.That(unscopedProperty.HasAttribute(KnownAttribute.UnscopedRef), Is.True);
+
+			IProperty accessorUnscopedProperty = type.Properties.Single(p => p.Name == "AccessorUnscopedProperty");
+			Assert.That(accessorUnscopedProperty.Getter.GetThisParameterScope(), Is.EqualTo(ScopedKind.None));
+			Assert.That(accessorUnscopedProperty.Getter.HasAttribute(KnownAttribute.UnscopedRef), Is.True);
+
+			IMethod staticMethod = type.Methods.Single(m => m.Name == "ExplicitScopedRef");
+			Assert.That(staticMethod.GetThisParameterScope(), Is.EqualTo(ScopedKind.None));
+
+			IMethod classMethod = GetTypeDefinition(typeof(SimplePublicClass)).Methods.Single(m => m.Name == "Method");
+			Assert.That(classMethod.GetThisParameterScope(), Is.EqualTo(ScopedKind.None));
+
+			// The legacy mscorlib fixture has no RefSafetyRulesAttribute, so out is not implicitly scoped.
+			ITypeDefinition int32 = compilation.FindType(KnownTypeCode.Int32).GetDefinition();
+			IMethod legacyTryParse = int32.Methods.Single(m => m.Name == "TryParse"
+				&& m.Parameters.Count == 2
+				&& m.Parameters[1].ReferenceKind == ReferenceKind.Out);
+			Assert.That(legacyTryParse.Parameters[1].GetEffectiveScope(), Is.EqualTo(ScopedKind.None));
+		}
+
+		[Test]
+		public void LifetimeAnnotationsCanBeDisabled()
+		{
+			var compilationWithoutLifetimeAnnotations = new SimpleCompilation(
+				TestAssembly.WithOptions(TypeSystemOptions.Default & ~TypeSystemOptions.ScopedRef),
+				Mscorlib.WithOptions(TypeSystemOptions.Default | TypeSystemOptions.OnlyPublicAPI));
+			ITypeDefinition type = compilationWithoutLifetimeAnnotations.FindType(typeof(LifetimeAnnotationTests)).GetDefinition();
+
+			IParameter explicitScopedRef = type.Methods.Single(m => m.Name == "ExplicitScopedRef").Parameters.Single();
+			Assert.That(explicitScopedRef.Lifetime.DeclaredScope, Is.EqualTo(ScopedKind.None));
+			Assert.That(explicitScopedRef.GetEffectiveScope(), Is.EqualTo(ScopedKind.None));
+			Assert.That(explicitScopedRef.GetAttributes().Any(a =>
+				a.AttributeType.FullName == "System.Runtime.CompilerServices.ScopedRefAttribute"), Is.True);
+
+			IMethod instanceMethod = type.Methods.Single(m => m.Name == "InstanceMethod");
+			Assert.That(instanceMethod.GetThisParameterScope(), Is.EqualTo(ScopedKind.None));
 		}
 
 		[Test]
@@ -200,23 +282,23 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			var attributes = compilation.MainModule.GetAssemblyAttributes().ToList();
 			var typeTest = attributes.Single(a => a.AttributeType.FullName == typeof(TypeTestAttribute).FullName);
-			Assert.AreEqual(3, typeTest.FixedArguments.Length);
+			Assert.That(typeTest.FixedArguments.Length, Is.EqualTo(3));
 			// first argument is (int)42
-			Assert.AreEqual(42, (int)typeTest.FixedArguments[0].Value);
+			Assert.That((int)typeTest.FixedArguments[0].Value, Is.EqualTo(42));
 			// second argument is typeof(System.Action<>)
 			var ty = (IType)typeTest.FixedArguments[1].Value;
-			Assert.IsFalse(ty is ParameterizedType); // rt must not be constructed - it's just an unbound type
-			Assert.AreEqual("System.Action", ty.FullName);
-			Assert.AreEqual(1, ty.TypeParameterCount);
+			Assert.That(ty is ParameterizedType, Is.False); // rt must not be constructed - it's just an unbound type
+			Assert.That(ty.FullName, Is.EqualTo("System.Action"));
+			Assert.That(ty.TypeParameterCount, Is.EqualTo(1));
 			// third argument is typeof(IDictionary<string, IList<TestAttribute>>)
 			var crt = (ParameterizedType)typeTest.FixedArguments[2].Value;
-			Assert.AreEqual("System.Collections.Generic.IDictionary", crt.FullName);
-			Assert.AreEqual("System.String", crt.TypeArguments[0].FullName);
+			Assert.That(crt.FullName, Is.EqualTo("System.Collections.Generic.IDictionary"));
+			Assert.That(crt.TypeArguments[0].FullName, Is.EqualTo("System.String"));
 			// we know the name for TestAttribute, but not necessarily the namespace, as NUnit is not in the compilation
-			Assert.AreEqual("System.Collections.Generic.IList", crt.TypeArguments[1].FullName);
+			Assert.That(crt.TypeArguments[1].FullName, Is.EqualTo("System.Collections.Generic.IList"));
 			var testAttributeType = ((ParameterizedType)crt.TypeArguments[1]).TypeArguments.Single();
-			Assert.AreEqual("TestAttribute", testAttributeType.Name);
-			Assert.AreEqual(TypeKind.Unknown, testAttributeType.Kind);
+			Assert.That(testAttributeType.Name, Is.EqualTo("TestAttribute"));
+			Assert.That(testAttributeType.Kind, Is.EqualTo(TypeKind.Unknown));
 			// (more accurately, we know the namespace and reflection name if the type was loaded by cecil,
 			// but not if we parsed it from C#)
 		}
@@ -226,18 +308,18 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			var attributes = compilation.MainModule.GetAssemblyAttributes().ToList();
 			var forwardAttribute = attributes.Single(a => a.AttributeType.FullName == typeof(TypeForwardedToAttribute).FullName);
-			Assert.AreEqual(1, forwardAttribute.FixedArguments.Length);
+			Assert.That(forwardAttribute.FixedArguments.Length, Is.EqualTo(1));
 			var rt = (IType)forwardAttribute.FixedArguments[0].Value;
-			Assert.AreEqual("System.Func`2", rt.ReflectionName);
+			Assert.That(rt.ReflectionName, Is.EqualTo("System.Func`2"));
 		}
 
 		[Test]
 		public void TestClassTypeParameters()
 		{
 			var testClass = GetTypeDefinition(typeof(GenericClass<,>));
-			Assert.AreEqual(SymbolKind.TypeDefinition, testClass.TypeParameters[0].OwnerType);
-			Assert.AreEqual(SymbolKind.TypeDefinition, testClass.TypeParameters[1].OwnerType);
-			Assert.AreSame(testClass.TypeParameters[1], testClass.TypeParameters[0].DirectBaseTypes.First());
+			Assert.That(testClass.TypeParameters[0].OwnerType, Is.EqualTo(SymbolKind.TypeDefinition));
+			Assert.That(testClass.TypeParameters[1].OwnerType, Is.EqualTo(SymbolKind.TypeDefinition));
+			Assert.That(testClass.TypeParameters[0].DirectBaseTypes.First(), Is.SameAs(testClass.TypeParameters[1]));
 		}
 
 		[Test]
@@ -246,13 +328,13 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 			var testClass = GetTypeDefinition(typeof(GenericClass<,>));
 
 			IMethod m = testClass.Methods.Single(me => me.Name == "TestMethod");
-			Assert.AreEqual("K", m.TypeParameters[0].Name);
-			Assert.AreEqual("V", m.TypeParameters[1].Name);
-			Assert.AreEqual(SymbolKind.Method, m.TypeParameters[0].OwnerType);
-			Assert.AreEqual(SymbolKind.Method, m.TypeParameters[1].OwnerType);
+			Assert.That(m.TypeParameters[0].Name, Is.EqualTo("K"));
+			Assert.That(m.TypeParameters[1].Name, Is.EqualTo("V"));
+			Assert.That(m.TypeParameters[0].OwnerType, Is.EqualTo(SymbolKind.Method));
+			Assert.That(m.TypeParameters[1].OwnerType, Is.EqualTo(SymbolKind.Method));
 
-			Assert.AreEqual("System.IComparable`1[[``1]]", m.TypeParameters[0].DirectBaseTypes.First().ReflectionName);
-			Assert.AreSame(m.TypeParameters[0], m.TypeParameters[1].DirectBaseTypes.First());
+			Assert.That(m.TypeParameters[0].DirectBaseTypes.First().ReflectionName, Is.EqualTo("System.IComparable`1[[``1]]"));
+			Assert.That(m.TypeParameters[1].DirectBaseTypes.First(), Is.SameAs(m.TypeParameters[0]));
 		}
 
 		[Test]
@@ -261,16 +343,16 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 			var testClass = GetTypeDefinition(typeof(GenericClass<,>));
 
 			IMethod m = testClass.Methods.Single(me => me.Name == "GetIndex");
-			Assert.AreEqual("T", m.TypeParameters[0].Name);
-			Assert.AreEqual(SymbolKind.Method, m.TypeParameters[0].OwnerType);
-			Assert.AreSame(m, m.TypeParameters[0].Owner);
+			Assert.That(m.TypeParameters[0].Name, Is.EqualTo("T"));
+			Assert.That(m.TypeParameters[0].OwnerType, Is.EqualTo(SymbolKind.Method));
+			Assert.That(m.TypeParameters[0].Owner, Is.SameAs(m));
 
 			ParameterizedType constraint = (ParameterizedType)m.TypeParameters[0].DirectBaseTypes.First();
-			Assert.AreEqual("IEquatable", constraint.Name);
-			Assert.AreEqual(1, constraint.TypeParameterCount);
-			Assert.AreEqual(1, constraint.TypeArguments.Count);
-			Assert.AreSame(m.TypeParameters[0], constraint.TypeArguments[0]);
-			Assert.AreSame(m.TypeParameters[0], m.Parameters[0].Type);
+			Assert.That(constraint.Name, Is.EqualTo("IEquatable"));
+			Assert.That(constraint.TypeParameterCount, Is.EqualTo(1));
+			Assert.That(constraint.TypeArguments.Count, Is.EqualTo(1));
+			Assert.That(constraint.TypeArguments[0], Is.SameAs(m.TypeParameters[0]));
+			Assert.That(m.Parameters[0].Type, Is.SameAs(m.TypeParameters[0]));
 		}
 
 		[Test]
@@ -283,16 +365,16 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 				null
 			));
 
-			Assert.AreEqual("T", m.TypeParameters[0].Name);
-			Assert.AreEqual(SymbolKind.Method, m.TypeParameters[0].OwnerType);
-			Assert.AreSame(m, m.TypeParameters[0].Owner);
+			Assert.That(m.TypeParameters[0].Name, Is.EqualTo("T"));
+			Assert.That(m.TypeParameters[0].OwnerType, Is.EqualTo(SymbolKind.Method));
+			Assert.That(m.TypeParameters[0].Owner, Is.SameAs(m));
 
 			ParameterizedType constraint = (ParameterizedType)m.TypeParameters[0].DirectBaseTypes.First();
-			Assert.AreEqual("IEquatable", constraint.Name);
-			Assert.AreEqual(1, constraint.TypeParameterCount);
-			Assert.AreEqual(1, constraint.TypeArguments.Count);
-			Assert.AreSame(m.TypeParameters[0], constraint.TypeArguments[0]);
-			Assert.AreSame(m.TypeParameters[0], m.Parameters[0].Type);
+			Assert.That(constraint.Name, Is.EqualTo("IEquatable"));
+			Assert.That(constraint.TypeParameterCount, Is.EqualTo(1));
+			Assert.That(constraint.TypeArguments.Count, Is.EqualTo(1));
+			Assert.That(constraint.TypeArguments[0], Is.SameAs(m.TypeParameters[0]));
+			Assert.That(m.Parameters[0].Type, Is.SameAs(m.TypeParameters[0]));
 		}
 
 		[Test]
@@ -318,7 +400,7 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 				new[] { compilation.FindType(KnownTypeCode.String), compilation.FindType(KnownTypeCode.Int32) },
 				new[] { compilation.FindType(KnownTypeCode.Int32) }
 			));
-			Assert.AreEqual(m12, m2);
+			Assert.That(m2, Is.EqualTo(m12));
 		}
 
 		[Test]
@@ -326,18 +408,18 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			// NRefactory bug #143 - Accessor Owner throws null reference exception in some cases now
 			var method = compilation.FindType(typeof(GenericClass<string, object>)).GetMethods(m => m.Name == "GetIndex").Single();
-			Assert.IsNull(method.AccessorOwner);
+			Assert.That(method.AccessorOwner, Is.Null);
 		}
 
 		[Test]
 		public void Specialized_GetIndex_ToMemberReference()
 		{
 			var method = compilation.FindType(typeof(GenericClass<string, object>)).GetMethods(m => m.Name == "GetIndex").Single();
-			Assert.AreSame(method.TypeParameters[0], method.Parameters[0].Type);
-			Assert.AreSame(method, method.TypeParameters[0].Owner);
-			Assert.IsInstanceOf<SpecializedMethod>(method);
-			//Assert.IsFalse(method.IsParameterized); // the method itself is not specialized
-			Assert.AreEqual(method.TypeParameters, method.TypeArguments);
+			Assert.That(method.Parameters[0].Type, Is.SameAs(method.TypeParameters[0]));
+			Assert.That(method.TypeParameters[0].Owner, Is.SameAs(method));
+			Assert.That(method, Is.InstanceOf<SpecializedMethod>());
+			//Assert.That(!method.IsParameterized); // the method itself is not specialized
+			Assert.That(method.TypeArguments, Is.EqualTo(method.TypeParameters));
 		}
 
 		[Test]
@@ -347,23 +429,23 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 			IType[] methodTypeArguments = { DummyTypeParameter.GetMethodTypeParameter(0) };
 			var method = genericClass.GetMethods(methodTypeArguments, m => m.Name == "GetIndex").Single();
 			// GenericClass<string,object>.GetIndex<!!0>()
-			Assert.AreSame(method, method.TypeParameters[0].Owner);
-			Assert.AreNotEqual(method.TypeParameters[0], method.TypeArguments[0]);
-			Assert.IsNull(((ITypeParameter)method.TypeArguments[0]).Owner);
+			Assert.That(method.TypeParameters[0].Owner, Is.SameAs(method));
+			Assert.That(method.TypeArguments[0], Is.Not.EqualTo(method.TypeParameters[0]));
+			Assert.That(((ITypeParameter)method.TypeArguments[0]).Owner, Is.Null);
 			// Now apply identity substitution:
 			var method2 = method.Specialize(TypeParameterSubstitution.Identity);
-			Assert.AreSame(method2, method2.TypeParameters[0].Owner);
-			Assert.AreNotEqual(method2.TypeParameters[0], method2.TypeArguments[0]);
-			Assert.IsNull(((ITypeParameter)method2.TypeArguments[0]).Owner);
+			Assert.That(method2.TypeParameters[0].Owner, Is.SameAs(method2));
+			Assert.That(method2.TypeArguments[0], Is.Not.EqualTo(method2.TypeParameters[0]));
+			Assert.That(((ITypeParameter)method2.TypeArguments[0]).Owner, Is.Null);
 
-			Assert.AreEqual(method, method2);
+			Assert.That(method2, Is.EqualTo(method));
 		}
 
 		[Test]
 		public void GenericEnum()
 		{
 			var testClass = GetTypeDefinition(typeof(GenericClass<,>.NestedEnum));
-			Assert.AreEqual(2, testClass.TypeParameterCount);
+			Assert.That(testClass.TypeParameterCount, Is.EqualTo(2));
 		}
 
 		[Test]
@@ -372,7 +454,7 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 			var testClass = GetTypeDefinition(typeof(GenericClass<,>));
 			var enumClass = GetTypeDefinition(typeof(GenericClass<,>.NestedEnum));
 			var field = testClass.Fields.Single(f => f.Name == "EnumField");
-			Assert.AreEqual(new ParameterizedType(enumClass, testClass.TypeParameters), field.ReturnType);
+			Assert.That(field.ReturnType, Is.EqualTo(new ParameterizedType(enumClass, testClass.TypeParameters)));
 		}
 
 		[Test]
@@ -380,7 +462,7 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			var enumClass = GetTypeDefinition(typeof(GenericClass<,>.NestedEnum));
 			var field = enumClass.Fields.Single(f => f.Name == "EnumMember");
-			Assert.AreEqual(new ParameterizedType(enumClass, enumClass.TypeParameters), field.ReturnType);
+			Assert.That(field.ReturnType, Is.EqualTo(new ParameterizedType(enumClass, enumClass.TypeParameters)));
 		}
 
 		[Test]
@@ -388,11 +470,11 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			var testClass = GetTypeDefinition(typeof(PropertyTest));
 			IProperty p = testClass.Properties.Single(pr => pr.Name == "PropertyWithProtectedSetter");
-			Assert.IsTrue(p.CanGet);
-			Assert.IsTrue(p.CanSet);
-			Assert.AreEqual(Accessibility.Public, p.Accessibility);
-			Assert.AreEqual(Accessibility.Public, p.Getter.Accessibility);
-			Assert.AreEqual(Accessibility.Protected, p.Setter.Accessibility);
+			Assert.That(p.CanGet);
+			Assert.That(p.CanSet);
+			Assert.That(p.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(p.Getter.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(p.Setter.Accessibility, Is.EqualTo(Accessibility.Protected));
 		}
 
 		[Test]
@@ -400,15 +482,15 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			var testClass = GetTypeDefinition(typeof(PropertyTest));
 			IProperty p = testClass.Properties.Single(pr => pr.Name == "PropertyWithPrivateSetter");
-			Assert.IsTrue(p.CanGet);
-			Assert.IsTrue(p.CanSet);
-			Assert.AreEqual(Accessibility.Public, p.Accessibility);
-			Assert.AreEqual(Accessibility.Public, p.Getter.Accessibility);
-			Assert.AreEqual(Accessibility.Private, p.Setter.Accessibility);
-			Assert.IsTrue(p.Getter.HasBody);
-			Assert.IsFalse(p.HasAttribute(KnownAttribute.SpecialName));
-			Assert.IsFalse(p.Getter.HasAttribute(KnownAttribute.SpecialName));
-			Assert.IsFalse(p.Setter.HasAttribute(KnownAttribute.SpecialName));
+			Assert.That(p.CanGet);
+			Assert.That(p.CanSet);
+			Assert.That(p.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(p.Getter.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(p.Setter.Accessibility, Is.EqualTo(Accessibility.Private));
+			Assert.That(p.Getter.HasBody);
+			Assert.That(!p.HasAttribute(KnownAttribute.SpecialName));
+			Assert.That(!p.Getter.HasAttribute(KnownAttribute.SpecialName));
+			Assert.That(!p.Setter.HasAttribute(KnownAttribute.SpecialName));
 		}
 
 		[Test]
@@ -416,12 +498,12 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			var testClass = GetTypeDefinition(typeof(PropertyTest));
 			IProperty p = testClass.Properties.Single(pr => pr.Name == "PropertyWithPrivateGetter");
-			Assert.IsTrue(p.CanGet);
-			Assert.IsTrue(p.CanSet);
-			Assert.AreEqual(Accessibility.Public, p.Accessibility);
-			Assert.AreEqual(Accessibility.Private, p.Getter.Accessibility);
-			Assert.AreEqual(Accessibility.Public, p.Setter.Accessibility);
-			Assert.IsTrue(p.Getter.HasBody);
+			Assert.That(p.CanGet);
+			Assert.That(p.CanSet);
+			Assert.That(p.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(p.Getter.Accessibility, Is.EqualTo(Accessibility.Private));
+			Assert.That(p.Setter.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(p.Getter.HasBody);
 		}
 
 		[Test]
@@ -429,11 +511,11 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			var testClass = GetTypeDefinition(typeof(PropertyTest));
 			IProperty p = testClass.Properties.Single(pr => pr.Name == "PropertyWithoutSetter");
-			Assert.IsTrue(p.CanGet);
-			Assert.IsFalse(p.CanSet);
-			Assert.AreEqual(Accessibility.Public, p.Accessibility);
-			Assert.AreEqual(Accessibility.Public, p.Getter.Accessibility);
-			Assert.IsNull(p.Setter);
+			Assert.That(p.CanGet);
+			Assert.That(!p.CanSet);
+			Assert.That(p.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(p.Getter.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(p.Setter, Is.Null);
 		}
 
 		[Test]
@@ -441,8 +523,8 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			var testClass = GetTypeDefinition(typeof(PropertyTest));
 			IProperty p = testClass.Properties.Single(pr => pr.IsIndexer);
-			Assert.AreEqual("Item", p.Name);
-			Assert.AreEqual(new[] { "index" }, p.Parameters.Select(x => x.Name).ToArray());
+			Assert.That(p.Name, Is.EqualTo("Item"));
+			Assert.That(p.Parameters.Select(x => x.Name).ToArray(), Is.EqualTo(new[] { "index" }));
 		}
 
 		[Test]
@@ -450,13 +532,13 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			var testClass = GetTypeDefinition(typeof(PropertyTest));
 			IProperty p = testClass.Properties.Single(pr => pr.IsIndexer);
-			Assert.IsTrue(p.CanGet);
-			Assert.AreEqual(SymbolKind.Accessor, p.Getter.SymbolKind);
-			Assert.AreEqual("get_Item", p.Getter.Name);
-			Assert.AreEqual(Accessibility.Public, p.Getter.Accessibility);
-			Assert.AreEqual(new[] { "index" }, p.Getter.Parameters.Select(x => x.Name).ToArray());
-			Assert.AreEqual("System.String", p.Getter.ReturnType.ReflectionName);
-			Assert.AreEqual(p, p.Getter.AccessorOwner);
+			Assert.That(p.CanGet);
+			Assert.That(p.Getter.SymbolKind, Is.EqualTo(SymbolKind.Accessor));
+			Assert.That(p.Getter.Name, Is.EqualTo("get_Item"));
+			Assert.That(p.Getter.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(p.Getter.Parameters.Select(x => x.Name).ToArray(), Is.EqualTo(new[] { "index" }));
+			Assert.That(p.Getter.ReturnType.ReflectionName, Is.EqualTo("System.String"));
+			Assert.That(p.Getter.AccessorOwner, Is.EqualTo(p));
 		}
 
 		[Test]
@@ -464,12 +546,12 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			var testClass = GetTypeDefinition(typeof(PropertyTest));
 			IProperty p = testClass.Properties.Single(pr => pr.IsIndexer);
-			Assert.IsTrue(p.CanSet);
-			Assert.AreEqual(SymbolKind.Accessor, p.Setter.SymbolKind);
-			Assert.AreEqual("set_Item", p.Setter.Name);
-			Assert.AreEqual(Accessibility.Public, p.Setter.Accessibility);
-			Assert.AreEqual(new[] { "index", "value" }, p.Setter.Parameters.Select(x => x.Name).ToArray());
-			Assert.AreEqual(TypeKind.Void, p.Setter.ReturnType.Kind);
+			Assert.That(p.CanSet);
+			Assert.That(p.Setter.SymbolKind, Is.EqualTo(SymbolKind.Accessor));
+			Assert.That(p.Setter.Name, Is.EqualTo("set_Item"));
+			Assert.That(p.Setter.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(p.Setter.Parameters.Select(x => x.Name).ToArray(), Is.EqualTo(new[] { "index", "value" }));
+			Assert.That(p.Setter.ReturnType.Kind, Is.EqualTo(TypeKind.Void));
 		}
 
 		[Test]
@@ -477,19 +559,19 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			var type = compilation.FindType(typeof(GenericClass<string, object>));
 			var prop = type.GetProperties(p => p.Name == "Property").Single();
-			Assert.AreEqual("System.String", prop.Getter.ReturnType.ReflectionName);
-			Assert.IsTrue(prop.Getter.IsAccessor);
-			Assert.AreEqual(prop, prop.Getter.AccessorOwner);
+			Assert.That(prop.Getter.ReturnType.ReflectionName, Is.EqualTo("System.String"));
+			Assert.That(prop.Getter.IsAccessor);
+			Assert.That(prop.Getter.AccessorOwner, Is.EqualTo(prop));
 		}
 
 		[Test]
 		public void EnumTest()
 		{
 			var e = GetTypeDefinition(typeof(MyEnum));
-			Assert.AreEqual(TypeKind.Enum, e.Kind);
-			Assert.AreEqual(false, e.IsReferenceType);
-			Assert.AreEqual("System.Int16", e.EnumUnderlyingType.ReflectionName);
-			Assert.AreEqual(new[] { "System.Enum" }, e.DirectBaseTypes.Select(t => t.ReflectionName).ToArray());
+			Assert.That(e.Kind, Is.EqualTo(TypeKind.Enum));
+			Assert.That(e.IsReferenceType, Is.EqualTo(false));
+			Assert.That(e.EnumUnderlyingType.ReflectionName, Is.EqualTo("System.Int16"));
+			Assert.That(e.DirectBaseTypes.Select(t => t.ReflectionName).ToArray(), Is.EqualTo(new[] { "System.Enum" }));
 		}
 
 		[Test]
@@ -498,39 +580,39 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 			var e = GetTypeDefinition(typeof(MyEnum));
 			IField valueField = e.Fields.First();
 			IField[] fields = e.Fields.Skip(1).ToArray();
-			Assert.AreEqual(5, fields.Length);
+			Assert.That(fields.Length, Is.EqualTo(5));
 
-			Assert.AreEqual("value__", valueField.Name);
-			Assert.AreEqual(GetTypeDefinition(typeof(short)), valueField.Type);
-			Assert.AreEqual(Accessibility.Public, valueField.Accessibility);
-			Assert.AreEqual(null, valueField.GetConstantValue());
-			Assert.IsFalse(valueField.IsConst);
-			Assert.IsFalse(valueField.IsStatic);
+			Assert.That(valueField.Name, Is.EqualTo("value__"));
+			Assert.That(valueField.Type, Is.EqualTo(GetTypeDefinition(typeof(short))));
+			Assert.That(valueField.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(valueField.GetConstantValue(), Is.EqualTo(null));
+			Assert.That(!valueField.IsConst);
+			Assert.That(!valueField.IsStatic);
 
 			foreach (IField f in fields)
 			{
-				Assert.IsTrue(f.IsStatic);
-				Assert.IsTrue(f.IsConst);
-				Assert.AreEqual(Accessibility.Public, f.Accessibility);
-				Assert.AreSame(e, f.Type);
-				Assert.AreEqual(typeof(short), f.GetConstantValue().GetType());
+				Assert.That(f.IsStatic);
+				Assert.That(f.IsConst);
+				Assert.That(f.Accessibility, Is.EqualTo(Accessibility.Public));
+				Assert.That(f.Type, Is.SameAs(e));
+				Assert.That(f.GetConstantValue().GetType(), Is.EqualTo(typeof(short)));
 			}
 
-			Assert.AreEqual("First", fields[0].Name);
-			Assert.AreEqual(0, fields[0].GetConstantValue());
+			Assert.That(fields[0].Name, Is.EqualTo("First"));
+			Assert.That(fields[0].GetConstantValue(), Is.EqualTo(0));
 
-			Assert.AreEqual("Second", fields[1].Name);
-			Assert.AreSame(e, fields[1].Type);
-			Assert.AreEqual(1, fields[1].GetConstantValue());
+			Assert.That(fields[1].Name, Is.EqualTo("Second"));
+			Assert.That(fields[1].Type, Is.SameAs(e));
+			Assert.That(fields[1].GetConstantValue(), Is.EqualTo(1));
 
-			Assert.AreEqual("Flag1", fields[2].Name);
-			Assert.AreEqual(0x10, fields[2].GetConstantValue());
+			Assert.That(fields[2].Name, Is.EqualTo("Flag1"));
+			Assert.That(fields[2].GetConstantValue(), Is.EqualTo(0x10));
 
-			Assert.AreEqual("Flag2", fields[3].Name);
-			Assert.AreEqual(0x20, fields[3].GetConstantValue());
+			Assert.That(fields[3].Name, Is.EqualTo("Flag2"));
+			Assert.That(fields[3].GetConstantValue(), Is.EqualTo(0x20));
 
-			Assert.AreEqual("CombinedFlags", fields[4].Name);
-			Assert.AreEqual(0x30, fields[4].GetConstantValue());
+			Assert.That(fields[4].Name, Is.EqualTo("CombinedFlags"));
+			Assert.That(fields[4].GetConstantValue(), Is.EqualTo(0x30));
 		}
 
 		[Test]
@@ -539,14 +621,12 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 			ITypeDefinition d = GetTypeDefinition(typeof(Derived<,>));
 
 			IType pBase = d.DirectBaseTypes.Single();
-			Assert.AreEqual(typeof(Base<>).FullName + "[[`1]]", pBase.ReflectionName);
+			Assert.That(pBase.ReflectionName, Is.EqualTo(typeof(Base<>).FullName + "[[`1]]"));
 			// Base[`1].GetNestedTypes() = { Base`1+Nested`1[`1, unbound] }
-			Assert.AreEqual(new[] { typeof(Base<>.Nested<>).FullName + "[[`1],[]]" },
-							pBase.GetNestedTypes().Select(n => n.ReflectionName).ToArray());
+			Assert.That(pBase.GetNestedTypes().Select(n => n.ReflectionName).ToArray(), Is.EqualTo(new[] { typeof(Base<>.Nested<>).FullName + "[[`1],[]]" }));
 
 			// Derived.GetNestedTypes() = { Base`1+Nested`1[`1, unbound] }
-			Assert.AreEqual(new[] { typeof(Base<>.Nested<>).FullName + "[[`1],[]]" },
-							d.GetNestedTypes().Select(n => n.ReflectionName).ToArray());
+			Assert.That(d.GetNestedTypes().Select(n => n.ReflectionName).ToArray(), Is.EqualTo(new[] { typeof(Base<>.Nested<>).FullName + "[[`1],[]]" }));
 			// This is 'leaking' the type parameter from B as is usual when retrieving any members from an unbound type.
 		}
 
@@ -555,8 +635,7 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			// Derived[string,int].GetNestedTypes() = { Base`1+Nested`1[int, unbound] }
 			var d = compilation.FindType(typeof(Derived<string, int>));
-			Assert.AreEqual(new[] { typeof(Base<>.Nested<>).FullName + "[[System.Int32],[]]" },
-							d.GetNestedTypes().Select(n => n.ReflectionName).ToArray());
+			Assert.That(d.GetNestedTypes().Select(n => n.ReflectionName).ToArray(), Is.EqualTo(new[] { typeof(Base<>.Nested<>).FullName + "[[System.Int32],[]]" }));
 		}
 
 		[Test]
@@ -564,12 +643,11 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition d = GetTypeDefinition(typeof(Derived<,>));
 			ITypeParameter tp = d.Methods.Single(m => m.Name == "GenericMethodWithConstraints").TypeParameters.Single();
-			Assert.AreEqual("Y", tp.Name);
-			Assert.IsFalse(tp.HasValueTypeConstraint);
-			Assert.IsFalse(tp.HasReferenceTypeConstraint);
-			Assert.IsTrue(tp.HasDefaultConstructorConstraint);
-			Assert.AreEqual(new string[] { "System.Collections.Generic.IComparer`1[[`1]]", "System.Object" },
-							tp.DirectBaseTypes.Select(t => t.ReflectionName).ToArray());
+			Assert.That(tp.Name, Is.EqualTo("Y"));
+			Assert.That(!tp.HasValueTypeConstraint);
+			Assert.That(!tp.HasReferenceTypeConstraint);
+			Assert.That(tp.HasDefaultConstructorConstraint);
+			Assert.That(tp.DirectBaseTypes.Select(t => t.ReflectionName).ToArray(), Is.EqualTo(new string[] { "System.Collections.Generic.IComparer`1[[`1]]", "System.Object" }));
 		}
 
 		[Test]
@@ -577,16 +655,16 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition c = GetTypeDefinition(typeof(Derived<,>));
 			IMethod method = c.Methods.Single(m => m.IsDestructor);
-			Assert.AreEqual(c.FullName + ".Finalize", method.FullName);
-			Assert.AreSame(c, method.DeclaringType);
-			Assert.AreEqual(Accessibility.Protected, method.Accessibility);
-			Assert.AreEqual(SymbolKind.Destructor, method.SymbolKind);
-			Assert.IsFalse(method.IsVirtual);
-			Assert.IsFalse(method.IsStatic);
-			Assert.AreEqual(0, method.Parameters.Count);
-			Assert.AreEqual(0, method.GetAttributes().Count());
-			Assert.IsTrue(method.HasBody);
-			Assert.IsNull(method.AccessorOwner);
+			Assert.That(method.FullName, Is.EqualTo(c.FullName + ".Finalize"));
+			Assert.That(method.DeclaringType, Is.SameAs(c));
+			Assert.That(method.Accessibility, Is.EqualTo(Accessibility.Protected));
+			Assert.That(method.SymbolKind, Is.EqualTo(SymbolKind.Destructor));
+			Assert.That(!method.IsVirtual);
+			Assert.That(!method.IsStatic);
+			Assert.That(method.Parameters.Count, Is.EqualTo(0));
+			Assert.That(method.GetAttributes().Count(), Is.EqualTo(0));
+			Assert.That(method.HasBody);
+			Assert.That(method.AccessorOwner, Is.Null);
 		}
 
 		[Test]
@@ -594,92 +672,102 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition c = GetTypeDefinition(typeof(TypeTestAttribute));
 			IMethod method = c.Methods.Single(m => m.Name == "Finalize");
-			Assert.AreEqual(c.FullName + ".Finalize", method.FullName);
-			Assert.AreSame(c, method.DeclaringType);
-			Assert.AreEqual(Accessibility.Private, method.Accessibility);
-			Assert.AreEqual(SymbolKind.Method, method.SymbolKind);
-			Assert.IsFalse(method.IsVirtual);
-			Assert.IsFalse(method.IsStatic);
-			Assert.AreEqual(0, method.Parameters.Count);
-			Assert.AreEqual(0, method.GetAttributes().Count());
-			Assert.IsTrue(method.HasBody);
-			Assert.IsNull(method.AccessorOwner);
+			Assert.That(method.FullName, Is.EqualTo(c.FullName + ".Finalize"));
+			Assert.That(method.DeclaringType, Is.SameAs(c));
+			Assert.That(method.Accessibility, Is.EqualTo(Accessibility.Private));
+			Assert.That(method.SymbolKind, Is.EqualTo(SymbolKind.Method));
+			Assert.That(!method.IsVirtual);
+			Assert.That(!method.IsStatic);
+			Assert.That(method.Parameters.Count, Is.EqualTo(0));
+			Assert.That(method.GetAttributes().Count(), Is.EqualTo(0));
+			Assert.That(method.HasBody);
+			Assert.That(method.AccessorOwner, Is.Null);
 		}
 
 		[Test]
 		public void DefaultConstructorAddedToStruct()
 		{
 			var ctors = compilation.FindType(typeof(MyStructWithCtor)).GetConstructors();
-			Assert.AreEqual(2, ctors.Count());
-			Assert.IsFalse(ctors.Any(c => c.IsStatic));
-			Assert.IsTrue(ctors.All(c => c.ReturnType.Kind == TypeKind.Void));
-			Assert.IsTrue(ctors.All(c => c.Accessibility == Accessibility.Public));
+			Assert.That(ctors.Count(), Is.EqualTo(2));
+			Assert.That(!ctors.Any(c => c.IsStatic));
+			Assert.That(ctors.All(c => c.ReturnType.Kind == TypeKind.Void));
+			Assert.That(ctors.All(c => c.Accessibility == Accessibility.Public));
+		}
+
+		[Test]
+		public void NoDefaultConstructorAddedToStruct()
+		{
+			var ctors = compilation.FindType(typeof(MyStructWithDefaultCtor)).GetConstructors();
+			Assert.That(ctors.Count(), Is.EqualTo(1));
+			Assert.That(!ctors.Any(c => c.IsStatic));
+			Assert.That(ctors.All(c => c.ReturnType.Kind == TypeKind.Void));
+			Assert.That(ctors.All(c => c.Accessibility == Accessibility.Public));
 		}
 
 		[Test]
 		public void NoDefaultConstructorAddedToClass()
 		{
 			var ctors = compilation.FindType(typeof(MyClassWithCtor)).GetConstructors();
-			Assert.AreEqual(Accessibility.Private, ctors.Single().Accessibility);
-			Assert.AreEqual(1, ctors.Single().Parameters.Count);
+			Assert.That(ctors.Single().Accessibility, Is.EqualTo(Accessibility.Private));
+			Assert.That(ctors.Single().Parameters.Count, Is.EqualTo(1));
 		}
 
 		[Test]
 		public void DefaultConstructorOnAbstractClassIsProtected()
 		{
 			var ctors = compilation.FindType(typeof(AbstractClass)).GetConstructors();
-			Assert.AreEqual(0, ctors.Single().Parameters.Count);
-			Assert.AreEqual(Accessibility.Protected, ctors.Single().Accessibility);
+			Assert.That(ctors.Single().Parameters.Count, Is.EqualTo(0));
+			Assert.That(ctors.Single().Accessibility, Is.EqualTo(Accessibility.Protected));
 		}
 
 		[Test]
 		public void SerializableAttribute()
 		{
 			IAttribute attr = GetTypeDefinition(typeof(NonCustomAttributes)).GetAttributes().Single();
-			Assert.AreEqual("System.SerializableAttribute", attr.AttributeType.FullName);
+			Assert.That(attr.AttributeType.FullName, Is.EqualTo("System.SerializableAttribute"));
 		}
 
 		[Test]
 		public void NonSerializedAttribute()
 		{
 			IField field = GetTypeDefinition(typeof(NonCustomAttributes)).Fields.Single(f => f.Name == "NonSerializedField");
-			Assert.AreEqual("System.NonSerializedAttribute", field.GetAttributes().Single().AttributeType.FullName);
+			Assert.That(field.GetAttributes().Single().AttributeType.FullName, Is.EqualTo("System.NonSerializedAttribute"));
 		}
 
 		[Test]
 		public void ExplicitStructLayoutAttribute()
 		{
 			IAttribute attr = GetTypeDefinition(typeof(ExplicitFieldLayoutStruct)).GetAttributes().Single();
-			Assert.AreEqual("System.Runtime.InteropServices.StructLayoutAttribute", attr.AttributeType.FullName);
+			Assert.That(attr.AttributeType.FullName, Is.EqualTo("System.Runtime.InteropServices.StructLayoutAttribute"));
 			var arg1 = attr.FixedArguments.Single();
-			Assert.AreEqual("System.Runtime.InteropServices.LayoutKind", arg1.Type.FullName);
-			Assert.AreEqual((int)LayoutKind.Explicit, arg1.Value);
+			Assert.That(arg1.Type.FullName, Is.EqualTo("System.Runtime.InteropServices.LayoutKind"));
+			Assert.That(arg1.Value, Is.EqualTo((int)LayoutKind.Explicit));
 
 			var arg2 = attr.NamedArguments[0];
-			Assert.AreEqual("CharSet", arg2.Name);
-			Assert.AreEqual("System.Runtime.InteropServices.CharSet", arg2.Type.FullName);
-			Assert.AreEqual((int)CharSet.Unicode, arg2.Value);
+			Assert.That(arg2.Name, Is.EqualTo("CharSet"));
+			Assert.That(arg2.Type.FullName, Is.EqualTo("System.Runtime.InteropServices.CharSet"));
+			Assert.That(arg2.Value, Is.EqualTo((int)CharSet.Unicode));
 
 			var arg3 = attr.NamedArguments[1];
-			Assert.AreEqual("Pack", arg3.Name);
-			Assert.AreEqual("System.Int32", arg3.Type.FullName);
-			Assert.AreEqual(8, arg3.Value);
+			Assert.That(arg3.Name, Is.EqualTo("Pack"));
+			Assert.That(arg3.Type.FullName, Is.EqualTo("System.Int32"));
+			Assert.That(arg3.Value, Is.EqualTo(8));
 		}
 
 		[Test]
 		public void FieldOffsetAttribute()
 		{
 			IField field = GetTypeDefinition(typeof(ExplicitFieldLayoutStruct)).Fields.Single(f => f.Name == "Field0");
-			Assert.AreEqual("System.Runtime.InteropServices.FieldOffsetAttribute", field.GetAttributes().Single().AttributeType.FullName);
+			Assert.That(field.GetAttributes().Single().AttributeType.FullName, Is.EqualTo("System.Runtime.InteropServices.FieldOffsetAttribute"));
 			var arg = field.GetAttributes().Single().FixedArguments.Single();
-			Assert.AreEqual("System.Int32", arg.Type.FullName);
-			Assert.AreEqual(0, arg.Value);
+			Assert.That(arg.Type.FullName, Is.EqualTo("System.Int32"));
+			Assert.That(arg.Value, Is.EqualTo(0));
 
 			field = GetTypeDefinition(typeof(ExplicitFieldLayoutStruct)).Fields.Single(f => f.Name == "Field100");
-			Assert.AreEqual("System.Runtime.InteropServices.FieldOffsetAttribute", field.GetAttributes().Single().AttributeType.FullName);
+			Assert.That(field.GetAttributes().Single().AttributeType.FullName, Is.EqualTo("System.Runtime.InteropServices.FieldOffsetAttribute"));
 			arg = field.GetAttributes().Single().FixedArguments.Single();
-			Assert.AreEqual("System.Int32", arg.Type.FullName);
-			Assert.AreEqual(100, arg.Value);
+			Assert.That(arg.Type.FullName, Is.EqualTo("System.Int32"));
+			Assert.That(arg.Value, Is.EqualTo(100));
 		}
 
 		[Test]
@@ -687,9 +775,9 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			IMethod method = GetTypeDefinition(typeof(NonCustomAttributes)).Methods.Single(m => m.Name == "DllMethod");
 			IAttribute dllImport = method.GetAttributes().Single();
-			Assert.AreEqual("System.Runtime.InteropServices.DllImportAttribute", dllImport.AttributeType.FullName);
-			Assert.AreEqual("unmanaged.dll", dllImport.FixedArguments[0].Value);
-			Assert.AreEqual((int)CharSet.Unicode, dllImport.NamedArguments.Single().Value);
+			Assert.That(dllImport.AttributeType.FullName, Is.EqualTo("System.Runtime.InteropServices.DllImportAttribute"));
+			Assert.That(dllImport.FixedArguments[0].Value, Is.EqualTo("unmanaged.dll"));
+			Assert.That(dllImport.NamedArguments.Single().Value, Is.EqualTo((int)CharSet.Unicode));
 		}
 
 		[Test]
@@ -697,9 +785,9 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			IMethod method = GetTypeDefinition(typeof(NonCustomAttributes)).Methods.Single(m => m.Name == "DoNotPreserveSig");
 			IAttribute dllImport = method.GetAttributes().Single();
-			Assert.AreEqual("System.Runtime.InteropServices.DllImportAttribute", dllImport.AttributeType.FullName);
-			Assert.AreEqual("unmanaged.dll", dllImport.FixedArguments[0].Value);
-			Assert.AreEqual(false, dllImport.NamedArguments.Single().Value);
+			Assert.That(dllImport.AttributeType.FullName, Is.EqualTo("System.Runtime.InteropServices.DllImportAttribute"));
+			Assert.That(dllImport.FixedArguments[0].Value, Is.EqualTo("unmanaged.dll"));
+			Assert.That(dllImport.NamedArguments.Single().Value, Is.EqualTo(false));
 		}
 
 		[Test]
@@ -707,20 +795,20 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			IMethod method = GetTypeDefinition(typeof(NonCustomAttributes)).Methods.Single(m => m.Name == "PreserveSigAsAttribute");
 			IAttribute preserveSig = method.GetAttributes().Single();
-			Assert.AreEqual("System.Runtime.InteropServices.PreserveSigAttribute", preserveSig.AttributeType.FullName);
-			Assert.IsTrue(preserveSig.FixedArguments.Length == 0);
-			Assert.IsTrue(preserveSig.NamedArguments.Length == 0);
+			Assert.That(preserveSig.AttributeType.FullName, Is.EqualTo("System.Runtime.InteropServices.PreserveSigAttribute"));
+			Assert.That(preserveSig.FixedArguments.Length == 0);
+			Assert.That(preserveSig.NamedArguments.Length == 0);
 		}
 
 		[Test]
 		public void InOutParametersOnRefMethod()
 		{
 			IParameter p = GetTypeDefinition(typeof(NonCustomAttributes)).Methods.Single(m => m.Name == "DllMethod").Parameters.Single();
-			Assert.AreEqual(ReferenceKind.Ref, p.ReferenceKind);
+			Assert.That(p.ReferenceKind, Is.EqualTo(ReferenceKind.Ref));
 			var attr = p.GetAttributes().ToList();
-			Assert.AreEqual(2, attr.Count);
-			Assert.AreEqual("System.Runtime.InteropServices.InAttribute", attr[0].AttributeType.FullName);
-			Assert.AreEqual("System.Runtime.InteropServices.OutAttribute", attr[1].AttributeType.FullName);
+			Assert.That(attr.Count, Is.EqualTo(2));
+			Assert.That(attr[0].AttributeType.FullName, Is.EqualTo("System.Runtime.InteropServices.InAttribute"));
+			Assert.That(attr[1].AttributeType.FullName, Is.EqualTo("System.Runtime.InteropServices.OutAttribute"));
 		}
 
 		[Test]
@@ -728,70 +816,70 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			IMethod method = GetTypeDefinition(typeof(NonCustomAttributes)).Methods.Single(m => m.Name == "DllMethod");
 			IAttribute marshalAs = method.GetReturnTypeAttributes().Single();
-			Assert.AreEqual((int)UnmanagedType.Bool, marshalAs.FixedArguments.Single().Value);
+			Assert.That(marshalAs.FixedArguments.Single().Value, Is.EqualTo((int)UnmanagedType.Bool));
 		}
 
 		[Test]
 		public void MethodWithOutParameter()
 		{
 			IParameter p = GetTypeDefinition(typeof(ParameterTests)).Methods.Single(m => m.Name == "MethodWithOutParameter").Parameters.Single();
-			Assert.IsFalse(p.IsOptional);
-			Assert.AreEqual(ReferenceKind.Out, p.ReferenceKind);
-			Assert.AreEqual(0, p.GetAttributes().Count());
-			Assert.IsTrue(p.Type.Kind == TypeKind.ByReference);
+			Assert.That(!p.IsOptional);
+			Assert.That(p.ReferenceKind, Is.EqualTo(ReferenceKind.Out));
+			Assert.That(p.GetAttributes().Count(), Is.EqualTo(0));
+			Assert.That(p.Type.Kind == TypeKind.ByReference);
 		}
 
 		[Test]
 		public void MethodWithRefParameter()
 		{
 			IParameter p = GetTypeDefinition(typeof(ParameterTests)).Methods.Single(m => m.Name == "MethodWithRefParameter").Parameters.Single();
-			Assert.IsFalse(p.IsOptional);
-			Assert.AreEqual(ReferenceKind.Ref, p.ReferenceKind);
-			Assert.AreEqual(0, p.GetAttributes().Count());
-			Assert.IsTrue(p.Type.Kind == TypeKind.ByReference);
+			Assert.That(!p.IsOptional);
+			Assert.That(p.ReferenceKind, Is.EqualTo(ReferenceKind.Ref));
+			Assert.That(p.GetAttributes().Count(), Is.EqualTo(0));
+			Assert.That(p.Type.Kind == TypeKind.ByReference);
 		}
 
 		[Test]
 		public void MethodWithInParameter()
 		{
 			IParameter p = GetTypeDefinition(typeof(ParameterTests)).Methods.Single(m => m.Name == "MethodWithInParameter").Parameters.Single();
-			Assert.IsFalse(p.IsOptional);
-			Assert.AreEqual(ReferenceKind.In, p.ReferenceKind);
-			Assert.AreEqual(0, p.GetAttributes().Count());
-			Assert.IsTrue(p.Type.Kind == TypeKind.ByReference);
+			Assert.That(!p.IsOptional);
+			Assert.That(p.ReferenceKind, Is.EqualTo(ReferenceKind.In));
+			Assert.That(p.GetAttributes().Count(), Is.EqualTo(0));
+			Assert.That(p.Type.Kind == TypeKind.ByReference);
 		}
 
 		[Test]
 		public void MethodWithParamsArray()
 		{
 			IParameter p = GetTypeDefinition(typeof(ParameterTests)).Methods.Single(m => m.Name == "MethodWithParamsArray").Parameters.Single();
-			Assert.IsFalse(p.IsOptional);
-			Assert.AreEqual(ReferenceKind.None, p.ReferenceKind);
-			Assert.IsTrue(p.IsParams);
-			Assert.AreEqual(0, p.GetAttributes().Count());
-			Assert.IsTrue(p.Type.Kind == TypeKind.Array);
+			Assert.That(!p.IsOptional);
+			Assert.That(p.ReferenceKind, Is.EqualTo(ReferenceKind.None));
+			Assert.That(p.IsParams);
+			Assert.That(p.GetAttributes().Count(), Is.EqualTo(0));
+			Assert.That(p.Type.Kind == TypeKind.Array);
 		}
 
 		[Test]
 		public void MethodWithOptionalParameter()
 		{
 			IParameter p = GetTypeDefinition(typeof(ParameterTests)).Methods.Single(m => m.Name == "MethodWithOptionalParameter").Parameters.Single();
-			Assert.IsTrue(p.IsOptional);
-			Assert.AreEqual(ReferenceKind.None, p.ReferenceKind);
-			Assert.IsFalse(p.IsParams);
-			Assert.IsTrue(p.HasConstantValueInSignature);
-			Assert.AreEqual(0, p.GetAttributes().Count());
-			Assert.AreEqual(4, p.GetConstantValue());
+			Assert.That(p.IsOptional);
+			Assert.That(p.ReferenceKind, Is.EqualTo(ReferenceKind.None));
+			Assert.That(!p.IsParams);
+			Assert.That(p.HasConstantValueInSignature);
+			Assert.That(p.GetAttributes().Count(), Is.EqualTo(0));
+			Assert.That(p.GetConstantValue(), Is.EqualTo(4));
 		}
 
 		[Test]
 		public void MethodWithExplicitOptionalParameter()
 		{
 			IParameter p = GetTypeDefinition(typeof(ParameterTests)).Methods.Single(m => m.Name == "MethodWithExplicitOptionalParameter").Parameters.Single();
-			Assert.IsTrue(p.IsOptional);
-			Assert.AreEqual(ReferenceKind.None, p.ReferenceKind);
-			Assert.IsFalse(p.IsParams);
-			Assert.IsFalse(p.HasConstantValueInSignature);
+			Assert.That(p.IsOptional);
+			Assert.That(p.ReferenceKind, Is.EqualTo(ReferenceKind.None));
+			Assert.That(!p.IsParams);
+			Assert.That(!p.HasConstantValueInSignature);
 			// explicit optional parameter appears in type system if it's read from C#, but not when read from IL
 			//Assert.AreEqual(1, p.GetAttributes().Count());
 		}
@@ -800,103 +888,103 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		public void MethodWithEnumOptionalParameter()
 		{
 			IParameter p = GetTypeDefinition(typeof(ParameterTests)).Methods.Single(m => m.Name == "MethodWithEnumOptionalParameter").Parameters.Single();
-			Assert.IsTrue(p.IsOptional);
-			Assert.AreEqual(ReferenceKind.None, p.ReferenceKind);
-			Assert.IsFalse(p.IsParams);
-			Assert.IsTrue(p.HasConstantValueInSignature);
-			Assert.AreEqual(0, p.GetAttributes().Count());
-			Assert.AreEqual((int)StringComparison.OrdinalIgnoreCase, p.GetConstantValue());
+			Assert.That(p.IsOptional);
+			Assert.That(p.ReferenceKind, Is.EqualTo(ReferenceKind.None));
+			Assert.That(!p.IsParams);
+			Assert.That(p.HasConstantValueInSignature);
+			Assert.That(p.GetAttributes().Count(), Is.EqualTo(0));
+			Assert.That(p.GetConstantValue(), Is.EqualTo((int)StringComparison.OrdinalIgnoreCase));
 		}
 
 		[Test]
 		public void MethodWithOptionalNullableParameter()
 		{
 			IParameter p = GetTypeDefinition(typeof(ParameterTests)).Methods.Single(m => m.Name == "MethodWithOptionalNullableParameter").Parameters.Single();
-			Assert.IsTrue(p.IsOptional);
-			Assert.AreEqual(ReferenceKind.None, p.ReferenceKind);
-			Assert.IsFalse(p.IsParams);
-			Assert.IsTrue(p.HasConstantValueInSignature);
-			Assert.AreEqual(0, p.GetAttributes().Count());
-			Assert.IsNull(p.GetConstantValue());
+			Assert.That(p.IsOptional);
+			Assert.That(p.ReferenceKind, Is.EqualTo(ReferenceKind.None));
+			Assert.That(!p.IsParams);
+			Assert.That(p.HasConstantValueInSignature);
+			Assert.That(p.GetAttributes().Count(), Is.EqualTo(0));
+			Assert.That(p.GetConstantValue(), Is.Null);
 		}
 
 		[Test]
 		public void MethodWithOptionalLongParameter()
 		{
 			IParameter p = GetTypeDefinition(typeof(ParameterTests)).Methods.Single(m => m.Name == "MethodWithOptionalLongParameter").Parameters.Single();
-			Assert.IsTrue(p.IsOptional);
-			Assert.AreEqual(ReferenceKind.None, p.ReferenceKind);
-			Assert.IsFalse(p.IsParams);
-			Assert.IsTrue(p.HasConstantValueInSignature);
-			Assert.AreEqual(1L, p.GetConstantValue());
-			Assert.AreEqual(typeof(long), p.GetConstantValue().GetType());
+			Assert.That(p.IsOptional);
+			Assert.That(p.ReferenceKind, Is.EqualTo(ReferenceKind.None));
+			Assert.That(!p.IsParams);
+			Assert.That(p.HasConstantValueInSignature);
+			Assert.That(p.GetConstantValue(), Is.EqualTo(1L));
+			Assert.That(p.GetConstantValue().GetType(), Is.EqualTo(typeof(long)));
 		}
 
 		[Test]
 		public void MethodWithOptionalNullableLongParameter()
 		{
 			IParameter p = GetTypeDefinition(typeof(ParameterTests)).Methods.Single(m => m.Name == "MethodWithOptionalNullableLongParameter").Parameters.Single();
-			Assert.IsTrue(p.IsOptional);
-			Assert.AreEqual(ReferenceKind.None, p.ReferenceKind);
-			Assert.IsFalse(p.IsParams);
-			Assert.IsTrue(p.HasConstantValueInSignature);
-			Assert.AreEqual(1L, p.GetConstantValue());
-			Assert.AreEqual(typeof(long), p.GetConstantValue().GetType());
+			Assert.That(p.IsOptional);
+			Assert.That(p.ReferenceKind, Is.EqualTo(ReferenceKind.None));
+			Assert.That(!p.IsParams);
+			Assert.That(p.HasConstantValueInSignature);
+			Assert.That(p.GetConstantValue(), Is.EqualTo(1L));
+			Assert.That(p.GetConstantValue().GetType(), Is.EqualTo(typeof(long)));
 		}
 
 		[Test]
 		public void MethodWithOptionalDecimalParameter()
 		{
 			IParameter p = GetTypeDefinition(typeof(ParameterTests)).Methods.Single(m => m.Name == "MethodWithOptionalDecimalParameter").Parameters.Single();
-			Assert.IsTrue(p.IsOptional);
-			Assert.AreEqual(ReferenceKind.None, p.ReferenceKind);
-			Assert.IsFalse(p.IsParams);
-			Assert.IsTrue(p.HasConstantValueInSignature);
-			Assert.AreEqual(1M, p.GetConstantValue());
-			Assert.AreEqual(typeof(decimal), p.GetConstantValue().GetType());
+			Assert.That(p.IsOptional);
+			Assert.That(p.ReferenceKind, Is.EqualTo(ReferenceKind.None));
+			Assert.That(!p.IsParams);
+			Assert.That(p.HasConstantValueInSignature);
+			Assert.That(p.GetConstantValue(), Is.EqualTo(1M));
+			Assert.That(p.GetConstantValue().GetType(), Is.EqualTo(typeof(decimal)));
 		}
 
 		[Test]
 		public void VarArgsMethod()
 		{
 			IParameter p = GetTypeDefinition(typeof(ParameterTests)).Methods.Single(m => m.Name == "VarArgsMethod").Parameters.Single();
-			Assert.IsFalse(p.IsOptional);
-			Assert.AreEqual(ReferenceKind.None, p.ReferenceKind);
-			Assert.IsFalse(p.IsParams);
-			Assert.AreEqual(TypeKind.ArgList, p.Type.Kind);
-			Assert.AreEqual("", p.Name);
+			Assert.That(!p.IsOptional);
+			Assert.That(p.ReferenceKind, Is.EqualTo(ReferenceKind.None));
+			Assert.That(!p.IsParams);
+			Assert.That(p.Type.Kind, Is.EqualTo(TypeKind.ArgList));
+			Assert.That(p.Name, Is.EqualTo(""));
 		}
 
 		[Test]
 		public void VarArgsCtor()
 		{
 			IParameter p = GetTypeDefinition(typeof(VarArgsCtor)).Methods.Single(m => m.IsConstructor).Parameters.Single();
-			Assert.IsFalse(p.IsOptional);
-			Assert.AreEqual(ReferenceKind.None, p.ReferenceKind);
-			Assert.IsFalse(p.IsParams);
-			Assert.AreEqual(TypeKind.ArgList, p.Type.Kind);
-			Assert.AreEqual("", p.Name);
+			Assert.That(!p.IsOptional);
+			Assert.That(p.ReferenceKind, Is.EqualTo(ReferenceKind.None));
+			Assert.That(!p.IsParams);
+			Assert.That(p.Type.Kind, Is.EqualTo(TypeKind.ArgList));
+			Assert.That(p.Name, Is.EqualTo(""));
 		}
 
 		[Test]
 		public void GenericDelegate_Variance()
 		{
 			ITypeDefinition type = GetTypeDefinition(typeof(GenericDelegate<,>));
-			Assert.AreEqual(VarianceModifier.Contravariant, type.TypeParameters[0].Variance);
-			Assert.AreEqual(VarianceModifier.Covariant, type.TypeParameters[1].Variance);
+			Assert.That(type.TypeParameters[0].Variance, Is.EqualTo(VarianceModifier.Contravariant));
+			Assert.That(type.TypeParameters[1].Variance, Is.EqualTo(VarianceModifier.Covariant));
 
-			Assert.AreSame(type.TypeParameters[1], type.TypeParameters[0].DirectBaseTypes.FirstOrDefault());
+			Assert.That(type.TypeParameters[0].DirectBaseTypes.FirstOrDefault(), Is.SameAs(type.TypeParameters[1]));
 		}
 
 		[Test]
 		public void GenericDelegate_ReferenceTypeConstraints()
 		{
 			ITypeDefinition type = GetTypeDefinition(typeof(GenericDelegate<,>));
-			Assert.IsFalse(type.TypeParameters[0].HasReferenceTypeConstraint);
-			Assert.IsTrue(type.TypeParameters[1].HasReferenceTypeConstraint);
+			Assert.That(!type.TypeParameters[0].HasReferenceTypeConstraint);
+			Assert.That(type.TypeParameters[1].HasReferenceTypeConstraint);
 
-			Assert.IsNull(type.TypeParameters[0].IsReferenceType);
-			Assert.AreEqual(true, type.TypeParameters[1].IsReferenceType);
+			Assert.That(type.TypeParameters[0].IsReferenceType, Is.Null);
+			Assert.That(type.TypeParameters[1].IsReferenceType, Is.EqualTo(true));
 		}
 
 		[Test]
@@ -904,9 +992,9 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			IType type = compilation.FindType(typeof(GenericDelegate<string, object>));
 			IMethod m = type.GetDelegateInvokeMethod();
-			Assert.AreEqual("Invoke", m.Name);
-			Assert.AreEqual("System.Object", m.ReturnType.FullName);
-			Assert.AreEqual("System.String", m.Parameters[0].Type.FullName);
+			Assert.That(m.Name, Is.EqualTo("Invoke"));
+			Assert.That(m.ReturnType.FullName, Is.EqualTo("System.Object"));
+			Assert.That(m.Parameters[0].Type.FullName, Is.EqualTo("System.String"));
 		}
 
 		[Test]
@@ -914,14 +1002,14 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition type = GetTypeDefinition(typeof(IAssemblyEnum));
 			// [ComImport]
-			Assert.AreEqual(1, type.GetAttributes().Count(a => a.AttributeType.FullName == typeof(ComImportAttribute).FullName));
+			Assert.That(type.GetAttributes().Count(a => a.AttributeType.FullName == typeof(ComImportAttribute).FullName), Is.EqualTo(1));
 
 			IMethod m = type.Methods.Single();
-			Assert.AreEqual("GetNextAssembly", m.Name);
-			Assert.AreEqual(Accessibility.Public, m.Accessibility);
-			Assert.IsTrue(m.IsAbstract);
-			Assert.IsFalse(m.IsVirtual);
-			Assert.IsFalse(m.IsSealed);
+			Assert.That(m.Name, Is.EqualTo("GetNextAssembly"));
+			Assert.That(m.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(m.IsAbstract);
+			Assert.That(!m.IsVirtual);
+			Assert.That(!m.IsSealed);
 		}
 
 		[Test]
@@ -933,9 +1021,9 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 			IField field3 = type.Fields.Single(f => f.Name == "Field3");
 
 			// types must be self-parameterized
-			Assert.AreEqual("ICSharpCode.Decompiler.Tests.TypeSystem.OuterGeneric`1+Inner[[`0]]", field1.Type.ReflectionName);
-			Assert.AreEqual("ICSharpCode.Decompiler.Tests.TypeSystem.OuterGeneric`1+Inner[[`0]]", field2.Type.ReflectionName);
-			Assert.AreEqual("ICSharpCode.Decompiler.Tests.TypeSystem.OuterGeneric`1+Inner[[ICSharpCode.Decompiler.Tests.TypeSystem.OuterGeneric`1+Inner[[`0]]]]", field3.Type.ReflectionName);
+			Assert.That(field1.Type.ReflectionName, Is.EqualTo("ICSharpCode.Decompiler.Tests.TypeSystem.OuterGeneric`1+Inner[[`0]]"));
+			Assert.That(field2.Type.ReflectionName, Is.EqualTo("ICSharpCode.Decompiler.Tests.TypeSystem.OuterGeneric`1+Inner[[`0]]"));
+			Assert.That(field3.Type.ReflectionName, Is.EqualTo("ICSharpCode.Decompiler.Tests.TypeSystem.OuterGeneric`1+Inner[[ICSharpCode.Decompiler.Tests.TypeSystem.OuterGeneric`1+Inner[[`0]]]]"));
 		}
 
 		[Test]
@@ -943,67 +1031,67 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition type = GetTypeDefinition(typeof(IInterfaceWithProperty));
 			var p = type.Properties.Single();
-			Assert.AreEqual(false, p.IsIndexer);
-			Assert.AreEqual(true, p.IsAbstract);
-			Assert.AreEqual(true, p.IsOverridable);
-			Assert.AreEqual(false, p.IsOverride);
-			Assert.AreEqual(Accessibility.Public, p.Accessibility);
-			Assert.AreEqual(true, p.Getter.IsAbstract);
-			Assert.AreEqual(true, p.Getter.IsOverridable);
-			Assert.AreEqual(false, p.Getter.IsOverride);
-			Assert.AreEqual(Accessibility.Public, p.Getter.Accessibility);
-			Assert.AreEqual(false, p.Getter.HasBody);
-			Assert.AreEqual(true, p.Setter.IsAbstract);
-			Assert.AreEqual(true, p.Setter.IsOverridable);
-			Assert.AreEqual(false, p.Setter.IsOverride);
-			Assert.AreEqual(Accessibility.Public, p.Setter.Accessibility);
-			Assert.AreEqual(false, p.Setter.HasBody);
+			Assert.That(p.IsIndexer, Is.EqualTo(false));
+			Assert.That(p.IsAbstract, Is.EqualTo(true));
+			Assert.That(p.IsOverridable, Is.EqualTo(true));
+			Assert.That(p.IsOverride, Is.EqualTo(false));
+			Assert.That(p.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(p.Getter.IsAbstract, Is.EqualTo(true));
+			Assert.That(p.Getter.IsOverridable, Is.EqualTo(true));
+			Assert.That(p.Getter.IsOverride, Is.EqualTo(false));
+			Assert.That(p.Getter.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(p.Getter.HasBody, Is.EqualTo(false));
+			Assert.That(p.Setter.IsAbstract, Is.EqualTo(true));
+			Assert.That(p.Setter.IsOverridable, Is.EqualTo(true));
+			Assert.That(p.Setter.IsOverride, Is.EqualTo(false));
+			Assert.That(p.Setter.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(p.Setter.HasBody, Is.EqualTo(false));
 
 			type = GetTypeDefinition(typeof(IInterfaceWithIndexers));
 			p = type.Properties.Single(x => x.Parameters.Count == 2);
-			Assert.AreEqual(true, p.IsIndexer);
-			Assert.AreEqual(true, p.IsAbstract);
-			Assert.AreEqual(true, p.IsOverridable);
-			Assert.AreEqual(false, p.IsOverride);
-			Assert.AreEqual(Accessibility.Public, p.Accessibility);
-			Assert.AreEqual(true, p.Getter.IsAbstract);
-			Assert.AreEqual(true, p.Getter.IsOverridable);
-			Assert.AreEqual(false, p.Getter.IsOverride);
-			Assert.AreEqual(Accessibility.Public, p.Getter.Accessibility);
-			Assert.AreEqual(true, p.Setter.IsAbstract);
-			Assert.AreEqual(true, p.Setter.IsOverridable);
-			Assert.AreEqual(false, p.Setter.IsOverride);
-			Assert.AreEqual(Accessibility.Public, p.Setter.Accessibility);
+			Assert.That(p.IsIndexer, Is.EqualTo(true));
+			Assert.That(p.IsAbstract, Is.EqualTo(true));
+			Assert.That(p.IsOverridable, Is.EqualTo(true));
+			Assert.That(p.IsOverride, Is.EqualTo(false));
+			Assert.That(p.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(p.Getter.IsAbstract, Is.EqualTo(true));
+			Assert.That(p.Getter.IsOverridable, Is.EqualTo(true));
+			Assert.That(p.Getter.IsOverride, Is.EqualTo(false));
+			Assert.That(p.Getter.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(p.Setter.IsAbstract, Is.EqualTo(true));
+			Assert.That(p.Setter.IsOverridable, Is.EqualTo(true));
+			Assert.That(p.Setter.IsOverride, Is.EqualTo(false));
+			Assert.That(p.Setter.Accessibility, Is.EqualTo(Accessibility.Public));
 
 			type = GetTypeDefinition(typeof(IHasEvent));
 			var e = type.Events.Single();
-			Assert.AreEqual(true, e.IsAbstract);
-			Assert.AreEqual(true, e.IsOverridable);
-			Assert.AreEqual(false, e.IsOverride);
-			Assert.AreEqual(Accessibility.Public, e.Accessibility);
-			Assert.AreEqual(true, e.AddAccessor.IsAbstract);
-			Assert.AreEqual(true, e.AddAccessor.IsOverridable);
-			Assert.AreEqual(false, e.AddAccessor.IsOverride);
-			Assert.AreEqual(Accessibility.Public, e.AddAccessor.Accessibility);
-			Assert.AreEqual(true, e.RemoveAccessor.IsAbstract);
-			Assert.AreEqual(true, e.RemoveAccessor.IsOverridable);
-			Assert.AreEqual(false, e.RemoveAccessor.IsOverride);
-			Assert.AreEqual(Accessibility.Public, e.RemoveAccessor.Accessibility);
+			Assert.That(e.IsAbstract, Is.EqualTo(true));
+			Assert.That(e.IsOverridable, Is.EqualTo(true));
+			Assert.That(e.IsOverride, Is.EqualTo(false));
+			Assert.That(e.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(e.AddAccessor.IsAbstract, Is.EqualTo(true));
+			Assert.That(e.AddAccessor.IsOverridable, Is.EqualTo(true));
+			Assert.That(e.AddAccessor.IsOverride, Is.EqualTo(false));
+			Assert.That(e.AddAccessor.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(e.RemoveAccessor.IsAbstract, Is.EqualTo(true));
+			Assert.That(e.RemoveAccessor.IsOverridable, Is.EqualTo(true));
+			Assert.That(e.RemoveAccessor.IsOverride, Is.EqualTo(false));
+			Assert.That(e.RemoveAccessor.Accessibility, Is.EqualTo(Accessibility.Public));
 
 			type = GetTypeDefinition(typeof(IDisposable));
 			var m = type.Methods.Single();
-			Assert.AreEqual(true, m.IsAbstract);
-			Assert.AreEqual(true, m.IsOverridable);
-			Assert.AreEqual(false, m.IsOverride);
-			Assert.AreEqual(Accessibility.Public, m.Accessibility);
+			Assert.That(m.IsAbstract, Is.EqualTo(true));
+			Assert.That(m.IsOverridable, Is.EqualTo(true));
+			Assert.That(m.IsOverride, Is.EqualTo(false));
+			Assert.That(m.Accessibility, Is.EqualTo(Accessibility.Public));
 		}
 
 		[Test]
 		public void InnerClassInGenericClass_TypeParameterOwner()
 		{
 			ITypeDefinition type = GetTypeDefinition(typeof(OuterGeneric<>.Inner));
-			Assert.AreSame(type.DeclaringTypeDefinition.TypeParameters[0], type.TypeParameters[0]);
-			Assert.AreSame(type.DeclaringTypeDefinition, type.TypeParameters[0].Owner);
+			Assert.That(type.TypeParameters[0], Is.SameAs(type.DeclaringTypeDefinition.TypeParameters[0]));
+			Assert.That(type.TypeParameters[0].Owner, Is.SameAs(type.DeclaringTypeDefinition));
 		}
 
 		[Test]
@@ -1011,7 +1099,7 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition type = GetTypeDefinition(typeof(OuterGeneric<>.Inner));
 			IField f = type.Fields.Single();
-			Assert.AreEqual("ICSharpCode.Decompiler.Tests.TypeSystem.OuterGeneric`1[[`0]]", f.Type.ReflectionName);
+			Assert.That(f.Type.ReflectionName, Is.EqualTo("ICSharpCode.Decompiler.Tests.TypeSystem.OuterGeneric`1[[`0]]"));
 		}
 
 		[Test]
@@ -1019,14 +1107,14 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition type = GetTypeDefinition(typeof(OuterGeneric<>.Inner));
 			IParameter p = type.Methods.Single(m => m.IsConstructor).Parameters.Single();
-			Assert.AreEqual("ICSharpCode.Decompiler.Tests.TypeSystem.OuterGeneric`1[[`0]]", p.Type.ReflectionName);
+			Assert.That(p.Type.ReflectionName, Is.EqualTo("ICSharpCode.Decompiler.Tests.TypeSystem.OuterGeneric`1[[`0]]"));
 		}
 
 		CustomAttributeTypedArgument<IType> GetParamsAttributeArgument(int index)
 		{
 			ITypeDefinition type = GetTypeDefinition(typeof(ParamsAttribute));
 			var arr = (AttributeArray)type.GetAttributes().Single().FixedArguments.Single().Value;
-			Assert.AreEqual(5, arr.Length);
+			Assert.That(arr.Length, Is.EqualTo(5));
 			return arr[index];
 		}
 
@@ -1034,16 +1122,16 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		public void ParamsAttribute_Integer()
 		{
 			var arg = GetParamsAttributeArgument(0);
-			Assert.AreEqual("System.Int32", arg.Type.FullName);
-			Assert.AreEqual(1, arg.Value);
+			Assert.That(arg.Type.FullName, Is.EqualTo("System.Int32"));
+			Assert.That(arg.Value, Is.EqualTo(1));
 		}
 
 		[Test]
 		public void ParamsAttribute_Enum()
 		{
 			var arg = GetParamsAttributeArgument(1);
-			Assert.AreEqual("System.StringComparison", arg.Type.FullName);
-			Assert.AreEqual((int)StringComparison.CurrentCulture, arg.Value);
+			Assert.That(arg.Type.FullName, Is.EqualTo("System.StringComparison"));
+			Assert.That(arg.Value, Is.EqualTo((int)StringComparison.CurrentCulture));
 		}
 
 		[Test]
@@ -1051,23 +1139,23 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			var arg = GetParamsAttributeArgument(2);
 			//Assert.AreEqual("System.Object", arg.Type.FullName);
-			Assert.IsNull(arg.Value);
+			Assert.That(arg.Value, Is.Null);
 		}
 
 		[Test]
 		public void ParamsAttribute_Double()
 		{
 			var arg = GetParamsAttributeArgument(3);
-			Assert.AreEqual("System.Double", arg.Type.FullName);
-			Assert.AreEqual(4.0, arg.Value);
+			Assert.That(arg.Type.FullName, Is.EqualTo("System.Double"));
+			Assert.That(arg.Value, Is.EqualTo(4.0));
 		}
 
 		[Test]
 		public void ParamsAttribute_String()
 		{
 			var arg = GetParamsAttributeArgument(4);
-			Assert.AreEqual("System.String", arg.Type.FullName);
-			Assert.AreEqual("Test", arg.Value);
+			Assert.That(arg.Type.FullName, Is.EqualTo("System.String"));
+			Assert.That(arg.Value, Is.EqualTo("Test"));
 		}
 
 		[Test]
@@ -1076,15 +1164,15 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 			ITypeDefinition type = GetTypeDefinition(typeof(ParamsAttribute));
 			IProperty prop = type.Properties.Single(p => p.Name == "Property");
 			var attr = prop.GetAttributes().Single();
-			Assert.AreEqual(type, attr.AttributeType);
+			Assert.That(attr.AttributeType, Is.EqualTo(type));
 
 			var elements = (AttributeArray)attr.FixedArguments.Single().Value;
-			Assert.AreEqual(0, elements.Length);
+			Assert.That(elements.Length, Is.EqualTo(0));
 
 			var namedArg = attr.NamedArguments.Single();
-			Assert.AreEqual(prop.Name, namedArg.Name);
+			Assert.That(namedArg.Name, Is.EqualTo(prop.Name));
 			var arrayElements = (AttributeArray)namedArg.Value;
-			Assert.AreEqual(2, arrayElements.Length);
+			Assert.That(arrayElements.Length, Is.EqualTo(2));
 		}
 
 		[Test]
@@ -1092,8 +1180,8 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition type = GetTypeDefinition(typeof(ParamsAttribute));
 			IProperty prop = type.Properties.Single(p => p.Name == "Property");
-			Assert.AreEqual(0, prop.Getter.GetAttributes().Count());
-			Assert.AreEqual(1, prop.Getter.GetReturnTypeAttributes().Count());
+			Assert.That(prop.Getter.GetAttributes().Count(), Is.EqualTo(0));
+			Assert.That(prop.Getter.GetReturnTypeAttributes().Count(), Is.EqualTo(1));
 		}
 
 		[Test]
@@ -1101,8 +1189,8 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition type = GetTypeDefinition(typeof(DoubleAttribute));
 			var arg = type.GetAttributes().Single().FixedArguments.Single();
-			Assert.AreEqual("System.Double", arg.Type.ReflectionName);
-			Assert.AreEqual(1.0, arg.Value);
+			Assert.That(arg.Type.ReflectionName, Is.EqualTo("System.Double"));
+			Assert.That(arg.Value, Is.EqualTo(1.0));
 		}
 
 		/* TS no longer provides implicitly implemented interface members.
@@ -1125,24 +1213,24 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 			// https://github.com/icsharpcode/NRefactory/issues/20
 			ITypeDefinition type = GetTypeDefinition(typeof(ClassWithStaticAndNonStaticMembers));
 			var evt1 = type.Events.Single(e => e.Name == "Event1");
-			Assert.IsTrue(evt1.IsStatic);
-			Assert.IsTrue(evt1.AddAccessor.IsStatic);
-			Assert.IsTrue(evt1.RemoveAccessor.IsStatic);
+			Assert.That(evt1.IsStatic);
+			Assert.That(evt1.AddAccessor.IsStatic);
+			Assert.That(evt1.RemoveAccessor.IsStatic);
 
 			var evt2 = type.Events.Single(e => e.Name == "Event2");
-			Assert.IsFalse(evt2.IsStatic);
-			Assert.IsFalse(evt2.AddAccessor.IsStatic);
-			Assert.IsFalse(evt2.RemoveAccessor.IsStatic);
+			Assert.That(!evt2.IsStatic);
+			Assert.That(!evt2.AddAccessor.IsStatic);
+			Assert.That(!evt2.RemoveAccessor.IsStatic);
 
 			var evt3 = type.Events.Single(e => e.Name == "Event3");
-			Assert.IsTrue(evt3.IsStatic);
-			Assert.IsTrue(evt3.AddAccessor.IsStatic);
-			Assert.IsTrue(evt3.RemoveAccessor.IsStatic);
+			Assert.That(evt3.IsStatic);
+			Assert.That(evt3.AddAccessor.IsStatic);
+			Assert.That(evt3.RemoveAccessor.IsStatic);
 
 			var evt4 = type.Events.Single(e => e.Name == "Event4");
-			Assert.IsFalse(evt4.IsStatic);
-			Assert.IsFalse(evt4.AddAccessor.IsStatic);
-			Assert.IsFalse(evt4.RemoveAccessor.IsStatic);
+			Assert.That(!evt4.IsStatic);
+			Assert.That(!evt4.AddAccessor.IsStatic);
+			Assert.That(!evt4.RemoveAccessor.IsStatic);
 		}
 
 		[Test]
@@ -1151,24 +1239,24 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 			// https://github.com/icsharpcode/NRefactory/issues/20
 			ITypeDefinition type = GetTypeDefinition(typeof(ClassWithStaticAndNonStaticMembers));
 			var prop1 = type.Properties.Single(e => e.Name == "Prop1");
-			Assert.IsTrue(prop1.IsStatic);
-			Assert.IsTrue(prop1.Getter.IsStatic);
-			Assert.IsTrue(prop1.Setter.IsStatic);
+			Assert.That(prop1.IsStatic);
+			Assert.That(prop1.Getter.IsStatic);
+			Assert.That(prop1.Setter.IsStatic);
 
 			var prop2 = type.Properties.Single(e => e.Name == "Prop2");
-			Assert.IsFalse(prop2.IsStatic);
-			Assert.IsFalse(prop2.Getter.IsStatic);
-			Assert.IsFalse(prop2.Setter.IsStatic);
+			Assert.That(!prop2.IsStatic);
+			Assert.That(!prop2.Getter.IsStatic);
+			Assert.That(!prop2.Setter.IsStatic);
 
 			var prop3 = type.Properties.Single(e => e.Name == "Prop3");
-			Assert.IsTrue(prop3.IsStatic);
-			Assert.IsTrue(prop3.Getter.IsStatic);
-			Assert.IsTrue(prop3.Setter.IsStatic);
+			Assert.That(prop3.IsStatic);
+			Assert.That(prop3.Getter.IsStatic);
+			Assert.That(prop3.Setter.IsStatic);
 
 			var prop4 = type.Properties.Single(e => e.Name == "Prop4");
-			Assert.IsFalse(prop4.IsStatic);
-			Assert.IsFalse(prop4.Getter.IsStatic);
-			Assert.IsFalse(prop4.Setter.IsStatic);
+			Assert.That(!prop4.IsStatic);
+			Assert.That(!prop4.Getter.IsStatic);
+			Assert.That(!prop4.Setter.IsStatic);
 		}
 
 		[Test]
@@ -1177,8 +1265,8 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 			ITypeDefinition type = GetTypeDefinition(typeof(ClassWithStaticAndNonStaticMembers));
 			foreach (var prop in type.Properties)
 			{
-				Assert.IsTrue(prop.Getter.HasBody, prop.Getter.Name);
-				Assert.IsTrue(prop.Setter.HasBody, prop.Setter.Name);
+				Assert.That(prop.Getter.HasBody, prop.Getter.Name);
+				Assert.That(prop.Setter.HasBody, prop.Setter.Name);
 			}
 		}
 
@@ -1187,12 +1275,12 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition type = GetTypeDefinition(typeof(ClassWithStaticAndNonStaticMembers));
 			var customEvent = type.Events.Single(e => e.Name == "Event1");
-			Assert.AreEqual("add_Event1", customEvent.AddAccessor.Name);
-			Assert.AreEqual("remove_Event1", customEvent.RemoveAccessor.Name);
+			Assert.That(customEvent.AddAccessor.Name, Is.EqualTo("add_Event1"));
+			Assert.That(customEvent.RemoveAccessor.Name, Is.EqualTo("remove_Event1"));
 
 			var normalEvent = type.Events.Single(e => e.Name == "Event3");
-			Assert.AreEqual("add_Event3", normalEvent.AddAccessor.Name);
-			Assert.AreEqual("remove_Event3", normalEvent.RemoveAccessor.Name);
+			Assert.That(normalEvent.AddAccessor.Name, Is.EqualTo("add_Event3"));
+			Assert.That(normalEvent.RemoveAccessor.Name, Is.EqualTo("remove_Event3"));
 		}
 
 		[Test]
@@ -1201,8 +1289,8 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 			ITypeDefinition type = GetTypeDefinition(typeof(ClassWithStaticAndNonStaticMembers));
 			foreach (var ev in type.Events)
 			{
-				Assert.IsTrue(ev.AddAccessor.HasBody, ev.AddAccessor.Name);
-				Assert.IsTrue(ev.RemoveAccessor.HasBody, ev.RemoveAccessor.Name);
+				Assert.That(ev.AddAccessor.HasBody, ev.AddAccessor.Name);
+				Assert.That(ev.RemoveAccessor.HasBody, ev.RemoveAccessor.Name);
 			}
 		}
 
@@ -1260,8 +1348,8 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition type = GetTypeDefinition(typeof(ClassThatOverridesGetterOnly));
 			var prop = type.Properties.Single(p => p.Name == "Prop");
-			Assert.AreEqual(Accessibility.Public, prop.Accessibility);
-			Assert.AreEqual(Accessibility.Public, prop.Getter.Accessibility);
+			Assert.That(prop.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(prop.Getter.Accessibility, Is.EqualTo(Accessibility.Public));
 		}
 
 		[Test]
@@ -1269,8 +1357,8 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition type = GetTypeDefinition(typeof(ClassThatOverridesSetterOnly));
 			var prop = type.Properties.Single(p => p.Name == "Prop");
-			Assert.AreEqual(Accessibility.Public, prop.Accessibility);
-			Assert.AreEqual(Accessibility.Protected, prop.Setter.Accessibility);
+			Assert.That(prop.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(prop.Setter.Accessibility, Is.EqualTo(Accessibility.Protected));
 		}
 
 		/* TS no longer provides implicit interface impls
@@ -1290,9 +1378,9 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition type = GetTypeDefinition(typeof(ClassThatImplementsProperty));
 			var prop = type.Properties.Single(p => p.Name == "Prop");
-			Assert.IsFalse(prop.IsVirtual);
-			Assert.IsFalse(prop.IsOverridable);
-			Assert.IsFalse(prop.IsSealed);
+			Assert.That(!prop.IsVirtual);
+			Assert.That(!prop.IsOverridable);
+			Assert.That(!prop.IsSealed);
 		}
 
 		[Test]
@@ -1300,10 +1388,10 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition type = GetTypeDefinition(typeof(ClassThatOverridesAndSealsVirtualProperty));
 			var prop = type.Properties.Single(p => p.Name == "Prop");
-			Assert.IsFalse(prop.IsVirtual);
-			Assert.IsTrue(prop.IsOverride);
-			Assert.IsTrue(prop.IsSealed);
-			Assert.IsFalse(prop.IsOverridable);
+			Assert.That(!prop.IsVirtual);
+			Assert.That(prop.IsOverride);
+			Assert.That(prop.IsSealed);
+			Assert.That(!prop.IsOverridable);
 		}
 
 		/* The TS no longer provides implicit interface impls.
@@ -1355,26 +1443,26 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition disposable = GetTypeDefinition(typeof(ExplicitDisposableImplementation));
 			IMethod method = disposable.Methods.Single(m => !m.IsConstructor);
-			Assert.IsTrue(method.IsExplicitInterfaceImplementation);
-			Assert.AreEqual("System.IDisposable.Dispose", method.ExplicitlyImplementedInterfaceMembers.Single().FullName);
+			Assert.That(method.IsExplicitInterfaceImplementation);
+			Assert.That(method.ExplicitlyImplementedInterfaceMembers.Single().FullName, Is.EqualTo("System.IDisposable.Dispose"));
 		}
 
 		[Test]
 		public void ExplicitImplementationOfUnifiedMethods()
 		{
 			IType type = compilation.FindType(typeof(ExplicitGenericInterfaceImplementationWithUnifiableMethods<int, int>));
-			Assert.AreEqual(2, type.GetMethods(m => m.IsExplicitInterfaceImplementation).Count());
+			Assert.That(type.GetMethods(m => m.IsExplicitInterfaceImplementation).Count(), Is.EqualTo(2));
 			foreach (IMethod method in type.GetMethods(m => m.IsExplicitInterfaceImplementation))
 			{
-				Assert.AreEqual(1, method.ExplicitlyImplementedInterfaceMembers.Count(), method.ToString());
-				Assert.AreEqual("System.Int32", method.Parameters.Single().Type.ReflectionName);
+				Assert.That(method.ExplicitlyImplementedInterfaceMembers.Count(), Is.EqualTo(1), method.ToString());
+				Assert.That(method.Parameters.Single().Type.ReflectionName, Is.EqualTo("System.Int32"));
 				IMethod interfaceMethod = (IMethod)method.ExplicitlyImplementedInterfaceMembers.Single();
-				Assert.AreEqual("System.Int32", interfaceMethod.Parameters.Single().Type.ReflectionName);
+				Assert.That(interfaceMethod.Parameters.Single().Type.ReflectionName, Is.EqualTo("System.Int32"));
 				var genericParamType = ((IMethod)method.MemberDefinition).Parameters.Single().Type;
 				var interfaceGenericParamType = ((IMethod)interfaceMethod.MemberDefinition).Parameters.Single().Type;
-				Assert.AreEqual(TypeKind.TypeParameter, genericParamType.Kind);
-				Assert.AreEqual(TypeKind.TypeParameter, interfaceGenericParamType.Kind);
-				Assert.AreEqual(genericParamType.ReflectionName, interfaceGenericParamType.ReflectionName);
+				Assert.That(genericParamType.Kind, Is.EqualTo(TypeKind.TypeParameter));
+				Assert.That(interfaceGenericParamType.Kind, Is.EqualTo(TypeKind.TypeParameter));
+				Assert.That(interfaceGenericParamType.ReflectionName, Is.EqualTo(genericParamType.ReflectionName));
 			}
 		}
 
@@ -1383,18 +1471,18 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition impl = GetTypeDefinition(typeof(ExplicitGenericInterfaceImplementation));
 			IType genericInterfaceOfString = compilation.FindType(typeof(IGenericInterface<string>));
-			IMethod implMethod1 = impl.Methods.Single(m => !m.IsConstructor && !m.Parameters[1].IsRef);
-			IMethod implMethod2 = impl.Methods.Single(m => !m.IsConstructor && m.Parameters[1].IsRef);
-			Assert.IsTrue(implMethod1.IsExplicitInterfaceImplementation);
-			Assert.IsTrue(implMethod2.IsExplicitInterfaceImplementation);
+			IMethod implMethod1 = impl.Methods.Single(m => !m.IsConstructor && m.Parameters[1].ReferenceKind == ReferenceKind.None);
+			IMethod implMethod2 = impl.Methods.Single(m => !m.IsConstructor && m.Parameters[1].ReferenceKind == ReferenceKind.Ref);
+			Assert.That(implMethod1.IsExplicitInterfaceImplementation);
+			Assert.That(implMethod2.IsExplicitInterfaceImplementation);
 
 			IMethod interfaceMethod1 = (IMethod)implMethod1.ExplicitlyImplementedInterfaceMembers.Single();
-			Assert.AreEqual(genericInterfaceOfString, interfaceMethod1.DeclaringType);
-			Assert.IsTrue(!interfaceMethod1.Parameters[1].IsRef);
+			Assert.That(interfaceMethod1.DeclaringType, Is.EqualTo(genericInterfaceOfString));
+			Assert.That(interfaceMethod1.Parameters[1].ReferenceKind == ReferenceKind.None);
 
 			IMethod interfaceMethod2 = (IMethod)implMethod2.ExplicitlyImplementedInterfaceMembers.Single();
-			Assert.AreEqual(genericInterfaceOfString, interfaceMethod2.DeclaringType);
-			Assert.IsTrue(interfaceMethod2.Parameters[1].IsRef);
+			Assert.That(interfaceMethod2.DeclaringType, Is.EqualTo(genericInterfaceOfString));
+			Assert.That(interfaceMethod2.Parameters[1].ReferenceKind == ReferenceKind.Ref);
 		}
 
 		[Test]
@@ -1412,9 +1500,9 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition type = GetTypeDefinition(typeof(ClassThatImplementsPropertyExplicitly));
 			var prop = type.Properties.Single();
-			Assert.IsTrue(prop.IsExplicitInterfaceImplementation);
-			Assert.IsTrue(prop.Getter.IsExplicitInterfaceImplementation);
-			Assert.IsTrue(prop.Setter.IsExplicitInterfaceImplementation);
+			Assert.That(prop.IsExplicitInterfaceImplementation);
+			Assert.That(prop.Getter.IsExplicitInterfaceImplementation);
+			Assert.That(prop.Setter.IsExplicitInterfaceImplementation);
 		}
 
 		/* The TS no longer provides implicit interface impls.
@@ -1474,9 +1562,9 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		public void StaticClassTest()
 		{
 			ITypeDefinition type = GetTypeDefinition(typeof(StaticClass));
-			Assert.IsTrue(type.IsAbstract);
-			Assert.IsTrue(type.IsSealed);
-			Assert.IsTrue(type.IsStatic);
+			Assert.That(type.IsAbstract);
+			Assert.That(type.IsSealed);
+			Assert.That(type.IsStatic);
 		}
 
 		[Test]
@@ -1485,18 +1573,18 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 			ITypeDefinition type = GetTypeDefinition(typeof(StaticClass));
 			var method = type.Methods.Single(m => m.Name == "Extension");
 
-			Assert.IsTrue(method.IsStatic);
-			Assert.IsTrue(method.IsExtensionMethod);
-			Assert.IsNull(method.ReducedFrom);
+			Assert.That(method.IsStatic);
+			Assert.That(method.IsExtensionMethod);
+			Assert.That(method.ReducedFrom, Is.Null);
 
-			Assert.IsTrue(type.HasExtensionMethods);
+			Assert.That(type.HasExtensions);
 		}
 
 		[Test]
 		public void NoDefaultConstructorOnStaticClassTest()
 		{
 			ITypeDefinition type = GetTypeDefinition(typeof(StaticClass));
-			Assert.AreEqual(0, type.GetConstructors().Count());
+			Assert.That(type.GetConstructors().Count(), Is.EqualTo(0));
 		}
 
 		[Test]
@@ -1504,7 +1592,7 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition type = GetTypeDefinition(typeof(IndexerNonDefaultName));
 			var indexer = type.GetProperties(p => p.IsIndexer).Single();
-			Assert.AreEqual("Foo", indexer.Name);
+			Assert.That(indexer.Name, Is.EqualTo("Foo"));
 		}
 
 		[Test]
@@ -1512,28 +1600,28 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition type = GetTypeDefinition(typeof(ClassWithMethodThatHasNullableDefaultParameter));
 			var method = type.GetMethods().Single(m => m.Name == "Foo");
-			Assert.AreEqual(42, method.Parameters.Single().GetConstantValue());
+			Assert.That(method.Parameters.Single().GetConstantValue(), Is.EqualTo(42));
 		}
 
 		[Test]
 		public void AccessibilityTests()
 		{
 			ITypeDefinition type = GetTypeDefinition(typeof(AccessibilityTest));
-			Assert.AreEqual(Accessibility.Public, type.Methods.Single(m => m.Name == "Public").Accessibility);
-			Assert.AreEqual(Accessibility.Internal, type.Methods.Single(m => m.Name == "Internal").Accessibility);
-			Assert.AreEqual(Accessibility.ProtectedOrInternal, type.Methods.Single(m => m.Name == "ProtectedInternal").Accessibility);
-			Assert.AreEqual(Accessibility.ProtectedOrInternal, type.Methods.Single(m => m.Name == "InternalProtected").Accessibility);
-			Assert.AreEqual(Accessibility.Protected, type.Methods.Single(m => m.Name == "Protected").Accessibility);
-			Assert.AreEqual(Accessibility.Private, type.Methods.Single(m => m.Name == "Private").Accessibility);
-			Assert.AreEqual(Accessibility.Private, type.Methods.Single(m => m.Name == "None").Accessibility);
+			Assert.That(type.Methods.Single(m => m.Name == "Public").Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(type.Methods.Single(m => m.Name == "Internal").Accessibility, Is.EqualTo(Accessibility.Internal));
+			Assert.That(type.Methods.Single(m => m.Name == "ProtectedInternal").Accessibility, Is.EqualTo(Accessibility.ProtectedOrInternal));
+			Assert.That(type.Methods.Single(m => m.Name == "InternalProtected").Accessibility, Is.EqualTo(Accessibility.ProtectedOrInternal));
+			Assert.That(type.Methods.Single(m => m.Name == "Protected").Accessibility, Is.EqualTo(Accessibility.Protected));
+			Assert.That(type.Methods.Single(m => m.Name == "Private").Accessibility, Is.EqualTo(Accessibility.Private));
+			Assert.That(type.Methods.Single(m => m.Name == "None").Accessibility, Is.EqualTo(Accessibility.Private));
 		}
 
 		private void AssertConstantField<T>(ITypeDefinition type, string name, T expected)
 		{
 			var f = type.GetFields().Single(x => x.Name == name);
-			Assert.IsTrue(f.IsConst);
-			Assert.AreEqual(expected, f.GetConstantValue());
-			Assert.AreEqual(0, f.GetAttributes().Count());
+			Assert.That(f.IsConst);
+			Assert.That(f.GetConstantValue(), Is.EqualTo(expected));
+			Assert.That(f.GetAttributes().Count(), Is.EqualTo(0));
 		}
 
 		[Test]
@@ -1553,7 +1641,6 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 			AssertConstantField<float>(type, "CNewf", new float());
 			AssertConstantField<decimal>(type, "CNewm", new decimal());
 		}
-
 
 		[Test]
 		public void ConstantFieldsSizeOf()
@@ -1579,8 +1666,8 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition type = GetTypeDefinition(typeof(ConstantFieldTest));
 			IField field = type.Fields.Single(f => f.Name == "EnumFromThisAssembly");
-			Assert.IsTrue(field.IsConst);
-			Assert.AreEqual((short)MyEnum.Second, field.GetConstantValue());
+			Assert.That(field.IsConst);
+			Assert.That(field.GetConstantValue(), Is.EqualTo((short)MyEnum.Second));
 		}
 
 		[Test]
@@ -1588,8 +1675,8 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition type = GetTypeDefinition(typeof(ConstantFieldTest));
 			IField field = type.Fields.Single(f => f.Name == "EnumFromAnotherAssembly");
-			Assert.IsTrue(field.IsConst);
-			Assert.AreEqual((int)StringComparison.OrdinalIgnoreCase, field.GetConstantValue());
+			Assert.That(field.IsConst);
+			Assert.That(field.GetConstantValue(), Is.EqualTo((int)StringComparison.OrdinalIgnoreCase));
 		}
 
 		[Test]
@@ -1597,8 +1684,8 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition type = GetTypeDefinition(typeof(ConstantFieldTest));
 			IField field = type.Fields.Single(f => f.Name == "DefaultOfEnum");
-			Assert.IsTrue(field.IsConst);
-			Assert.AreEqual((short)default(MyEnum), field.GetConstantValue());
+			Assert.That(field.IsConst);
+			Assert.That(field.GetConstantValue(), Is.EqualTo((short)default(MyEnum)));
 		}
 
 		[Test]
@@ -1610,43 +1697,42 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 			var methods = type.GetMethods(m => m.Name == "M" || m.Name.EndsWith(".M")).ToList();
 			var imethod = itype.GetMethods(m => m.Name == "M").Single();
 			Assert.That(methods.Select(m => m.ExplicitlyImplementedInterfaceMembers.Count()).ToList(), Is.EquivalentTo(new[] { 0, 1 }));
-			Assert.AreEqual(methods.SelectMany(m => m.ExplicitlyImplementedInterfaceMembers).Single(), imethod);
+			Assert.That(imethod, Is.EqualTo(methods.SelectMany(m => m.ExplicitlyImplementedInterfaceMembers).Single()));
 
 			var properties = type.GetProperties(p => p.Name == "P" || p.Name.EndsWith(".P")).ToList();
 			var iproperty = itype.GetProperties(m => m.Name == "P").Single();
 			Assert.That(properties.Select(p => p.ExplicitlyImplementedInterfaceMembers.Count()).ToList(), Is.EquivalentTo(new[] { 0, 1 }));
-			Assert.AreEqual(properties.SelectMany(p => p.ExplicitlyImplementedInterfaceMembers).Single(), iproperty);
+			Assert.That(iproperty, Is.EqualTo(properties.SelectMany(p => p.ExplicitlyImplementedInterfaceMembers).Single()));
 			Assert.That(properties.Select(p => p.Getter.ExplicitlyImplementedInterfaceMembers.Count()).ToList(), Is.EquivalentTo(new[] { 0, 1 }));
-			Assert.AreEqual(properties.SelectMany(p => p.Getter.ExplicitlyImplementedInterfaceMembers).Single(), iproperty.Getter);
+			Assert.That(iproperty.Getter, Is.EqualTo(properties.SelectMany(p => p.Getter.ExplicitlyImplementedInterfaceMembers).Single()));
 			Assert.That(properties.Select(p => p.Setter.ExplicitlyImplementedInterfaceMembers.Count()).ToList(), Is.EquivalentTo(new[] { 0, 1 }));
-			Assert.AreEqual(properties.SelectMany(p => p.Setter.ExplicitlyImplementedInterfaceMembers).Single(), iproperty.Setter);
+			Assert.That(iproperty.Setter, Is.EqualTo(properties.SelectMany(p => p.Setter.ExplicitlyImplementedInterfaceMembers).Single()));
 
 			var indexers = type.GetProperties(p => p.Name == "Item" || p.Name.EndsWith(".Item")).ToList();
 			var iindexer = itype.GetProperties(m => m.Name == "Item").Single();
 			Assert.That(indexers.Select(p => p.ExplicitlyImplementedInterfaceMembers.Count()).ToList(), Is.EquivalentTo(new[] { 0, 1 }));
-			Assert.AreEqual(indexers.SelectMany(p => p.ExplicitlyImplementedInterfaceMembers).Single(), iindexer);
+			Assert.That(iindexer, Is.EqualTo(indexers.SelectMany(p => p.ExplicitlyImplementedInterfaceMembers).Single()));
 			Assert.That(indexers.Select(p => p.Getter.ExplicitlyImplementedInterfaceMembers.Count()).ToList(), Is.EquivalentTo(new[] { 0, 1 }));
-			Assert.AreEqual(indexers.SelectMany(p => p.Getter.ExplicitlyImplementedInterfaceMembers).Single(), iindexer.Getter);
+			Assert.That(iindexer.Getter, Is.EqualTo(indexers.SelectMany(p => p.Getter.ExplicitlyImplementedInterfaceMembers).Single()));
 			Assert.That(indexers.Select(p => p.Setter.ExplicitlyImplementedInterfaceMembers.Count()).ToList(), Is.EquivalentTo(new[] { 0, 1 }));
-			Assert.AreEqual(indexers.SelectMany(p => p.Setter.ExplicitlyImplementedInterfaceMembers).Single(), iindexer.Setter);
+			Assert.That(iindexer.Setter, Is.EqualTo(indexers.SelectMany(p => p.Setter.ExplicitlyImplementedInterfaceMembers).Single()));
 
 			var events = type.GetEvents(e => e.Name == "E" || e.Name.EndsWith(".E")).ToList();
 			var ievent = itype.GetEvents(m => m.Name == "E").Single();
 			Assert.That(events.Select(e => e.ExplicitlyImplementedInterfaceMembers.Count()).ToList(), Is.EquivalentTo(new[] { 0, 1 }));
-			Assert.AreEqual(events.SelectMany(e => e.ExplicitlyImplementedInterfaceMembers).Single(), ievent);
+			Assert.That(ievent, Is.EqualTo(events.SelectMany(e => e.ExplicitlyImplementedInterfaceMembers).Single()));
 			Assert.That(events.Select(e => e.AddAccessor.ExplicitlyImplementedInterfaceMembers.Count()).ToList(), Is.EquivalentTo(new[] { 0, 1 }));
-			Assert.AreEqual(events.SelectMany(e => e.AddAccessor.ExplicitlyImplementedInterfaceMembers).Single(), ievent.AddAccessor);
+			Assert.That(ievent.AddAccessor, Is.EqualTo(events.SelectMany(e => e.AddAccessor.ExplicitlyImplementedInterfaceMembers).Single()));
 			Assert.That(events.Select(e => e.RemoveAccessor.ExplicitlyImplementedInterfaceMembers.Count()).ToList(), Is.EquivalentTo(new[] { 0, 1 }));
-			Assert.AreEqual(events.SelectMany(e => e.RemoveAccessor.ExplicitlyImplementedInterfaceMembers).Single(), ievent.RemoveAccessor);
+			Assert.That(ievent.RemoveAccessor, Is.EqualTo(events.SelectMany(e => e.RemoveAccessor.ExplicitlyImplementedInterfaceMembers).Single()));
 		}
 
 		[Test]
 		public void MarshalTests()
 		{
 			ITypeDefinition c = compilation.FindType(typeof(IMarshalAsTests)).GetDefinition();
-			Assert.AreEqual(1, c.GetMethods(m => m.Name == "GetCollectionByQuery2").Count());
+			Assert.That(c.GetMethods(m => m.Name == "GetCollectionByQuery2").Count(), Is.EqualTo(1));
 		}
-
 
 		[Test]
 		public void AttributesUsingNestedMembers()
@@ -1655,33 +1741,33 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 			var inner = type.GetNestedTypes().Single(t => t.Name == "Inner");
 			var myAttribute = type.GetNestedTypes().Single(t => t.Name == "MyAttribute");
 			var typeTypeTestAttr = type.GetAttributes().Single(a => a.AttributeType.Name == "TypeTestAttribute");
-			Assert.AreEqual(42, typeTypeTestAttr.FixedArguments[0].Value);
-			Assert.AreEqual(inner, typeTypeTestAttr.FixedArguments[1].Value);
+			Assert.That(typeTypeTestAttr.FixedArguments[0].Value, Is.EqualTo(42));
+			Assert.That(typeTypeTestAttr.FixedArguments[1].Value, Is.EqualTo(inner));
 			var typeMyAttr = type.GetAttributes().Single(a => a.AttributeType.Name == "MyAttribute");
-			Assert.AreEqual(myAttribute, typeMyAttr.AttributeType);
+			Assert.That(typeMyAttr.AttributeType, Is.EqualTo(myAttribute));
 
 			var prop = type.GetProperties().Single(p => p.Name == "P");
 			var propTypeTestAttr = prop.GetAttributes().Single(a => a.AttributeType.Name == "TypeTestAttribute");
-			Assert.AreEqual(42, propTypeTestAttr.FixedArguments[0].Value);
-			Assert.AreEqual(inner, propTypeTestAttr.FixedArguments[1].Value);
+			Assert.That(propTypeTestAttr.FixedArguments[0].Value, Is.EqualTo(42));
+			Assert.That(propTypeTestAttr.FixedArguments[1].Value, Is.EqualTo(inner));
 			var propMyAttr = prop.GetAttributes().Single(a => a.AttributeType.Name == "MyAttribute");
-			Assert.AreEqual(myAttribute, propMyAttr.AttributeType);
+			Assert.That(propMyAttr.AttributeType, Is.EqualTo(myAttribute));
 
 			var attributedInner = (ITypeDefinition)type.GetNestedTypes().Single(t => t.Name == "AttributedInner");
 			var innerTypeTestAttr = attributedInner.GetAttributes().Single(a => a.AttributeType.Name == "TypeTestAttribute");
-			Assert.AreEqual(42, innerTypeTestAttr.FixedArguments[0].Value);
-			Assert.AreEqual(inner, innerTypeTestAttr.FixedArguments[1].Value);
+			Assert.That(innerTypeTestAttr.FixedArguments[0].Value, Is.EqualTo(42));
+			Assert.That(innerTypeTestAttr.FixedArguments[1].Value, Is.EqualTo(inner));
 			var innerMyAttr = attributedInner.GetAttributes().Single(a => a.AttributeType.Name == "MyAttribute");
-			Assert.AreEqual(myAttribute, innerMyAttr.AttributeType);
+			Assert.That(innerMyAttr.AttributeType, Is.EqualTo(myAttribute));
 
 			var attributedInner2 = (ITypeDefinition)type.GetNestedTypes().Single(t => t.Name == "AttributedInner2");
 			var inner2 = attributedInner2.GetNestedTypes().Single(t => t.Name == "Inner");
 			var myAttribute2 = attributedInner2.GetNestedTypes().Single(t => t.Name == "MyAttribute");
 			var inner2TypeTestAttr = attributedInner2.GetAttributes().Single(a => a.AttributeType.Name == "TypeTestAttribute");
-			Assert.AreEqual(43, inner2TypeTestAttr.FixedArguments[0].Value);
-			Assert.AreEqual(inner2, inner2TypeTestAttr.FixedArguments[1].Value);
+			Assert.That(inner2TypeTestAttr.FixedArguments[0].Value, Is.EqualTo(43));
+			Assert.That(inner2TypeTestAttr.FixedArguments[1].Value, Is.EqualTo(inner2));
 			var inner2MyAttr = attributedInner2.GetAttributes().Single(a => a.AttributeType.Name == "MyAttribute");
-			Assert.AreEqual(myAttribute2, inner2MyAttr.AttributeType);
+			Assert.That(inner2MyAttr.AttributeType, Is.EqualTo(myAttribute2));
 		}
 
 		[Test]
@@ -1689,7 +1775,7 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			var tp = GetTypeDefinition(typeof(ClassWithAttributeOnTypeParameter<>)).TypeParameters.Single();
 			var attr = tp.GetAttributes().Single();
-			Assert.AreEqual("DoubleAttribute", attr.AttributeType.Name);
+			Assert.That(attr.AttributeType.Name, Is.EqualTo("DoubleAttribute"));
 		}
 
 		[Test]
@@ -1697,19 +1783,19 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition c = compilation.FindType(typeof(SystemException)).GetDefinition();
 			ITypeDefinition c2 = compilation.FindType(typeof(Exception)).GetDefinition();
-			Assert.IsNotNull(c, "c is null");
-			Assert.IsNotNull(c2, "c2 is null");
+			Assert.That(c, Is.Not.Null, "c is null");
+			Assert.That(c2, Is.Not.Null, "c2 is null");
 			//Assert.AreEqual(3, c.BaseTypes.Count); // Inherited interfaces are not reported by Cecil
 			// which matches the behaviour of our C#/VB parsers
-			Assert.AreEqual("System.Exception", c.DirectBaseTypes.First().FullName);
-			Assert.AreSame(c2, c.DirectBaseTypes.First());
+			Assert.That(c.DirectBaseTypes.First().FullName, Is.EqualTo("System.Exception"));
+			Assert.That(c.DirectBaseTypes.First(), Is.SameAs(c2));
 
 			string[] superTypes = c.GetAllBaseTypes().Select(t => t.ReflectionName).ToArray();
-			Assert.AreEqual(new string[] {
+			Assert.That(superTypes, Is.EqualTo(new string[] {
 								"System.Object",
 								"System.Runtime.Serialization.ISerializable", "System.Runtime.InteropServices._Exception",
 								"System.Exception", "System.SystemException"
-							}, superTypes);
+							}));
 		}
 
 		[Test]
@@ -1718,8 +1804,8 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 			ITypeDefinition c = compilation.FindType(typeof(Comparer<>)).GetDefinition();
 			IProperty def = c.Properties.Single(p => p.Name == "Default");
 			ParameterizedType pt = (ParameterizedType)def.ReturnType;
-			Assert.AreEqual("System.Collections.Generic.Comparer", pt.FullName);
-			Assert.AreEqual(c.TypeParameters[0], pt.TypeArguments[0]);
+			Assert.That(pt.FullName, Is.EqualTo("System.Collections.Generic.Comparer"));
+			Assert.That(pt.TypeArguments[0], Is.EqualTo(c.TypeParameters[0]));
 		}
 
 		[Test]
@@ -1727,17 +1813,17 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition c = compilation.FindType(typeof(IntPtr)).GetDefinition();
 			IMethod toPointer = c.Methods.Single(p => p.Name == "ToPointer");
-			Assert.AreEqual("System.Void*", toPointer.ReturnType.ReflectionName);
-			Assert.IsTrue(toPointer.ReturnType is PointerType);
-			Assert.AreEqual("System.Void", ((PointerType)toPointer.ReturnType).ElementType.FullName);
+			Assert.That(toPointer.ReturnType.ReflectionName, Is.EqualTo("System.Void*"));
+			Assert.That(toPointer.ReturnType is PointerType);
+			Assert.That(((PointerType)toPointer.ReturnType).ElementType.FullName, Is.EqualTo("System.Void"));
 		}
 
 		[Test]
 		public void DateTimeDefaultConstructor()
 		{
 			ITypeDefinition c = compilation.FindType(typeof(DateTime)).GetDefinition();
-			Assert.AreEqual(1, c.Methods.Count(m => m.IsConstructor && !m.IsStatic && m.Parameters.Count == 0));
-			Assert.AreEqual(1, c.GetConstructors().Count(m => m.Parameters.Count == 0));
+			Assert.That(c.Methods.Count(m => m.IsConstructor && !m.IsStatic && m.Parameters.Count == 0), Is.EqualTo(1));
+			Assert.That(c.GetConstructors().Count(m => m.Parameters.Count == 0), Is.EqualTo(1));
 		}
 
 		[Test]
@@ -1745,49 +1831,49 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition c = compilation.FindType(typeof(EncodingInfo)).GetDefinition();
 			// EncodingInfo only has an internal constructor
-			Assert.IsFalse(c.Methods.Any(m => m.IsConstructor));
+			Assert.That(!c.Methods.Any(m => m.IsConstructor));
 			// and no implicit ctor should be added:
-			Assert.AreEqual(0, c.GetConstructors().Count());
+			Assert.That(c.GetConstructors().Count(), Is.EqualTo(0));
 		}
 
 		[Test]
 		public void StaticModifierTest()
 		{
 			ITypeDefinition c = compilation.FindType(typeof(Environment)).GetDefinition();
-			Assert.IsNotNull(c, "System.Environment not found");
-			Assert.IsTrue(c.IsAbstract, "class should be abstract");
-			Assert.IsTrue(c.IsSealed, "class should be sealed");
-			Assert.IsTrue(c.IsStatic, "class should be static");
+			Assert.That(c, Is.Not.Null, "System.Environment not found");
+			Assert.That(c.IsAbstract, "class should be abstract");
+			Assert.That(c.IsSealed, "class should be sealed");
+			Assert.That(c.IsStatic, "class should be static");
 		}
 
 		[Test]
 		public void InnerClassReferenceTest()
 		{
 			ITypeDefinition c = compilation.FindType(typeof(Environment)).GetDefinition();
-			Assert.IsNotNull(c, "System.Environment not found");
+			Assert.That(c, Is.Not.Null, "System.Environment not found");
 			IType rt = c.Methods.First(m => m.Name == "GetFolderPath").Parameters[0].Type;
-			Assert.AreSame(c.NestedTypes.Single(ic => ic.Name == "SpecialFolder"), rt);
+			Assert.That(rt, Is.SameAs(c.NestedTypes.Single(ic => ic.Name == "SpecialFolder")));
 		}
 
 		[Test]
 		public void NestedTypesTest()
 		{
 			ITypeDefinition c = compilation.FindType(typeof(Environment.SpecialFolder)).GetDefinition();
-			Assert.IsNotNull(c, "c is null");
-			Assert.AreEqual("System.Environment.SpecialFolder", c.FullName);
-			Assert.AreEqual("System.Environment+SpecialFolder", c.ReflectionName);
+			Assert.That(c, Is.Not.Null, "c is null");
+			Assert.That(c.FullName, Is.EqualTo("System.Environment.SpecialFolder"));
+			Assert.That(c.ReflectionName, Is.EqualTo("System.Environment+SpecialFolder"));
 		}
 
 		[Test]
 		public void VoidHasNoMembers()
 		{
 			ITypeDefinition c = compilation.FindType(typeof(void)).GetDefinition();
-			Assert.IsNotNull(c, "System.Void not found");
-			Assert.AreEqual(TypeKind.Void, c.Kind);
-			Assert.AreEqual(0, c.GetMethods().Count());
-			Assert.AreEqual(0, c.GetProperties().Count());
-			Assert.AreEqual(0, c.GetEvents().Count());
-			Assert.AreEqual(0, c.GetFields().Count());
+			Assert.That(c, Is.Not.Null, "System.Void not found");
+			Assert.That(c.Kind, Is.EqualTo(TypeKind.Void));
+			Assert.That(c.GetMethods().Count(), Is.EqualTo(0));
+			Assert.That(c.GetProperties().Count(), Is.EqualTo(0));
+			Assert.That(c.GetEvents().Count(), Is.EqualTo(0));
+			Assert.That(c.GetFields().Count(), Is.EqualTo(0));
 		}
 
 		[Test]
@@ -1795,9 +1881,9 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition c = compilation.FindType(typeof(void)).GetDefinition();
 			var attr = c.GetAttributes().Single(a => a.AttributeType.FullName == "System.SerializableAttribute");
-			Assert.AreEqual(0, attr.Constructor.Parameters.Count);
-			Assert.AreEqual(0, attr.FixedArguments.Length);
-			Assert.AreEqual(0, attr.NamedArguments.Length);
+			Assert.That(attr.Constructor.Parameters.Count, Is.EqualTo(0));
+			Assert.That(attr.FixedArguments.Length, Is.EqualTo(0));
+			Assert.That(attr.NamedArguments.Length, Is.EqualTo(0));
 		}
 
 		[Test]
@@ -1805,12 +1891,12 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition c = compilation.FindType(typeof(void)).GetDefinition();
 			var attr = c.GetAttributes().Single(a => a.AttributeType.FullName == "System.Runtime.InteropServices.StructLayoutAttribute");
-			Assert.AreEqual(1, attr.Constructor.Parameters.Count);
-			Assert.AreEqual(1, attr.FixedArguments.Length);
-			Assert.AreEqual(0, attr.FixedArguments[0].Value);
-			Assert.AreEqual(1, attr.NamedArguments.Length);
-			Assert.AreEqual("Size", attr.NamedArguments[0].Name);
-			Assert.AreEqual(1, attr.NamedArguments[0].Value);
+			Assert.That(attr.Constructor.Parameters.Count, Is.EqualTo(1));
+			Assert.That(attr.FixedArguments.Length, Is.EqualTo(1));
+			Assert.That(attr.FixedArguments[0].Value, Is.EqualTo(0));
+			Assert.That(attr.NamedArguments.Length, Is.EqualTo(1));
+			Assert.That(attr.NamedArguments[0].Name, Is.EqualTo("Size"));
+			Assert.That(attr.NamedArguments[0].Value, Is.EqualTo(1));
 		}
 
 		[Test]
@@ -1818,126 +1904,126 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			ITypeDefinition c = compilation.FindType(typeof(void)).GetDefinition();
 			var attr = c.GetAttributes().Single(a => a.AttributeType.FullName == "System.Runtime.InteropServices.ComVisibleAttribute");
-			Assert.AreEqual(1, attr.Constructor.Parameters.Count);
-			Assert.AreEqual(1, attr.FixedArguments.Length);
-			Assert.AreEqual(true, attr.FixedArguments[0].Value);
-			Assert.AreEqual(0, attr.NamedArguments.Length);
+			Assert.That(attr.Constructor.Parameters.Count, Is.EqualTo(1));
+			Assert.That(attr.FixedArguments.Length, Is.EqualTo(1));
+			Assert.That(attr.FixedArguments[0].Value, Is.EqualTo(true));
+			Assert.That(attr.NamedArguments.Length, Is.EqualTo(0));
 		}
 
 		[Test]
 		public void NestedClassInGenericClassTest()
 		{
 			ITypeDefinition dictionary = compilation.FindType(typeof(Dictionary<,>)).GetDefinition();
-			Assert.IsNotNull(dictionary);
+			Assert.That(dictionary, Is.Not.Null);
 			ITypeDefinition valueCollection = compilation.FindType(typeof(Dictionary<,>.ValueCollection)).GetDefinition();
-			Assert.IsNotNull(valueCollection);
+			Assert.That(valueCollection, Is.Not.Null);
 			var dictionaryRT = new ParameterizedType(dictionary, new[] { compilation.FindType(typeof(string)).GetDefinition(), compilation.FindType(typeof(int)).GetDefinition() });
 			IProperty valueProperty = dictionaryRT.GetProperties(p => p.Name == "Values").Single();
 			IType parameterizedValueCollection = valueProperty.ReturnType;
-			Assert.AreEqual("System.Collections.Generic.Dictionary`2+ValueCollection[[System.String],[System.Int32]]", parameterizedValueCollection.ReflectionName);
-			Assert.AreSame(valueCollection, parameterizedValueCollection.GetDefinition());
+			Assert.That(parameterizedValueCollection.ReflectionName, Is.EqualTo("System.Collections.Generic.Dictionary`2+ValueCollection[[System.String],[System.Int32]]"));
+			Assert.That(parameterizedValueCollection.GetDefinition(), Is.SameAs(valueCollection));
 		}
 
 		[Test]
 		public void ValueCollectionCountModifiers()
 		{
 			ITypeDefinition valueCollection = compilation.FindType(typeof(Dictionary<,>.ValueCollection)).GetDefinition();
-			Assert.AreEqual(Accessibility.Public, valueCollection.Accessibility);
-			Assert.IsTrue(valueCollection.IsSealed);
-			Assert.IsFalse(valueCollection.IsAbstract);
-			Assert.IsFalse(valueCollection.IsStatic);
+			Assert.That(valueCollection.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(valueCollection.IsSealed);
+			Assert.That(!valueCollection.IsAbstract);
+			Assert.That(!valueCollection.IsStatic);
 
 			IProperty count = valueCollection.Properties.Single(p => p.Name == "Count");
-			Assert.AreEqual(Accessibility.Public, count.Accessibility);
+			Assert.That(count.Accessibility, Is.EqualTo(Accessibility.Public));
 			// It's sealed on the IL level; but in C# it's just a normal non-virtual method that happens to implement an interface
-			Assert.IsFalse(count.IsSealed);
-			Assert.IsFalse(count.IsVirtual);
-			Assert.IsFalse(count.IsAbstract);
+			Assert.That(!count.IsSealed);
+			Assert.That(!count.IsVirtual);
+			Assert.That(!count.IsAbstract);
 		}
 
 		[Test]
 		public void MathAcosModifiers()
 		{
 			ITypeDefinition math = compilation.FindType(typeof(Math)).GetDefinition();
-			Assert.AreEqual(Accessibility.Public, math.Accessibility);
-			Assert.IsTrue(math.IsSealed);
-			Assert.IsTrue(math.IsAbstract);
-			Assert.IsTrue(math.IsStatic);
+			Assert.That(math.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(math.IsSealed);
+			Assert.That(math.IsAbstract);
+			Assert.That(math.IsStatic);
 
 			IMethod acos = math.Methods.Single(p => p.Name == "Acos");
-			Assert.AreEqual(Accessibility.Public, acos.Accessibility);
-			Assert.IsTrue(acos.IsStatic);
-			Assert.IsFalse(acos.IsAbstract);
-			Assert.IsFalse(acos.IsSealed);
-			Assert.IsFalse(acos.IsVirtual);
-			Assert.IsFalse(acos.IsOverride);
+			Assert.That(acos.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(acos.IsStatic);
+			Assert.That(!acos.IsAbstract);
+			Assert.That(!acos.IsSealed);
+			Assert.That(!acos.IsVirtual);
+			Assert.That(!acos.IsOverride);
 		}
 
 		[Test]
 		public void EncodingModifiers()
 		{
 			ITypeDefinition encoding = compilation.FindType(typeof(Encoding)).GetDefinition();
-			Assert.AreEqual(Accessibility.Public, encoding.Accessibility);
-			Assert.IsFalse(encoding.IsSealed);
-			Assert.IsTrue(encoding.IsAbstract);
+			Assert.That(encoding.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(!encoding.IsSealed);
+			Assert.That(encoding.IsAbstract);
 
 			IMethod getDecoder = encoding.Methods.Single(p => p.Name == "GetDecoder");
-			Assert.AreEqual(Accessibility.Public, getDecoder.Accessibility);
-			Assert.IsFalse(getDecoder.IsStatic);
-			Assert.IsFalse(getDecoder.IsAbstract);
-			Assert.IsFalse(getDecoder.IsSealed);
-			Assert.IsTrue(getDecoder.IsVirtual);
-			Assert.IsFalse(getDecoder.IsOverride);
+			Assert.That(getDecoder.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(!getDecoder.IsStatic);
+			Assert.That(!getDecoder.IsAbstract);
+			Assert.That(!getDecoder.IsSealed);
+			Assert.That(getDecoder.IsVirtual);
+			Assert.That(!getDecoder.IsOverride);
 
 			IMethod getMaxByteCount = encoding.Methods.Single(p => p.Name == "GetMaxByteCount");
-			Assert.AreEqual(Accessibility.Public, getMaxByteCount.Accessibility);
-			Assert.IsFalse(getMaxByteCount.IsStatic);
-			Assert.IsTrue(getMaxByteCount.IsAbstract);
-			Assert.IsFalse(getMaxByteCount.IsSealed);
-			Assert.IsFalse(getMaxByteCount.IsVirtual);
-			Assert.IsFalse(getMaxByteCount.IsOverride);
+			Assert.That(getMaxByteCount.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(!getMaxByteCount.IsStatic);
+			Assert.That(getMaxByteCount.IsAbstract);
+			Assert.That(!getMaxByteCount.IsSealed);
+			Assert.That(!getMaxByteCount.IsVirtual);
+			Assert.That(!getMaxByteCount.IsOverride);
 
 			IProperty encoderFallback = encoding.Properties.Single(p => p.Name == "EncoderFallback");
-			Assert.AreEqual(Accessibility.Public, encoderFallback.Accessibility);
-			Assert.IsFalse(encoderFallback.IsStatic);
-			Assert.IsFalse(encoderFallback.IsAbstract);
-			Assert.IsFalse(encoderFallback.IsSealed);
-			Assert.IsFalse(encoderFallback.IsVirtual);
-			Assert.IsFalse(encoderFallback.IsOverride);
+			Assert.That(encoderFallback.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(!encoderFallback.IsStatic);
+			Assert.That(!encoderFallback.IsAbstract);
+			Assert.That(!encoderFallback.IsSealed);
+			Assert.That(!encoderFallback.IsVirtual);
+			Assert.That(!encoderFallback.IsOverride);
 		}
 
 		[Test]
 		public void UnicodeEncodingModifiers()
 		{
 			ITypeDefinition encoding = compilation.FindType(typeof(UnicodeEncoding)).GetDefinition();
-			Assert.AreEqual(Accessibility.Public, encoding.Accessibility);
-			Assert.IsFalse(encoding.IsSealed);
-			Assert.IsFalse(encoding.IsAbstract);
+			Assert.That(encoding.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(!encoding.IsSealed);
+			Assert.That(!encoding.IsAbstract);
 
 			IMethod getDecoder = encoding.Methods.Single(p => p.Name == "GetDecoder");
-			Assert.AreEqual(Accessibility.Public, getDecoder.Accessibility);
-			Assert.IsFalse(getDecoder.IsStatic);
-			Assert.IsFalse(getDecoder.IsAbstract);
-			Assert.IsFalse(getDecoder.IsSealed);
-			Assert.IsFalse(getDecoder.IsVirtual);
-			Assert.IsTrue(getDecoder.IsOverride);
+			Assert.That(getDecoder.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(!getDecoder.IsStatic);
+			Assert.That(!getDecoder.IsAbstract);
+			Assert.That(!getDecoder.IsSealed);
+			Assert.That(!getDecoder.IsVirtual);
+			Assert.That(getDecoder.IsOverride);
 		}
 
 		[Test]
 		public void UTF32EncodingModifiers()
 		{
 			ITypeDefinition encoding = compilation.FindType(typeof(UTF32Encoding)).GetDefinition();
-			Assert.AreEqual(Accessibility.Public, encoding.Accessibility);
-			Assert.IsTrue(encoding.IsSealed);
-			Assert.IsFalse(encoding.IsAbstract);
+			Assert.That(encoding.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(encoding.IsSealed);
+			Assert.That(!encoding.IsAbstract);
 
 			IMethod getDecoder = encoding.Methods.Single(p => p.Name == "GetDecoder");
-			Assert.AreEqual(Accessibility.Public, getDecoder.Accessibility);
-			Assert.IsFalse(getDecoder.IsStatic);
-			Assert.IsFalse(getDecoder.IsAbstract);
-			Assert.IsFalse(getDecoder.IsSealed);
-			Assert.IsFalse(getDecoder.IsVirtual);
-			Assert.IsTrue(getDecoder.IsOverride);
+			Assert.That(getDecoder.Accessibility, Is.EqualTo(Accessibility.Public));
+			Assert.That(!getDecoder.IsStatic);
+			Assert.That(!getDecoder.IsAbstract);
+			Assert.That(!getDecoder.IsSealed);
+			Assert.That(!getDecoder.IsVirtual);
+			Assert.That(getDecoder.IsOverride);
 		}
 
 		[Test]
@@ -1945,24 +2031,24 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 		{
 			var compilationWithSystemCore = new SimpleCompilation(SystemCore, Mscorlib);
 
-			var typeRef = ReflectionHelper.ParseReflectionName("System.Func`2, System.Core");
-			ITypeDefinition c = typeRef.Resolve(new SimpleTypeResolveContext(compilationWithSystemCore)).GetDefinition();
-			Assert.IsNotNull(c, "System.Func<,> not found");
-			Assert.AreEqual("mscorlib", c.ParentModule.AssemblyName);
+			var type = ReflectionHelper.ParseReflectionName("System.Func`2, System.Core", new SimpleTypeResolveContext(compilationWithSystemCore));
+			ITypeDefinition c = type.GetDefinition();
+			Assert.That(c, Is.Not.Null, "System.Func<,> not found");
+			Assert.That(c.ParentModule.AssemblyName, Is.EqualTo("mscorlib"));
 		}
 
 		public void DelegateIsClass()
 		{
 			var @delegate = compilation.FindType(KnownTypeCode.Delegate).GetDefinition();
-			Assert.AreEqual(TypeKind.Class, @delegate);
-			Assert.IsFalse(@delegate.IsSealed);
+			Assert.That(@delegate, Is.EqualTo(TypeKind.Class));
+			Assert.That(!@delegate.IsSealed);
 		}
 
 		public void MulticastDelegateIsClass()
 		{
 			var multicastDelegate = compilation.FindType(KnownTypeCode.MulticastDelegate).GetDefinition();
-			Assert.AreEqual(TypeKind.Class, multicastDelegate);
-			Assert.IsFalse(multicastDelegate.IsSealed);
+			Assert.That(multicastDelegate, Is.EqualTo(TypeKind.Class));
+			Assert.That(!multicastDelegate.IsSealed);
 		}
 
 		[Test]
@@ -1978,13 +2064,31 @@ namespace ICSharpCode.Decompiler.Tests.TypeSystem
 			var @class = nonCustomAttributes.GetNestedTypes(t => t.Name == "SpecialNameClass").Single().GetDefinition();
 			var @struct = nonCustomAttributes.GetNestedTypes(t => t.Name == "SpecialNameStruct").Single().GetDefinition();
 
-			Assert.IsTrue(method.HasAttribute(KnownAttribute.SpecialName));
-			Assert.IsTrue(property.HasAttribute(KnownAttribute.SpecialName));
-			Assert.IsTrue(@event.HasAttribute(KnownAttribute.SpecialName));
-			Assert.IsTrue(field.HasAttribute(KnownAttribute.SpecialName));
+			Assert.That(method.HasAttribute(KnownAttribute.SpecialName));
+			Assert.That(property.HasAttribute(KnownAttribute.SpecialName));
+			Assert.That(@event.HasAttribute(KnownAttribute.SpecialName));
+			Assert.That(field.HasAttribute(KnownAttribute.SpecialName));
 
-			Assert.IsTrue(@class.HasAttribute(KnownAttribute.SpecialName));
-			Assert.IsTrue(@struct.HasAttribute(KnownAttribute.SpecialName));
+			Assert.That(@class.HasAttribute(KnownAttribute.SpecialName));
+			Assert.That(@struct.HasAttribute(KnownAttribute.SpecialName));
+		}
+
+		[Test]
+		public void ExtensionEverything()
+		{
+			var extensionEverything = GetTypeDefinition(typeof(ExtensionEverything));
+			Assert.That(extensionEverything.IsStatic, Is.True, "ExtensionEverything should be static");
+			Assert.That(extensionEverything.HasExtensions, Is.True, "ExtensionEverything should have extensions");
+			var info = extensionEverything.ExtensionInfo;
+			Assert.That(info, Is.Not.Null, "ExtensionEverything should have ExtensionInfo");
+			foreach (var method in extensionEverything.Methods)
+			{
+				Assert.That(method.IsStatic, Is.True, "Method should be static: " + method.Name);
+				ExtensionMemberInfo? infoOfImpl = info.InfoOfImplementationMember(method);
+				Assert.That(infoOfImpl, Is.Not.Null, "Method should have implementation info: " + method.Name);
+				ExtensionMemberInfo? infoOfExtension = info.InfoOfExtensionMember(infoOfImpl.Value.ExtensionMember);
+				Assert.That(infoOfExtension, Is.EqualTo(infoOfImpl), "Info of extension member should be equal to info of implementation member: " + method.Name);
+			}
 		}
 	}
 }

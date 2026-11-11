@@ -1,0 +1,1214 @@
+// Copyright (c) 2026 AlphaSierraPapa for the SharpDevelop Team
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy of this
+// software and associated documentation files (the "Software"), to deal in the Software
+// without restriction, including without limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
+// to whom the Software is furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all copies or
+// substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
+// FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Collections.ObjectModel;
+using System.Collections.Specialized;
+using System.Composition;
+using System.Linq;
+using System.Reflection.Metadata;
+using System.Reflection.Metadata.Ecma335;
+using System.Runtime.Serialization;
+using System.Threading;
+using System.Threading.Tasks;
+
+using Avalonia.Threading;
+
+using CommunityToolkit.Mvvm.ComponentModel;
+
+using ICSharpCode.Decompiler;
+using ICSharpCode.Decompiler.Documentation;
+using ICSharpCode.Decompiler.Metadata;
+using ICSharpCode.Decompiler.TypeSystem;
+using ICSharpCode.ILSpyX;
+using ICSharpCode.ILSpyX.TreeView;
+
+using ICSharpCode.ILSpy;
+using ICSharpCode.ILSpy.Commands;
+using ICSharpCode.ILSpy.Languages;
+using ICSharpCode.ILSpy.TreeNodes;
+using ICSharpCode.ILSpy.ViewModels;
+
+namespace ICSharpCode.ILSpy.AssemblyTree
+{
+	[Export]
+	[ExportToolPane(ContentId = PaneContentId, Alignment = ToolPaneAlignment.Left, Order = 0)]
+	[Shared]
+	public partial class AssemblyTreeModel : ToolPaneModel
+	{
+		public const string PaneContentId = "AssemblyTree";
+
+		readonly SettingsService settingsService;
+		readonly LanguageService languageService;
+		AssemblyListManager? listManager;
+		// True until the first assembly-list activation completes — gates the startup-only
+		// About-page greeting so switching lists later never re-triggers it.
+		bool initialActivation = true;
+		AssemblyListTreeNode? assemblyListTreeNode;
+
+		[ObservableProperty]
+		[property: IgnoreDataMember]
+		private SharpTreeNode? root;
+
+		/// <summary>
+		/// Multi-selection set. Each entry is kept in sync with its
+		/// <see cref="SharpTreeNode.IsSelected"/>. <see cref="SelectedItem"/> is a convenience
+		/// wrapper around the *primary* (last-added) entry — drives decompilation, navigation
+		/// history, and tree-view-path persistence — but the underlying state is single-sourced
+		/// here.
+		/// </summary>
+		[IgnoreDataMember]
+		public ObservableCollection<SharpTreeNode> SelectedItems { get; } = [];
+
+		/// <summary>
+		/// Primary (last) selection. Get returns the most recently selected entry of
+		/// <see cref="SelectedItems"/>, or <c>null</c>; set replaces the entire selection
+		/// with the supplied node (clears the collection then adds it). All
+		/// <c>PropertyChanged(SelectedItem)</c> notifications are fired by
+		/// <see cref="SelectedItems.CollectionChanged"/>.
+		/// </summary>
+		[IgnoreDataMember]
+		public SharpTreeNode? SelectedItem {
+			get => SelectedItems.Count > 0 ? SelectedItems[^1] : null;
+			set {
+				if (SelectedItem == value)
+					return;
+				SelectNodes(value == null ? System.Array.Empty<SharpTreeNode>() : new[] { value });
+			}
+		}
+
+		/// <summary>
+		/// Replaces the whole selection with <paramref name="nodes"/> in ONE logical change. The
+		/// collection can't be swapped atomically (Clear()+Add() passes through a transient empty,
+		/// add-before-remove through a transient multi), so the selection-changed fan-out is
+		/// batched: per-element IsSelected toggling still happens, but the PropertyChanged / path /
+		/// message-bus notifications fire once, AFTER, with the final set. Without this a transient
+		/// empty poisons the grid sync's deferred guard (tree stops following tab activation) and a
+		/// transient multi confuses count-sensitive consumers (metadata-tab reuse). Drives both the
+		/// single-node <see cref="SelectedItem"/> setter and multi-node tab-activation restore.
+		/// </summary>
+		public void SelectNodes(IReadOnlyList<SharpTreeNode> nodes)
+		{
+			ArgumentNullException.ThrowIfNull(nodes);
+			if (SelectionMatches(nodes))
+				return;
+			using (BatchSelectionChange())
+			{
+				SelectedItems.Clear();
+				var seen = new HashSet<SharpTreeNode>();
+				foreach (var node in nodes)
+				{
+					if (node != null && seen.Add(node))
+						SelectedItems.Add(node);
+				}
+			}
+		}
+
+		bool SelectionMatches(IReadOnlyList<SharpTreeNode> nodes)
+		{
+			if (SelectedItems.Count != nodes.Count)
+				return false;
+			for (int i = 0; i < nodes.Count; i++)
+			{
+				if (!SelectedItems.Contains(nodes[i]))
+					return false;
+			}
+			return true;
+		}
+
+		[ObservableProperty]
+		[property: IgnoreDataMember]
+		private string? activeListName;
+
+		[IgnoreDataMember]
+		public AssemblyList? AssemblyList { get; private set; }
+
+		[IgnoreDataMember]
+		public ObservableCollection<string> AssemblyLists { get; } = [];
+
+		[ImportingConstructor]
+		public AssemblyTreeModel(SettingsService settingsService, LanguageService languageService)
+		{
+			AppEnv.AppLog.Mark("AssemblyTreeModel ctor entered");
+			this.settingsService = settingsService;
+			this.languageService = languageService;
+			languageService.PropertyChanged += (_, e) => {
+				// The language version feeds the effective decompiler settings, and through those the
+				// type system the tree's nodes hold their entities from.
+				if (e.PropertyName is nameof(LanguageService.CurrentLanguage) or nameof(LanguageService.CurrentVersion))
+					RebuildIfTypeSystemOptionsChanged();
+				if (e.PropertyName == nameof(LanguageService.CurrentLanguage) && Root != null)
+					NotifyTextChanged(Root);
+			};
+			SelectedItems.CollectionChanged += OnSelectedItemsChanged;
+			// Single hub for "navigate to this reference, optionally highlighting that source"
+			// — the analyzer pane, metadata tables, and future decompile commands all push
+			// through this same channel.
+			Util.MessageBus<Util.NavigateToReferenceEventArgs>.Subscribers += OnNavigateToReference;
+			// Live re-render when Display Settings change. WPF leaves these as apply-on-next-
+			// load; Avalonia opts into reactivity because the Options dialog stays open while
+			// the user toggles. Property dispatch keeps the work narrow to the affected nodes.
+			Util.MessageBus<Util.SettingsChangedEventArgs>.Subscribers += OnSettingsChanged;
+			Id = PaneContentId;
+			Title = "Assemblies";
+			CanClose = false;
+			AppEnv.AppLog.Mark("AssemblyTreeModel ctor exited");
+		}
+
+		void OnNavigateToReference(object? sender, Util.NavigateToReferenceEventArgs e)
+		{
+			if (e.Reference is not IEntity entity)
+				return;
+			var resolved = FindTreeNode(entity);
+			if (resolved == null)
+				return;
+			if (e.InNewTabPage)
+			{
+				// Open the definition in a fresh carve-out tab instead of replacing the current view
+				// (e.g. "Decompile to new tab" on a symbol in the code).
+				AppEnv.AppComposition.TryGetExport<Docking.DockWorkspace>()?.OpenNodeInNewTab(resolved);
+			}
+			else
+			{
+				SelectedItem = resolved;
+			}
+			// Source is the originally-analysed entity (set by AnalyzerEntityTreeNode.ActivateItem).
+			// Push it onto the active decompiler tab's HighlightedReference so the editor view
+			// paints local-reference marks on every match once the new Text lands.
+			if (e.Source is null)
+				return;
+			var dockWorkspace = AppEnv.AppComposition.TryGetExport<Docking.DockWorkspace>();
+			if (dockWorkspace?.ActiveDecompilerTab is { } decompTab)
+				decompTab.HighlightedReference = e.Source;
+		}
+
+		// Greater than zero while a bulk edit is rewriting SelectedItems; suppresses the
+		// selection-changed fan-out until the final state is in place so consumers never observe a
+		// transient empty/multi mid-replace, and so the fan-out costs one pass rather than one per
+		// node. RaiseSelectionChanged reaches a full command re-query, a session-settings write, a
+		// message-bus broadcast and a decompile of the new selection, so running it per node is
+		// what made selecting a large subtree freeze the UI.
+		int selectionBatchDepth;
+
+		// Set when a change actually arrived while a batch was open, so a batch that rewrote the
+		// selection to what it already was closes without notifying anyone.
+		bool selectionChangedDuringBatch;
+
+		/// <summary>
+		/// Suppresses the selection fan-out for the lifetime of the returned scope, then raises it
+		/// exactly once. Nests; only the outermost scope raises.
+		/// </summary>
+		public IDisposable BatchSelectionChange() => new SelectionBatchScope(this);
+
+		sealed class SelectionBatchScope : IDisposable
+		{
+			readonly AssemblyTreeModel model;
+			bool disposed;
+
+			public SelectionBatchScope(AssemblyTreeModel model)
+			{
+				this.model = model;
+				model.selectionBatchDepth++;
+			}
+
+			public void Dispose()
+			{
+				if (disposed)
+					return;
+				disposed = true;
+				if (--model.selectionBatchDepth > 0)
+					return;
+				if (model.selectionChangedDuringBatch)
+				{
+					model.selectionChangedDuringBatch = false;
+					model.RaiseSelectionChanged();
+				}
+			}
+		}
+
+		void OnSelectedItemsChanged(object? sender, NotifyCollectionChangedEventArgs e)
+		{
+			if (e.NewItems != null)
+				foreach (SharpTreeNode n in e.NewItems)
+					n.IsSelected = true;
+			if (e.OldItems != null)
+				foreach (SharpTreeNode n in e.OldItems)
+					n.IsSelected = false;
+
+			// Inside a batch the fan-out is deferred to the single RaiseSelectionChanged() the
+			// outermost scope issues once the final selection is in place.
+			if (selectionBatchDepth > 0)
+			{
+				selectionChangedDuringBatch = true;
+				return;
+			}
+			RaiseSelectionChanged();
+		}
+
+		void RaiseSelectionChanged()
+		{
+			// SelectedItem is a wrapper over this collection — anyone bound to it must be
+			// notified, and the saved path must follow the new primary.
+			OnPropertyChanged(nameof(SelectedItem));
+			settingsService.SessionSettings.ActiveTreeViewPath = GetPathForNode(SelectedItem);
+			// Auto-loaded (dependency-resolved) assemblies are not part of the saved list, so
+			// on next launch the tree-path walk would stop at the assembly-list node. Storing
+			// the file lets the restore re-add it before walking the path.
+			settingsService.SessionSettings.ActiveAutoLoadedAssembly = GetAutoLoadedAssemblyPath(SelectedItem);
+
+			// Pub-sub fan-out: panes (e.g. Debug Steps) that need to invalidate their state
+			// when the selection moves listen on this message.
+			Util.MessageBus.Send(this, new Util.AssemblyTreeSelectionChangedEventArgs());
+
+			// Selection-dependent menu commands (Save, Analyze-via-menu, ...) re-evaluate CanExecute.
+			Commands.CommandManager.InvalidateRequerySuggested();
+		}
+
+		// Walks already-materialized children and re-raises Text PropertyChanged so the cell
+		// templates pick up the new language's formatting -- without collapsing the user's
+		// expanded state. Lazy-loaded subtrees that haven't been opened yet are skipped (they'll
+		// format with the active language the next time they get expanded).
+		static void NotifyTextChanged(SharpTreeNode node)
+		{
+			node.RaisePropertyChanged(nameof(SharpTreeNode.Text));
+			if (node.LazyLoading)
+				return;
+			foreach (var child in node.Children)
+				NotifyTextChanged(child);
+		}
+
+		// The type system each tree node resolved its entity from is keyed on the effective decompiler
+		// settings, and only one is cached per module: the moment those options change, the cached
+		// compilation is dropped and rebuilt, leaving every node holding an entity from a compilation
+		// that no longer exists. Rebuilding the loaded assembly nodes re-resolves them against the new
+		// one. Keyed on the options rather than the settings themselves because the Options page is
+		// live-apply -- most toggles (and every Display setting) leave the type system alone, and those
+		// must not cost a rebuild.
+		TypeSystemOptions? lastTypeSystemOptions;
+
+		void RebuildIfTypeSystemOptionsChanged()
+		{
+			if (Root == null)
+				return;
+			var options = DecompilerTypeSystem.GetOptions(settingsService.CreateEffectiveDecompilerSettings());
+			if (lastTypeSystemOptions == options)
+				return;
+			lastTypeSystemOptions = options;
+
+			// The rebuild replaces every node below an assembly, leaving the selection pointing at one
+			// that is no longer in the tree. Re-establish it from its path, the way Refresh does. That
+			// restores the expansion too: revealing the selected node expands its ancestors on the way
+			// to centring it.
+			var path = GetPathForNode(SelectedItem);
+			foreach (var assembly in Root.Children.OfType<TreeNodes.AssemblyTreeNode>())
+				assembly.ReloadChildren();
+			OnPropertyChanged(nameof(Root));
+			if (path is { Length: > 0 })
+				SelectNode(FindNodeByPath(path, returnBestMatch: true));
+		}
+
+		void OnSettingsChanged(object? sender, Util.SettingsChangedEventArgs e)
+		{
+			// A decompiler option can change the type system the tree's entities came from; the
+			// Display buckets below never do.
+			if (sender is Decompiler.DecompilerSettings or Options.DisplaySettings)
+				RebuildIfTypeSystemOptionsChanged();
+			if (sender is not Options.DisplaySettings)
+				return;
+			if (Root == null)
+				return;
+			// One classification table (DisplaySettingReactions) drives every reaction, so a
+			// newly-added setting can't silently fall through -- the coverage test fails until it's
+			// listed. The Options page is non-modal/live-apply, so there is no full-refresh-on-close
+			// fallback the way the WPF host had; each bucket must do its own update.
+			var name = e.Inner.PropertyName;
+			switch (Options.DisplaySettingReactions.For(name))
+			{
+				case Options.DisplaySettingReaction.TreeText:
+					// Text suffix on member nodes is computed at read time — just fire the
+					// notification so bound cell templates re-pull.
+					NotifyTextChanged(Root);
+					break;
+				case Options.DisplaySettingReaction.TreeShape:
+					if (name == nameof(Options.DisplaySettings.UseNestedNamespaceNodes))
+					{
+						// Every loaded AssemblyTreeNode's namespace subtree needs rebuilding.
+						foreach (var asm in Root.Children.OfType<TreeNodes.AssemblyTreeNode>())
+							asm.ReloadChildren();
+					}
+					else
+					{
+						// Visible MetadataTablesTreeNode instances get their children regenerated;
+						// untouched (lazy) ones already pick up the new value on first expand.
+						RebuildMetadataTablesIn(Root);
+					}
+					// AssemblyListPane caches a snapshot of each expanded node's children via the
+					// HierarchicalOptions.ChildrenSelector — mid-expand mutations of node.Children
+					// aren't observed. Re-raising Root forces BindTree to fire, which creates a fresh
+					// HierarchicalModel that re-reads children on demand.
+					OnPropertyChanged(nameof(Root));
+					break;
+				case Options.DisplaySettingReaction.Redecompile:
+					// Baked into the decompiler/disassembler output (folding, member/using
+					// expansion, debug info, IL detail, indentation), so it only shows after a
+					// re-decompile. Refresh in place: changing an option must not switch the
+					// user's current tab.
+					RefreshDecompiledViewInPlace();
+					break;
+					// EditorLive / None: the text view applies editor settings to AvaloniaEdit itself,
+					// and the rest have no model-side reaction.
+			}
+		}
+
+		static void RebuildMetadataTablesIn(SharpTreeNode node)
+		{
+			if (node is Metadata.MetadataTablesTreeNode tables)
+			{
+				tables.ReloadChildren();
+				return;
+			}
+			if (node.LazyLoading)
+				return;
+			foreach (var child in node.Children)
+				RebuildMetadataTablesIn(child);
+		}
+
+		readonly TaskCompletionSource<bool> treeReadyTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+		/// <summary>
+		/// Completes when the assembly-tree view (<c>AssemblyListPane</c>) has fired its
+		/// <c>Loaded</c> event for the first time. <c>RestoreSelectedPathAsync</c> awaits
+		/// this before assigning <see cref="SelectedItem"/> so the saved-selection path
+		/// (which kicks off a decompilation through the dock workspace) doesn't paint
+		/// the document area before the tree itself is on screen.
+		/// </summary>
+		public Task TreeReady => treeReadyTcs.Task;
+
+		/// <summary>
+		/// Called by <c>AssemblyListPane</c> from its <c>Loaded</c> handler to resolve
+		/// <see cref="TreeReady"/>. Idempotent — only the first call wins.
+		/// </summary>
+		internal void MarkTreeReady()
+		{
+			if (treeReadyTcs.TrySetResult(true))
+				AppEnv.AppLog.Mark("AssemblyTreeModel.TreeReady completed");
+		}
+
+		public void Initialize()
+		{
+			using var _ = AppEnv.AppLog.Phase("AssemblyTreeModel.Initialize body");
+			listManager = settingsService.AssemblyListManager;
+			using (AppEnv.AppLog.Phase("CreateDefaultAssemblyLists"))
+				listManager.CreateDefaultAssemblyLists();
+
+			SyncListNames();
+			listManager.AssemblyLists.CollectionChanged += (_, _) => SyncListNames();
+
+			var saved = settingsService.SessionSettings.ActiveAssemblyList;
+			ActiveListName = !string.IsNullOrEmpty(saved) && AssemblyLists.Contains(saved)
+				? saved
+				: AssemblyListManager.DefaultListName;
+		}
+
+		void SyncListNames()
+		{
+			if (listManager == null)
+				return;
+			AssemblyLists.Clear();
+			foreach (var name in listManager.AssemblyLists)
+				AssemblyLists.Add(name);
+		}
+
+		partial void OnActiveListNameChanged(string? value)
+		{
+			if (listManager == null || string.IsNullOrEmpty(value))
+				return;
+
+			settingsService.SessionSettings.ActiveAssemblyList = value;
+			ShowAssemblyList(value);
+
+			// First activation is the startup one; a later switch to a different list isn't.
+			// Only startup gets the empty-selection About-page greeting.
+			bool isInitial = initialActivation;
+			initialActivation = false;
+
+			// Restore the previously-selected tree node off the UI critical path. The walk
+			// crosses an AssemblyTreeNode whose EnsureLazyChildren synchronously blocks on
+			// GetLoadResultAsync — by going async here and awaiting the load, we let the
+			// initial paint happen first and the UI stays responsive while metadata loads.
+			//
+			// Skipped when --navigateto was supplied on the command line: the user explicitly
+			// asked us to navigate somewhere else, and racing the saved-path restore against
+			// the explicit target produces two concurrent decompiles (the saved one then the
+			// requested one — last write wins on SelectedItem). For perf-benchmarking via
+			// `-n T:Some.Type` this matters: the saved decompile pollutes the measurement.
+			if (App.CommandLineArguments?.NavigateTo is { Length: > 0 })
+				return;
+			var savedPath = settingsService.SessionSettings.ActiveTreeViewPath;
+			// Re-open the previously auto-loaded dependency assembly before walking the saved
+			// path -- otherwise the walk stops at the assembly-list root and the selection
+			// silently doesn't restore. File.Exists guards against the user having moved or
+			// deleted the file between sessions; a missing dependency just degrades to "tree
+			// path doesn't resolve" instead of crashing startup.
+			var autoLoaded = settingsService.SessionSettings.ActiveAutoLoadedAssembly;
+			if (!string.IsNullOrEmpty(autoLoaded) && System.IO.File.Exists(autoLoaded))
+				AssemblyList?.OpenAssembly(autoLoaded, isAutoLoaded: true);
+			_ = RestoreSelectedPathAsync(savedPath, isInitial);
+		}
+
+		async Task RestoreSelectedPathAsync(string[]? path, bool isInitial)
+		{
+			using var _ = AppEnv.AppLog.Phase($"RestoreSelectedPathAsync ({path?.Length ?? 0} segments, initial={isInitial})");
+			try
+			{
+				// Snapshot — if the user selects something else before the restore completes,
+				// don't yank their selection out from under them.
+				var initialSelection = SelectedItem;
+				SharpTreeNode? node = null;
+				if (path is { Length: > 0 } && Root != null)
+				{
+					node = Root;
+					foreach (var element in path)
+					{
+						if (node == null)
+							break;
+						// Awaiting GetLoadResultAsync keeps EnsureLazyChildren — which itself does
+						// GetAwaiter().GetResult() on the same task — from blocking the UI thread.
+						// Once the load completes the .GetAwaiter().GetResult() returns instantly.
+						if (node is AssemblyTreeNode asm)
+						{
+							using (AppEnv.AppLog.Phase($"await GetLoadResultAsync ({asm.LoadedAssembly.ShortName})"))
+								await asm.LoadedAssembly.GetLoadResultAsync().ConfigureAwait(true);
+						}
+						using (AppEnv.AppLog.Phase($"EnsureLazyChildren ({node.GetType().Name} \"{element}\")"))
+							node.EnsureLazyChildren();
+						node = node.Children.FirstOrDefault(c => c.ToString() == element);
+					}
+				}
+				// Wait for the tree view to be Loaded before assigning SelectedItem. Without
+				// this, the SelectedItem assignment runs ShowSelectedNode → CurrentNodes →
+				// async decompilation, and the user can see the decompiled output appear
+				// BEFORE the assembly tree has rendered — a confusing reverse order.
+				// The 5-second timeout is a safety net for environments where the pane
+				// never loads (headless tests, design-time previews).
+				using (AppEnv.AppLog.Phase("await TreeReady before SelectedItem assignment"))
+				{
+					await Task.WhenAny(TreeReady, Task.Delay(TimeSpan.FromSeconds(5)))
+						.ConfigureAwait(true);
+				}
+				// Bail if the user selected something else while we were resolving.
+				if (!ReferenceEquals(SelectedItem, initialSelection))
+					return;
+				if (node != null && node != Root)
+				{
+					SelectedItem = node;
+				}
+				else if (isInitial && SelectedItem == null)
+				{
+					// Launched with nothing to restore (no saved path, or it no longer resolves):
+					// greet the user with the About page in the main tab instead of a blank view.
+					ShowAboutWelcomePage();
+				}
+			}
+			catch (Exception ex)
+			{
+				System.Diagnostics.Debug.WriteLine($"[AssemblyTreeModel] saved-path restore failed: {ex}");
+			}
+		}
+
+		// Open the About page as the startup welcome screen. The command is resolved lazily
+		// through the menu registry (it's an ExportFactory, not instantiated until needed),
+		// and its instance IS the AboutCommand, so we can drive its welcome path directly.
+		void ShowAboutWelcomePage()
+		{
+			var registry = AppEnv.AppComposition.TryGetExport<MainMenuCommandRegistry>();
+			var export = registry?.Commands
+				.FirstOrDefault(c => c.Metadata.Header == nameof(ICSharpCode.ILSpy.Properties.Resources._About))
+				?.CreateExport();
+			if (export?.Value is Commands.AboutCommand about)
+				about.ShowWelcome();
+		}
+
+		void ShowAssemblyList(string name)
+		{
+			if (listManager == null)
+				return;
+			AssemblyList list;
+			using (AppEnv.AppLog.Phase($"LoadList({name})"))
+				list = listManager.LoadList(name);
+			if (AssemblyList == null || list.ListName != AssemblyList.ListName)
+				ShowAssemblyList(list);
+		}
+
+		internal void ShowAssemblyList(AssemblyList list)
+		{
+			using var _ = AppEnv.AppLog.Phase("ShowAssemblyList(list)");
+			// Detach the previous list's collection-changed wiring so the MessageBus
+			// republisher and the navigation-history pruning don't fire against a stale
+			// list. Re-attach on the new list so panes (DockWorkspace, SearchPaneModel)
+			// that subscribe to CurrentAssemblyListChangedEventArgs see add/remove events
+			// from the live list.
+			if (AssemblyList is { } previous)
+			{
+				previous.CollectionChanged -= OnActiveAssemblyListCollectionChanged;
+				// Everything below builds a new tree, so the selection, the open tabs and the
+				// navigation history all describe a list that is about to stop being shown.
+				// Nothing is removed from that list - it is the list itself that goes away - so
+				// no collection event announces it, and the panes are told with the same Reset
+				// that clearing a list raises, which is the one path that discards all of it.
+				SelectedItems.Clear();
+				Util.MessageBus.Send(this, new Util.CurrentAssemblyListChangedEventArgs(
+					new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset)));
+			}
+			AssemblyList = list;
+			list.CollectionChanged += OnActiveAssemblyListCollectionChanged;
+			if (list.GetAssemblies().Length == 0 && list.ListName == AssemblyListManager.DefaultListName)
+			{
+				using (AppEnv.AppLog.Phase("LoadInitialAssemblies"))
+					LoadInitialAssemblies(list, listManager);
+			}
+			AppEnv.AppLog.Mark($"AssemblyList contains {list.GetAssemblies().Length} assemblies");
+			using (AppEnv.AppLog.Phase("new AssemblyListTreeNode"))
+				assemblyListTreeNode = new AssemblyListTreeNode(list);
+			Root = assemblyListTreeNode;
+			// Baseline for RebuildIfTypeSystemOptionsChanged: whatever this tree's nodes will resolve
+			// their entities against. Recorded here rather than on the first settings change, so that a
+			// change arriving before any other has something to compare against.
+			lastTypeSystemOptions = DecompilerTypeSystem.GetOptions(settingsService.CreateEffectiveDecompilerSettings());
+			AppEnv.AppLog.Mark("Root assigned");
+			ScheduleBackgroundLoadSweep(list);
+		}
+
+		/// <summary>
+		/// LoadedAssembly entries are now lazy — their <c>Task.Run(LoadAsync)</c> only kicks
+		/// off when something asks for the metadata. The active assembly's load is awaited
+		/// by <see cref="RestoreSelectedPathAsync"/>, so it gets a clean run. Everything else
+		/// only loads on-demand (tree expansion, hyperlink follow, …) which can stretch
+		/// quietly into "the user never sees a populated icon for assemblies they don't
+		/// touch".
+		///
+		/// To strike a middle ground, schedule a one-shot sweep that fires once the tree
+		/// view is on screen (<see cref="TreeReady"/>).
+		/// Gating on <see cref="TreeReady"/> rather than a wall-clock delay keeps the sweep
+		/// off slow startups (heavy layout, debugger attached) and ensures the user has
+		/// genuinely seen the tree before the thread pool fills with sibling-assembly loads.
+		/// </summary>
+		void ScheduleBackgroundLoadSweep(AssemblyList list)
+		{
+			_ = Task.Run(async () => {
+				try
+				{
+					await TreeReady.ConfigureAwait(false);
+					AppEnv.AppLog.Mark("Background-load sweep starting");
+					// Cap concurrent loads so a 200-assembly list doesn't kick off 200
+					// simultaneous Task.Run + GetLoadResultAsync chains. Each load reads PE
+					// headers + metadata tables; mostly IO-bound but not zero CPU/memory.
+					// Throttling to 4 keeps the peak allocation rate predictable so Server GC
+					// has fewer reasons to pause the UI thread if the user clicks back into
+					// the tree mid-sweep.
+					using var throttle = new SemaphoreSlim(4);
+					var loadTasks = new List<Task>();
+					foreach (var assembly in list.GetAssemblies())
+					{
+						await throttle.WaitAsync().ConfigureAwait(false);
+						loadTasks.Add(Task.Run(async () => {
+							try
+							{ await assembly.GetLoadResultAsync().ConfigureAwait(false); }
+							catch (Exception)
+							{
+								// A file that cannot be loaded is an expected outcome, recorded on the
+								// LoadedAssembly itself (HasLoadError). It must not fault the sweep.
+							}
+							finally
+							{ throttle.Release(); }
+						}));
+					}
+					await Task.WhenAll(loadTasks).ConfigureAwait(false);
+					AppEnv.AppLog.Mark("Background-load sweep dispatched");
+					// Load errors only surface once a load completes (no list change fires for them),
+					// so re-evaluate now -- this is what enables "Remove assemblies with load errors".
+					Commands.CommandManager.InvalidateRequerySuggested();
+				}
+				catch (Exception ex)
+				{
+					System.Diagnostics.Debug.WriteLine($"[AssemblyTreeModel] background load sweep failed: {ex}");
+				}
+			});
+		}
+
+		/// <summary>
+		/// Walks down from <see cref="Root"/> matching each path segment against
+		/// <see cref="object.ToString"/>, expanding lazy children along the way.
+		/// </summary>
+		public SharpTreeNode? FindNodeByPath(string[]? path, bool returnBestMatch)
+			=> TreeNodeLocator.FindNodeByPath(Root, path, returnBestMatch);
+
+		/// <summary>
+		/// The path of <paramref name="node"/>'s ancestors (root excluded), in root-first order.
+		/// </summary>
+		public static string[]? GetPathForNode(SharpTreeNode? node)
+			=> TreeNodeLocator.GetPathForNode(node);
+
+		/// <summary>
+		/// File path of the auto-loaded assembly under <paramref name="node"/>'s ancestor
+		/// chain, or null when the selection lives in an explicitly-listed assembly. Mirrors
+		/// the WPF host's <c>GetAutoLoadedAssemblyNode</c> contract.
+		/// </summary>
+		static string? GetAutoLoadedAssemblyPath(SharpTreeNode? node)
+		{
+			while (node != null && node is not TreeNodes.AssemblyTreeNode)
+				node = node.Parent;
+			if (node is not TreeNodes.AssemblyTreeNode asmNode)
+				return null;
+			var loaded = asmNode.LoadedAssembly;
+			if (!loaded.IsLoaded || !loaded.IsAutoLoaded)
+				return null;
+			return loaded.FileName;
+		}
+
+		internal AssemblyTreeNode? FindAssemblyNode(LoadedAssembly asm)
+			=> assemblyListTreeNode?.FindAssemblyNode(asm);
+
+		/// <summary>
+		/// Finds the tree node corresponding to <paramref name="reference"/> — used by
+		/// hyperlink clicks in the decompiler view to route to the right entity. Currently
+		/// only covers the reference kinds the tree knows how to model.
+		/// </summary>
+		public ILSpyTreeNode? FindTreeNode(object? reference)
+			=> TreeNodeLocator.FindTreeNode(assemblyListTreeNode, AssemblyList, reference);
+
+		static void LoadInitialAssemblies(AssemblyList assemblyList, AssemblyListManager? manager)
+		{
+			// Headless tests opt out of the full-framework seed (it would re-open ~150 assemblies
+			// per test); they fall back to the minimal trio the previous version shipped so their
+			// expectations and runtime stay unchanged.
+			if (!App.SeedFullFrameworkDefaultList || manager == null)
+			{
+				System.Reflection.Assembly[] minimal = {
+					typeof(object).Assembly,
+					typeof(Uri).Assembly,
+					typeof(System.Linq.Enumerable).Assembly,
+				};
+				foreach (var asm in minimal)
+				{
+					if (!string.IsNullOrEmpty(asm.Location))
+						assemblyList.OpenAssembly(asm.Location);
+				}
+				return;
+			}
+
+			// First-run default: seed the .NET framework assemblies ILSpy itself is running on -
+			// every managed assembly in the shared-framework directory that hosts the running
+			// runtime (the folder containing System.Private.CoreLib). The manager applies the
+			// same managed-PE filter the preconfigured runtime lists use, so native runtime
+			// libraries (coreclr, clrjit, *_cor3.dll, ...) are skipped.
+			var coreLibLocation = typeof(object).Assembly.Location;
+			if (string.IsNullOrEmpty(coreLibLocation))
+				return;
+			var frameworkDirectory = System.IO.Path.GetDirectoryName(coreLibLocation);
+			if (string.IsNullOrEmpty(frameworkDirectory))
+				return;
+			manager.AddFrameworkAssembliesFromDirectory(assemblyList, frameworkDirectory);
+		}
+
+		public void SelectNode(SharpTreeNode? node)
+		{
+			if (node == null)
+				return;
+			SelectedItem = node;
+		}
+
+		/// <summary>
+		/// Resolves <paramref name="type"/> to the matching <see cref="TypeTreeNode"/> in the
+		/// loaded assembly list and selects it. Returns false when the type's parent module is
+		/// not loaded (or the namespace / nested-type chain can't be walked) — used by the
+		/// Base/Derived Types entry nodes to jump along an inheritance chain.
+		/// </summary>
+		public bool JumpToType(ITypeDefinition? type)
+		{
+			if (type == null || assemblyListTreeNode == null)
+				return false;
+			var node = TreeNodeLocator.FindTypeNode(assemblyListTreeNode, type);
+			if (node == null)
+				return false;
+			SelectNode(node);
+			return true;
+		}
+
+		public void OpenFiles(string[] fileNames, bool focusNode = true)
+		{
+			ArgumentNullException.ThrowIfNull(fileNames);
+			LoadAssemblies(fileNames, focusNode: focusNode);
+		}
+
+		/// <summary>
+		/// Applies parsed startup arguments: switches the active language, loads any assemblies
+		/// passed positionally, then navigates to the requested entity / namespace if any. Safe
+		/// to call before assemblies finish loading — awaits each one's metadata before resolving
+		/// the navigation target. Search-string handling is deferred until the search pane lands.
+		/// </summary>
+		public async Task HandleCommandLineArgumentsAsync(AppEnv.CommandLineArguments args)
+		{
+			ArgumentNullException.ThrowIfNull(args);
+			if (args.Language is { Length: > 0 } languageName)
+				languageService.CurrentLanguage = languageService.GetLanguage(languageName);
+
+			var newlyLoaded = new List<LoadedAssembly>();
+			if (args.AssembliesToLoad is { Count: > 0 })
+				LoadAssemblies(args.AssembliesToLoad, newlyLoaded, focusNode: false);
+
+			// "all currently-loaded entries that the navigation target may live in" — newly
+			// loaded ones first (matches WPF's "command-line files take precedence") plus the
+			// existing list as fallback.
+			var relevant = newlyLoaded.Count > 0
+				? new List<LoadedAssembly>(newlyLoaded)
+				: AssemblyList?.GetAssemblies().ToList() ?? new List<LoadedAssembly>();
+
+			// Only a target that actually resolved gets to own the selection. An ID naming
+			// nothing falls through to the same single-assembly selection that opening the
+			// file without --navigateto would have made, rather than leaving the tree empty
+			// with no indication of what went wrong.
+			bool navigationHandled = args.NavigateTo is { Length: > 0 } navigateTo
+				&& await NavigateOnLaunchAsync(navigateTo, relevant);
+			if (!navigationHandled && newlyLoaded.Count == 1 && FindAssemblyNode(newlyLoaded[0]) is { } singleNode)
+				SelectNode(singleNode);
+			// An ID that named nothing leaves the tree wherever it was, which on its own says
+			// only that the jump did not happen. Name the target and what was searched, in the
+			// pane the jump would have filled.
+			if (!navigationHandled && args.NavigateTo is { Length: > 0 } unresolved)
+				ReportUnresolvedNavigationTarget(unresolved, relevant);
+
+			// Search-pane wiring lands with task 6. Until then the arg parses but is a no-op
+			// rather than crashing.
+		}
+
+		static void ReportUnresolvedNavigationTarget(string navigateTo, IList<LoadedAssembly> searched)
+		{
+			var output = new TextView.AvaloniaEditTextOutput { Title = "Navigation" };
+			output.WriteLine(string.Format(Properties.Resources.NavigationTargetNotFound, navigateTo));
+			foreach (var asm in searched)
+			{
+				output.WriteLine("    " + asm.FileName);
+			}
+			if (AppEnv.AppComposition.TryGetExport<Docking.DockWorkspace>() is not { } dockWorkspace)
+				return;
+			// ShowText writes to the active decompiler tab and does nothing at all when the
+			// active content is something else - a metadata table, or nothing yet at startup,
+			// which is exactly when this report is written. A report that can go missing is no
+			// better than the silence it replaces, so fall back to a tab of its own.
+			if (dockWorkspace.ActiveDecompilerTab != null)
+				dockWorkspace.ShowText(output);
+			else
+				dockWorkspace.ShowTextInNewTab(output.Title, output);
+		}
+
+		/// <summary>
+		/// Navigates to the given target. Returns false if it named nothing, leaving the
+		/// selection for the caller to fill in.
+		/// </summary>
+		async Task<bool> NavigateOnLaunchAsync(string navigateTo, IList<LoadedAssembly> relevant)
+		{
+			// "none" is a sentinel used by the WPF VS add-in to suppress initial navigation —
+			// the real target arrives later via IPC. Nothing else may claim the selection
+			// either, so this counts as handled.
+			if (navigateTo == "none")
+				return true;
+
+			if (navigateTo.StartsWith("N:", StringComparison.Ordinal))
+			{
+				var namespaceName = navigateTo.Substring(2);
+				foreach (var asm in relevant)
+				{
+					var assemblyNode = FindAssemblyNode(asm);
+					if (assemblyNode == null)
+						continue;
+					// A restored session can reference an assembly whose file is gone; loading it must
+					// not abort navigation, so skip a failed load rather than throw out of startup.
+					await asm.GetMetadataFileOrNullAsync().ConfigureAwait(true);
+					var nsNode = assemblyNode.FindNamespaceNode(namespaceName);
+					if (nsNode != null)
+					{
+						SelectNode(nsNode);
+						return true;
+					}
+				}
+				return false;
+			}
+
+			// A gone or unreadable assembly resolves to null and is skipped by the entity search
+			// below; eagerly loading it here must not throw and crash navigation on launch.
+			foreach (var asm in relevant)
+				await asm.GetMetadataFileOrNullAsync().ConfigureAwait(true);
+
+			var group = await Task.Run(() => FindEntitiesInRelevantAssemblies(navigateTo, relevant));
+			if (group.Count == 0)
+				return false;
+			// The short form of an overloaded member names the whole group, and no single
+			// overload answers it better than its siblings. Selecting all of them shows every
+			// one while staying at the member level, where the group is what the user was
+			// pointing at; picking one would hide that there was anything to pick.
+			var nodes = new List<SharpTreeNode>(group.Count);
+			foreach (var entity in group)
+			{
+				if (FindTreeNode(entity) is { } found)
+					nodes.Add(found);
+			}
+			if (nodes.Count == 0)
+				return false;
+			SelectNodes(nodes);
+			return true;
+		}
+
+		internal static IEntity? FindEntityInRelevantAssemblies(string navigateTo, IEnumerable<LoadedAssembly> relevantAssemblies)
+		{
+			var group = FindEntitiesInRelevantAssemblies(navigateTo, relevantAssemblies);
+			return group.Count == 0 ? null : group[0];
+		}
+
+		/// <summary>
+		/// Resolves a navigation target to every entity it names. A member ID written without
+		/// its signature names an overload group; the caller decides how to present one.
+		/// </summary>
+		internal static IReadOnlyList<IEntity> FindEntitiesInRelevantAssemblies(string navigateTo, IEnumerable<LoadedAssembly> relevantAssemblies)
+		{
+			IReadOnlyList<MetadataFile> loaded = [.. from asm in relevantAssemblies let mod = asm.GetMetadataFileOrNull() where mod != null select mod];
+			// A definition with a body says more than a signature-only one, so the reference
+			// assemblies are searched only once the others have come up empty. Skipping them
+			// outright would leave the target unresolved for the assembly list a project's
+			// references make up, which is what the VS add-in passes (issue #2093).
+			var (module, handles) = FindInModules([.. loaded.Where(mod => !mod.IsReferenceAssembly())]);
+			if (module == null)
+				(module, handles) = FindInModules([.. loaded.Where(mod => mod.IsReferenceAssembly())]);
+			if (module == null)
+				return [];
+
+			(MetadataFile? Module, ImmutableArray<EntityHandle> Handles) FindInModules(IReadOnlyList<MetadataFile> modules)
+			{
+				if (modules.Count == 0)
+					return default;
+				// The id came from a command line, so it is searched with the omission-tolerant
+				// ladder rather than resolved exactly: a parameter list or a generic arity that
+				// has to be spelled out is one the caller had to know before asking.
+				var (found, foundHandles) = DocumentationIdSearch.Find(navigateTo, modules);
+				if (found != null && !foundHandles.IsEmpty)
+					return (found, foundHandles);
+				var (forwardedModule, handle) = FindMemberViaTypeForwarders(navigateTo, modules);
+				if (forwardedModule == null || handle.IsNil)
+					return default;
+				return (forwardedModule, [handle]);
+			}
+			if (module.GetLoadedAssembly().GetTypeSystemOrNull()?.MainModule is not MetadataModule metadataModule)
+				return [];
+			var entities = new List<IEntity>(handles.Length);
+			foreach (var handle in handles)
+			{
+				if (metadataModule.ResolveEntity(handle) is { } entity)
+					entities.Add(entity);
+			}
+			return entities;
+		}
+
+		/// <summary>
+		/// A member ID whose declaring type is present in the given modules only as a type
+		/// forwarder cannot be found by <see cref="IdStringProvider.FindEntity"/> alone:
+		/// the member rows live in the assembly the forwarder points to. Resolve that
+		/// assembly and search the member there.
+		/// </summary>
+		static (MetadataFile? Module, EntityHandle Handle) FindMemberViaTypeForwarders(string navigateTo, IReadOnlyList<MetadataFile> modules)
+		{
+			if (navigateTo.Length < 2 || navigateTo[1] != ':' || navigateTo.StartsWith("T:", StringComparison.Ordinal))
+				return default;
+			int parenPos = navigateTo.IndexOf('(');
+			if (parenPos < 0)
+				parenPos = navigateTo.LastIndexOf('~');
+			if (parenPos < 0)
+				parenPos = navigateTo.Length;
+			int dotPos = navigateTo.LastIndexOf('.', parenPos - 1);
+			if (dotPos <= 2)
+				return default;
+			string declaringTypeId = "T:" + navigateTo[2..dotPos];
+			// Forwarder chains are short; the bound only guards against cycles.
+			for (int depth = 0; depth < 16; depth++)
+			{
+				var (module, typeHandle) = IdStringProvider.FindEntity(declaringTypeId, modules);
+				if (module == null || typeHandle.Kind != HandleKind.ExportedType)
+					return default;
+				var target = ResolveForwarderTarget(module, (ExportedTypeHandle)typeHandle);
+				if (target == null)
+					return default;
+				modules = [target];
+				var result = IdStringProvider.FindEntity(navigateTo, modules);
+				if (!result.Handle.IsNil)
+					return result;
+			}
+			return default;
+		}
+
+		static MetadataFile? ResolveForwarderTarget(MetadataFile module, ExportedTypeHandle handle)
+		{
+			var metadata = module.Metadata;
+			var implementation = metadata.GetExportedType(handle).Implementation;
+			// Nested forwarded types point at their enclosing forwarder entry.
+			while (implementation.Kind == HandleKind.ExportedType)
+				implementation = metadata.GetExportedType((ExportedTypeHandle)implementation).Implementation;
+			if (implementation.Kind != HandleKind.AssemblyReference)
+				return null;
+			var assemblyReference = new Decompiler.Metadata.AssemblyReference(module, (AssemblyReferenceHandle)implementation);
+			return module.GetAssemblyResolver().Resolve(assemblyReference);
+		}
+
+		void LoadAssemblies(IEnumerable<string> fileNames, List<LoadedAssembly>? loadedAssemblies = null, bool focusNode = true)
+		{
+			if (AssemblyList == null)
+				return;
+
+			AssemblyTreeNode? lastNode = null;
+			foreach (var file in fileNames)
+			{
+				var assembly = AssemblyList.OpenAssembly(file);
+				if (loadedAssemblies != null)
+				{
+					loadedAssemblies.Add(assembly);
+					continue;
+				}
+				var node = assemblyListTreeNode?.FindAssemblyNode(assembly);
+				if (node != null && focusNode)
+					lastNode = node;
+			}
+
+			if (focusNode && lastNode != null)
+				SelectNode(lastNode);
+		}
+
+		public void SortAssemblyList()
+		{
+			if (AssemblyList == null)
+				return;
+
+			// Sorting rebuilds every top-level assembly node, which drops the selection and snaps
+			// the list back to the top -- the user sees the tree visibly reshuffle. Capture the
+			// selected assemblies first and re-select them afterwards so the view settles on the
+			// same items (the selection binder reveals one of them) instead of jumping to the top.
+			var selectedAssemblies = SelectedItems
+				.Select(AssemblyOf)
+				.Where(a => a != null)
+				.Distinct()
+				.ToList();
+
+			AssemblyList.Sort(AssemblyComparer.Instance);
+
+			if (selectedAssemblies.Count == 0 || assemblyListTreeNode == null)
+				return;
+			var nodes = selectedAssemblies
+				.Select(a => assemblyListTreeNode.FindAssemblyNode(a!))
+				.Where(n => n != null)
+				.Cast<SharpTreeNode>()
+				.ToList();
+			if (nodes.Count > 0)
+				SelectNodes(nodes);
+		}
+
+		// Maps a selected node to the assembly it belongs to: the node itself when an assembly is
+		// selected, otherwise the assembly ancestor of a selected member/namespace/type.
+		static LoadedAssembly? AssemblyOf(SharpTreeNode node)
+			=> (node as AssemblyTreeNode ?? node.Ancestors().OfType<AssemblyTreeNode>().FirstOrDefault())?.LoadedAssembly;
+
+		sealed class AssemblyComparer : IComparer<LoadedAssembly>
+		{
+			public static readonly AssemblyComparer Instance = new();
+			public int Compare(LoadedAssembly? x, LoadedAssembly? y)
+				=> string.Compare(x?.ShortName, y?.ShortName, StringComparison.CurrentCulture);
+		}
+
+		public void CollapseAll() => CollapseChildren(Root);
+
+		static void CollapseChildren(SharpTreeNode? node)
+		{
+			if (node is null)
+				return;
+			foreach (var child in node.Children)
+			{
+				if (!child.IsExpanded)
+					continue;
+				CollapseChildren(child);
+				child.IsExpanded = false;
+			}
+		}
+
+		/// <summary>
+		/// Fan-out for changes to the currently-active assembly list (assemblies added or
+		/// removed). Re-publishes via <see cref="Util.MessageBus"/> so panes that don't
+		/// directly hold a reference to <see cref="AssemblyList"/> can react — the search
+		/// pane restarts, the dock workspace prunes orphaned tabs.
+		/// </summary>
+		void OnActiveAssemblyListCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+		{
+			// A Move carries the moved entry in OldItems, but nothing left the list: sorting must
+			// not look like removal to anything downstream.
+			if (e.Action == NotifyCollectionChangedAction.Move)
+				return;
+			// Prune navigation-history entries that pointed at tree nodes inside removed
+			// assemblies BEFORE re-publishing — Back/Forward consumers (the toolbar
+			// commands + dropdowns) re-evaluate their CanExecute when the bus fires, so
+			// they must see the post-prune state.
+			if (e.OldItems is { Count: > 0 } oldItems)
+			{
+				var removed = new HashSet<LoadedAssembly>(oldItems.OfType<LoadedAssembly>());
+				if (removed.Count > 0)
+				{
+					AppEnv.AppComposition.TryGetExport<Docking.DockWorkspace>()?.PruneHistory(node =>
+						node.AncestorsAndSelf()
+							.OfType<AssemblyTreeNode>()
+							.Any(a => removed.Contains(a.LoadedAssembly)));
+				}
+			}
+			Util.MessageBus.Send(this, new Util.CurrentAssemblyListChangedEventArgs(e));
+
+			// The removed assemblies took the selected node with them. Hand the selection to the
+			// nearest survivor so the tree does not come back empty-handed while it still has
+			// something to show; the tree view does this for its own Delete gesture, but a
+			// removal from anywhere else (the context menu, a command, a reload) would not.
+			// With nothing left there is nothing to select, and the panes stay empty.
+			if (e.OldItems is { Count: > 0 })
+				SelectSurvivorAfterRemoval(e.OldStartingIndex);
+
+			// List-dependent menu commands (Clear assembly list, Remove assemblies with load errors)
+			// re-evaluate CanExecute now that the list gained or lost entries.
+			Commands.CommandManager.InvalidateRequerySuggested();
+		}
+
+		/// <summary>
+		/// Puts the selection back on the row nearest to where the removed ones were, once the
+		/// tree has caught up with the removal. Does nothing while something is still selected -
+		/// only some of the removed assemblies held the selection, or none did.
+		/// </summary>
+		void SelectSurvivorAfterRemoval(int removedIndex)
+		{
+			Dispatcher.UIThread.Post(() => {
+				if (SelectedItems.Count > 0)
+					return;
+				if (Root is not { } root || root.Children.Count == 0)
+					return;
+				SelectNode(root.Children[Math.Clamp(removedIndex, 0, root.Children.Count - 1)]);
+			}, DispatcherPriority.Background);
+		}
+
+		// Coalesces burst F5 / programmatic Refresh() calls into a single async pipeline.
+		// Without the gate, two Refresh() in quick succession would run two parallel
+		// ShowAssemblyList + GetMetadataFileAsync cycles, doubling the work and producing
+		// visible flicker. The gate is a simple "running flag" — a queued refresh becomes
+		// a no-op while the previous one is still in flight.
+		bool refreshInFlight;
+
+		public void Refresh()
+		{
+			if (refreshInFlight)
+				return;
+			_ = RunRefresh();
+
+			async Task RunRefresh()
+			{
+				refreshInFlight = true;
+				try
+				{ await RefreshInternalAsync(); }
+				finally { refreshInFlight = false; }
+			}
+		}
+
+		/// <summary>
+		/// Re-runs decompilation of the active tab WITHOUT reloading the assembly list. Mirrors
+		/// WPF's RefreshDecompiledView(). Unlike <see cref="Refresh"/> (F5), this must not rebuild
+		/// the list from persisted state -- that would discard on-demand auto-loaded assemblies
+		/// (e.g. the ones <see cref="LoadDependenciesAsync"/> just resolved).
+		/// </summary>
+		public void RefreshDecompiledView()
+			=> AppEnv.AppComposition.TryGetExport<Docking.DockWorkspace>()?.ForceRefreshActiveTab();
+
+		/// <summary>
+		/// Re-decompiles the decompiler tab's content in place for an output-affecting display setting,
+		/// without activating or navigating to it. Changing an option must not switch the user's current
+		/// tab, so this avoids the selection re-projection that <see cref="RefreshDecompiledView"/> does.
+		/// </summary>
+		public void RefreshDecompiledViewInPlace()
+			=> AppEnv.AppComposition.TryGetExport<Docking.DockWorkspace>()?.RefreshDecompilerOutputInPlace();
+
+		/// <summary>
+		/// Resolves every assembly reference of each supplied assembly node through that
+		/// assembly's own resolver -- which auto-loads the targets into the live list -- then
+		/// re-decompiles the active tab so newly available references render.
+		/// </summary>
+		public async Task LoadDependenciesAsync(IReadOnlyList<SharpTreeNode> nodes)
+		{
+			var tasks = new List<Task>();
+			foreach (var node in nodes)
+			{
+				if (node is not AssemblyTreeNode { LoadedAssembly: { } la })
+					continue;
+				var resolver = la.GetAssemblyResolver();
+				var module = la.GetMetadataFileOrNull();
+				if (module is null)
+					continue;
+				foreach (var assyRef in module.Metadata.AssemblyReferences)
+					tasks.Add(resolver.ResolveAsync(
+						new ICSharpCode.Decompiler.Metadata.AssemblyReference(module, assyRef)));
+			}
+			await Task.WhenAll(tasks);
+			RefreshDecompiledView();
+		}
+
+		async Task RefreshInternalAsync()
+		{
+			if (AssemblyList == null || listManager == null)
+				return;
+			var path = GetPathForNode(SelectedItem);
+			ShowAssemblyList(listManager.LoadList(AssemblyList.ListName));
+
+			// Ensure the assembly's children are realised before FindNodeByPath walks them.
+			// Lazy-loaded resource children (e.g. .baml entries inside an embedded
+			// .resources file) only materialise after the assembly's metadata-file is
+			// loaded; without this await the path-walk runs against an empty resource
+			// folder and the selection collapses to the resources folder itself (#3705 in
+			// the WPF tree). If the user navigated to a different node while we waited,
+			// honour that new selection rather than overwriting it with the pre-refresh path.
+			if (path is { Length: > 0 })
+			{
+				var rootAssembly = AssemblyList.FindAssembly(path[0]);
+				if (rootAssembly != null)
+				{
+					var preAwaitSelection = SelectedItem;
+					try
+					{ await rootAssembly.GetMetadataFileAsync().ConfigureAwait(true); }
+					catch { /* corrupt assembly — let FindNodeByPath best-match below */ }
+					if (!ReferenceEquals(SelectedItem, preAwaitSelection))
+						return;
+				}
+			}
+
+			SelectNode(FindNodeByPath(path, returnBestMatch: true));
+
+			// Defensive re-decompile: F5 on the same assembly list doesn't rebuild the
+			// tree, so FindNodeByPath returns the same tree-node reference, the
+			// SelectedItem setter early-outs, and DockWorkspace.ShowSelectedNode's
+			// dedup short-circuits — leaving stale decompiled text. Force a fresh
+			// render.
+			AppEnv.AppComposition.TryGetExport<Docking.DockWorkspace>()?.ForceRefreshActiveTab();
+		}
+	}
+}

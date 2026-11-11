@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2018 Daniel Grunwald
+// Copyright (c) 2018 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -20,7 +20,9 @@ using System;
 using System.Diagnostics;
 using System.Linq;
 
+using ICSharpCode.Decompiler.Semantics;
 using ICSharpCode.Decompiler.TypeSystem;
+using ICSharpCode.Decompiler.Util;
 
 namespace ICSharpCode.Decompiler.IL.Transforms
 {
@@ -115,7 +117,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				nonNullInst = arg;
 				removedRewrapOrNullableCtor = true;
 			}
-			else if (nonNullInst.MatchNullableRewrap(out arg))
+			else if (nonNullInst.MatchNullableRewrap(out arg, out _))
 			{
 				nonNullInst = arg;
 				removedRewrapOrNullableCtor = true;
@@ -130,7 +132,9 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				// testedVar != null ? testedVar.AccessChain : null
 				// => testedVar?.AccessChain
 				IntroduceUnwrap(testedVar, varLoad, mode);
-				return new NullableRewrap(nonNullInst);
+				var result = new NullableRewrap(nonNullInst, returnType);
+				context.EndStep(result);
+				return result;
 			}
 			else if (nullInst.MatchDefaultValue(out var type) && type.IsKnownType(KnownTypeCode.NullableOfT))
 			{
@@ -138,22 +142,27 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				// testedVar != null ? testedVar.AccessChain : default(T?)
 				// => testedVar?.AccessChain
 				IntroduceUnwrap(testedVar, varLoad, mode);
-				return new NullableRewrap(nonNullInst);
+				var result = new NullableRewrap(nonNullInst, type);
+				context.EndStep(result);
+				return result;
 			}
-			else if (!removedRewrapOrNullableCtor && NullableType.IsNonNullableValueType(returnType))
+			else if (!removedRewrapOrNullableCtor && NullableType.IsNonNullableValueType(returnType)
+				&& !returnType.IsByRefLike)
 			{
 				context.Step($"Null propagation (mode={mode}, output=null coalescing)", nonNullInst);
 				// testedVar != null ? testedVar.AccessChain : nullInst
 				// => testedVar?.AccessChain ?? nullInst
-				// (only valid if AccessChain returns a non-nullable value)
+				// (only valid if AccessChain returns a non-nullable value; a by-ref-like type such as
+				// Span<T> is excluded because it cannot be wrapped in Nullable<T> for the ?. / ?? form)
 				IntroduceUnwrap(testedVar, varLoad, mode);
-				return new NullCoalescingInstruction(
+				var result = new NullCoalescingInstruction(
+					nullInst.InferType(context.TypeSystem),
 					NullCoalescingKind.NullableWithValueFallback,
-					new NullableRewrap(nonNullInst),
+					new NullableRewrap(nonNullInst, NullableType.Create(context.TypeSystem, returnType)),
 					nullInst
-				) {
-					UnderlyingResultType = nullInst.ResultType
-				};
+				);
+				context.EndStep(result);
+				return result;
 			}
 			return null;
 		}
@@ -203,6 +212,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 						// has changed, but this part of the code was not properly adjusted.
 						throw new NotSupportedException();
 				}
+				context.EndStep(replacement);
 				// Remove the fallback conditions and blocks
 				block.Instructions.RemoveRange(pos + 1, 2);
 				// if the endBlock is only reachable through the current block,
@@ -222,7 +232,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			if (body == null || body.Instructions.Count != 1)
 				return;
 			var bodyInst = body.Instructions[0];
-			if (bodyInst.MatchNullableRewrap(out var arg))
+			if (bodyInst.MatchNullableRewrap(out var arg, out _))
 			{
 				bodyInst = arg;
 			}
@@ -232,9 +242,14 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			// if (testedVar != null) { testedVar.AccessChain(); }
 			// => testedVar?.AccessChain();
 			IntroduceUnwrap(testedVar, varLoad, mode);
-			ifInst.ReplaceWith(new NullableRewrap(
-				bodyInst
-			).WithILRange(ifInst));
+			var returnType = bodyInst.InferType(context.TypeSystem);
+			if (returnType.Kind != TypeKind.Void && NullableType.IsNonNullableValueType(returnType))
+			{
+				returnType = NullableType.Create(context.TypeSystem, returnType);
+			}
+			var replacement = new NullableRewrap(bodyInst, returnType).WithILRange(ifInst);
+			ifInst.ReplaceWith(replacement);
+			context.EndStep(replacement);
 		}
 
 		bool IsValidAccessChain(ILVariable testedVar, Mode mode, ILInstruction inst, out ILInstruction finalLoad)
@@ -282,6 +297,10 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					if ((call.ConstrainedTo ?? call.Method.DeclaringType).IsReferenceType == false && inst.MatchAddressOf(out var arg, out _))
 					{
 						inst = arg;
+					}
+					else if (inst is LdObjIfRef ldObjIfRef)
+					{
+						inst = ldObjIfRef.Target;
 					}
 					// ensure the access chain does not contain any 'nullable.unwrap' that aren't directly part of the chain
 					if (ArgumentsAfterFirstMayUnwrapNull(call.Arguments))
@@ -362,7 +381,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 							&& arg.MatchLdLoc(testedVar);
 					case Mode.UnconstrainedType:
 						// unconstrained generic type (expect: ldloc(testedVar))
-						return inst.MatchLdLoc(testedVar);
+						return inst.MatchLdLoc(testedVar) || (inst.MatchLdObjIfRef(out var testedVarLoad, out _) && testedVarLoad.MatchLdLoc(testedVar));
 					default:
 						throw new ArgumentOutOfRangeException(nameof(mode));
 				}
@@ -370,11 +389,37 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 
 			bool CanTransformToExtensionMethodCall(CallInstruction call, ILTransformContext context)
 			{
-				return CSharp.Transforms.IntroduceExtensionMethods.CanTransformToExtensionMethodCall(
-					call.Method, new CSharp.TypeSystem.CSharpTypeResolveContext(
-						context.TypeSystem.MainModule, context.UsingScope
-					)
-				);
+				var targetArgument = call.Arguments[0];
+				if ((call.ConstrainedTo ?? call.Method.DeclaringType).IsReferenceType == false && targetArgument.MatchAddressOf(out var arg, out _))
+				{
+					targetArgument = arg;
+				}
+				else if (targetArgument is LdObjIfRef ldObjIfRef)
+				{
+					targetArgument = ldObjIfRef.Target;
+				}
+
+				if (!CanTransformToExtensionMethodCall(targetArgument.InferType(context.TypeSystem)))
+					return false;
+				if (targetArgument.MatchLdLoc(out var targetVariable)
+					&& targetVariable.IsSingleDefinition
+					&& targetVariable.StoreInstructions.SingleOrDefault() is StLoc targetStore)
+				{
+					if (!targetVariable.Type.Equals(targetStore.Value.InferType(context.TypeSystem)))
+						return false;
+					return CanTransformToExtensionMethodCall(targetStore.Value.InferType(context.TypeSystem));
+				}
+				return true;
+
+				bool CanTransformToExtensionMethodCall(IType targetType)
+				{
+					return context.CSharpResolver.CanTransformToExtensionMethodCall(
+						call.Method,
+						Empty<IType>.Array,
+						new ResolveResult(targetType),
+						call.Arguments.Skip(1).Select(a => new ResolveResult(a.InferType(context.TypeSystem))).ToArray(),
+						argumentNames: null);
+				}
 			}
 		}
 
@@ -393,17 +438,19 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				case Mode.ReferenceType:
 				case Mode.UnconstrainedType:
 					// Wrap varLoad in nullable.unwrap:
-					replacement = new NullableUnwrap(varLoad.ResultType, varLoad, refInput: varLoad.ResultType == StackType.Ref);
+					replacement = new NullableUnwrap(varLoad.InferType(context.TypeSystem), varLoad.ResultType, varLoad, refInput: varLoad.ResultType == StackType.Ref);
 					break;
 				case Mode.NullableByValue:
 					Debug.Assert(NullableLiftingTransform.MatchGetValueOrDefault(varLoad, testedVar));
 					replacement = new NullableUnwrap(
+						varLoad.InferType(context.TypeSystem),
 						varLoad.ResultType,
 						new LdLoc(testedVar).WithILRange(varLoad.Children[0])
 					).WithILRange(varLoad);
 					break;
 				case Mode.NullableByReference:
 					replacement = new NullableUnwrap(
+						varLoad.InferType(context.TypeSystem),
 						varLoad.ResultType,
 						new LdLoc(testedVar).WithILRange(varLoad.Children[0]),
 						refInput: true

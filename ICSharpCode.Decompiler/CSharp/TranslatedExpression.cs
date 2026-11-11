@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2014 Daniel Grunwald
+// Copyright (c) 2014 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -28,6 +28,8 @@ using ICSharpCode.Decompiler.IL;
 using ICSharpCode.Decompiler.Semantics;
 using ICSharpCode.Decompiler.TypeSystem;
 using ICSharpCode.Decompiler.Util;
+
+#nullable enable
 
 namespace ICSharpCode.Decompiler.CSharp
 {
@@ -156,7 +158,7 @@ namespace ICSharpCode.Decompiler.CSharp
 		{
 			if (descendant == Expression)
 				return this;
-			for (AstNode parent = descendant.Parent; parent != null; parent = parent.Parent)
+			for (AstNode? parent = descendant.Parent; parent != null; parent = parent.Parent)
 			{
 				foreach (var inst in parent.Annotations.OfType<ILInstruction>())
 					descendant.AddAnnotation(inst);
@@ -164,6 +166,20 @@ namespace ICSharpCode.Decompiler.CSharp
 					return new TranslatedExpression(descendant.Detach());
 			}
 			throw new ArgumentException("descendant must be a descendant of the current node");
+		}
+
+		/// <summary>
+		/// Undoes the shortening to the C# 7.1 default literal that <see cref="ConvertTo"/>
+		/// applies, restoring the original "default(T)". Use in contexts that supply no target
+		/// type for the literal, e.g. an awaited expression or an argument of a call that later
+		/// becomes a cast or an operator.
+		/// </summary>
+		public TranslatedExpression RestoreDefaultLiteralType(ExpressionBuilder expressionBuilder)
+		{
+			if (ResolveResult is not DefaultLiteralResolveResult literal)
+				return this;
+			return expressionBuilder.GetDefaultValueExpression(literal.ShortenedFrom)
+				.WithILInstruction(this.ILInstructions);
 		}
 
 		/// <summary>
@@ -193,11 +209,46 @@ namespace ICSharpCode.Decompiler.CSharp
 		public TranslatedExpression ConvertTo(IType targetType, ExpressionBuilder expressionBuilder, bool checkForOverflow = false, bool allowImplicitConversion = false)
 		{
 			var type = this.Type;
-			if (type.Equals(targetType))
+			if (ResolveResult is DefaultLiteralResolveResult literal)
+			{
+				if (allowImplicitConversion
+					&& NormalizeTypeVisitor.IgnoreNullabilityAndTuples.EquivalentTypes(literal.ShortenedFrom, targetType))
+				{
+					// The context still supplies the type the literal was shortened from.
+					return this;
+				}
+				// Either an explicit type is required here (e.g. overload resolution needs the
+				// typed form to stay unambiguous), or the context supplies a different type, in
+				// which case the literal would produce a different value (e.g. null instead of
+				// a boxed struct).
+				return RestoreDefaultLiteralType(expressionBuilder)
+					.ConvertTo(targetType, expressionBuilder, checkForOverflow, allowImplicitConversion);
+			}
+			// Unwrapping a conversion hands its operand to a different target type. A default
+			// literal takes its value from that type, so it may have to be spelled out again:
+			// "T? x = new T?(default)" holds a value, whereas "T? x = default" is null.
+			TranslatedExpression Unwrapped(TranslatedExpression operand)
+			{
+				if (operand.ResolveResult is not DefaultLiteralResolveResult)
+					return operand;
+				return operand.ConvertTo(targetType, expressionBuilder, checkForOverflow, allowImplicitConversion);
+			}
+			if (NormalizeTypeVisitor.IgnoreNullabilityAndTuples.EquivalentTypes(type, targetType))
 			{
 				// Make explicit conversion implicit, if possible
 				if (allowImplicitConversion)
 				{
+					if (Expression is DefaultValueExpression { Type: not null } defaultValue
+						&& expressionBuilder.settings.DefaultLiterals)
+					{
+						// The target type is supplied by the context, so "default(T)" can be
+						// shortened to the C# 7.1 default literal.
+						defaultValue.Type = null;
+						defaultValue.RemoveAnnotations<ResolveResult>();
+						var literalRR = new DefaultLiteralResolveResult(type);
+						defaultValue.AddAnnotation(literalRR);
+						return new TranslatedExpression(defaultValue, literalRR);
+					}
 					switch (ResolveResult)
 					{
 						case ConversionResolveResult conversion:
@@ -209,7 +260,7 @@ namespace ICSharpCode.Decompiler.CSharp
 									type, targetType
 								))
 							{
-								var result = this.UnwrapChild(cast.Expression);
+								var result = Unwrapped(this.UnwrapChild(cast.Expression));
 								if (conversion.Conversion.IsUserDefined)
 								{
 									result.Expression.AddAnnotation(new ImplicitConversionAnnotation(conversion));
@@ -225,9 +276,10 @@ namespace ICSharpCode.Decompiler.CSharp
 						}
 						case InvocationResolveResult invocation:
 						{
-							if (Expression is ObjectCreateExpression oce && oce.Arguments.Count == 1 && invocation.Type.IsKnownType(KnownTypeCode.NullableOfT))
+							if (Expression is ObjectCreateExpression oce && oce.Arguments.Count == 1
+								&& invocation.Type.IsKnownType(KnownTypeCode.NullableOfT))
 							{
-								return this.UnwrapChild(oce.Arguments.Single());
+								return Unwrapped(this.UnwrapChild(oce.Arguments.Single()));
 							}
 							break;
 						}
@@ -271,11 +323,20 @@ namespace ICSharpCode.Decompiler.CSharp
 				// Conversion of a tuple literal: convert element-wise
 				var newTupleExpr = new TupleExpression();
 				var newElementRRs = new List<ResolveResult>();
-				foreach (var (elementExpr, elementTargetType) in tupleExpr.Elements.Zip(targetTupleType.ElementTypes))
+				// element names: discard existing names and use targetTupleType instead
+				var newElementNames = targetTupleType.ElementNames;
+				foreach (var (index, elementExpr, elementTargetType) in tupleExpr.Elements.ZipWithIndex(targetTupleType.ElementTypes))
 				{
-					var newElementExpr = new TranslatedExpression(elementExpr.Detach())
+					var newElementExpr = new TranslatedExpression((elementExpr is NamedArgumentExpression nae ? nae.Expression : elementExpr).Detach())
 						.ConvertTo(elementTargetType, expressionBuilder, checkForOverflow, allowImplicitConversion);
-					newTupleExpr.Elements.Add(newElementExpr.Expression);
+					if (newElementNames.IsDefaultOrEmpty || newElementNames.ElementAtOrDefault(index) is not string { Length: > 0 } name)
+					{
+						newTupleExpr.Elements.Add(newElementExpr.Expression);
+					}
+					else
+					{
+						newTupleExpr.Elements.Add(new NamedArgumentExpression(name, newElementExpr.Expression));
+					}
 					newElementRRs.Add(newElementExpr.ResolveResult);
 				}
 				return newTupleExpr.WithILInstruction(this.ILInstructions)
@@ -290,7 +351,7 @@ namespace ICSharpCode.Decompiler.CSharp
 				&& !conv.Conversion.IsUserDefined
 				&& CastCanBeMadeImplicit(conversions, conv.Conversion, conv.Input.Type, type, targetType))
 			{
-				var unwrapped = this.UnwrapChild(cast2.Expression);
+				var unwrapped = Unwrapped(this.UnwrapChild(cast2.Expression));
 				if (allowImplicitConversion)
 					return unwrapped;
 				return unwrapped.ConvertTo(targetType, expressionBuilder, checkForOverflow, allowImplicitConversion);
@@ -534,6 +595,17 @@ namespace ICSharpCode.Decompiler.CSharp
 						.ConvertTo(targetType, expressionBuilder, checkForOverflow, allowImplicitConversion);
 				}
 			}
+			else if (type.Kind == TypeKind.Dynamic && targetType.IsReferenceType == true && !targetType.IsKnownType(KnownTypeCode.Object))
+			{
+				// "static" conversion between dynamic and a reference type requires us to add a cast to object,
+				// otherwise recompilation would produce a dynamic cast.
+				// (T)dynamicExpression is a "dynamic" cast
+				// (T)(object)dynamicExpression is a "static" cast
+				// as "dynamic" casts are handled differently by ExpressionBuilder.VisitDynamicConvertInstruction
+				// we can always insert the cast to object, if we encounter a conversion from any reference type to dynamic.
+				return this.ConvertTo(compilation.FindType(KnownTypeCode.Object), expressionBuilder)
+					.ConvertTo(targetType, expressionBuilder, checkForOverflow, allowImplicitConversion);
+			}
 			if (targetType.Kind.IsAnyPointer() && (0.Equals(ResolveResult.ConstantValue) || 0u.Equals(ResolveResult.ConstantValue)))
 			{
 				if (allowImplicitConversion)
@@ -544,7 +616,7 @@ namespace ICSharpCode.Decompiler.CSharp
 				}
 				return new CastExpression(expressionBuilder.ConvertType(targetType), new NullReferenceExpression())
 					.WithILInstruction(this.ILInstructions)
-					.WithRR(new ConstantResolveResult(SpecialType.NullType, null));
+					.WithRR(new ConstantResolveResult(targetType, null));
 			}
 			if (allowImplicitConversion)
 			{
@@ -569,7 +641,22 @@ namespace ICSharpCode.Decompiler.CSharp
 			bool needsCheckAnnotation = targetUType.GetStackType().IsIntegerType();
 			if (needsCheckAnnotation)
 			{
-				castExpr.AddAnnotation(checkForOverflow ? AddCheckedBlocks.CheckedAnnotation : AddCheckedBlocks.UncheckedAnnotation);
+				if (checkForOverflow)
+				{
+					castExpr.AddAnnotation(AddCheckedBlocks.CheckedAnnotation);
+				}
+				else if (ResolveResult.IsCompileTimeConstant && targetUType.IsCSharpNativeIntegerType())
+				{
+					// unchecked potentially-overflowing cast of constant to n(u)int:
+					// Placement in implicitly unchecked context is not good enough when applied to compile-time constant,
+					// the constant must be placed into an explicit unchecked block.
+					// (note that non-potentially-overflowing casts will be handled by constant folding and won't get here)
+					castExpr.AddAnnotation(AddCheckedBlocks.ExplicitUncheckedAnnotation);
+				}
+				else
+				{
+					castExpr.AddAnnotation(AddCheckedBlocks.UncheckedAnnotation);
+				}
 			}
 			return castExpr.WithoutILInstruction().WithRR(rr);
 		}
@@ -614,6 +701,13 @@ namespace ICSharpCode.Decompiler.CSharp
 				return newTargetType.IsKnownType(KnownTypeCode.FormattableString)
 					|| newTargetType.IsKnownType(KnownTypeCode.IFormattable);
 			}
+			if (conversion.IsImplicitSpanConversion)
+			{
+				// Implicit span conversions compose: if the input converts to the new target
+				// directly, the result is the same span the two-step path produces.
+				return conversions.IdentityConversion(oldTargetType, newTargetType)
+					|| conversions.ImplicitConversion(inputType, newTargetType).IsImplicitSpanConversion;
+			}
 			return conversions.IdentityConversion(oldTargetType, newTargetType);
 		}
 
@@ -628,7 +722,7 @@ namespace ICSharpCode.Decompiler.CSharp
 		/// In conditional contexts, remove the bool-cast emitted when converting
 		/// an "implicit operator bool" invocation.
 		/// </summary>
-		public TranslatedExpression UnwrapImplicitBoolConversion(Func<IType, bool> typeFilter = null)
+		public TranslatedExpression UnwrapImplicitBoolConversion(Func<IType, bool>? typeFilter = null)
 		{
 			if (!this.Type.IsKnownType(KnownTypeCode.Boolean))
 				return this;
@@ -694,6 +788,17 @@ namespace ICSharpCode.Decompiler.CSharp
 					.WithoutILInstruction()
 					.WithRR(new OperatorResolveResult(boolType, System.Linq.Expressions.ExpressionType.NotEqual,
 													  this.ResolveResult, nullRef.ResolveResult));
+			}
+			else if (Type.Kind == TypeKind.Enum && Type.GetDefinition() is { } typeDef &&
+					 typeDef.Fields.Any(f => f.GetConstantValue() is { } val && (ulong)CSharpPrimitiveCast.Cast(TypeCode.UInt64, val, false) == 0L))
+			{
+				var zero = expressionBuilder
+					.ConvertConstantValue(new ConstantResolveResult(Type, 0), allowImplicitConversion: true);
+				var op = negate ? BinaryOperatorType.Equality : BinaryOperatorType.InEquality;
+				return new BinaryOperatorExpression(Expression, op, zero.Expression)
+					.WithoutILInstruction()
+					.WithRR(new OperatorResolveResult(boolType, System.Linq.Expressions.ExpressionType.NotEqual,
+						this.ResolveResult, zero.ResolveResult));
 			}
 			else
 			{

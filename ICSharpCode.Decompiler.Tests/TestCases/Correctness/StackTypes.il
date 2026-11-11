@@ -79,7 +79,34 @@ pointless:
     box native int
     call void [mscorlib]System.Console::WriteLine(string, object)
 
-    /*
+    ldstr "Int32OrNativeReordered(0x7fffffff, false) = {0}"
+    ldc.i4 0x7fffffff
+    ldc.i4 0
+    call native int Program::Int32OrNativeReordered(int32, bool)
+    box native int
+    call void [mscorlib]System.Console::WriteLine(string, object)
+
+    ldstr "Int32OrNativeReordered(0x7fffffff, true) = {0}"
+    ldc.i4 0x7fffffff
+    ldc.i4 1
+    call native int Program::Int32OrNativeReordered(int32, bool)
+    box native int
+    call void [mscorlib]System.Console::WriteLine(string, object)
+
+    ldstr "Int32OrNativeReordered(-1, false) = {0}"
+    ldc.i4.m1
+    ldc.i4 0
+    call native int Program::Int32OrNativeReordered(int32, bool)
+    box native int
+    call void [mscorlib]System.Console::WriteLine(string, object)
+
+    ldstr "Int32OrNativeReordered(-1, true) = {0}"
+    ldc.i4.m1
+    ldc.i4 1
+    call native int Program::Int32OrNativeReordered(int32, bool)
+    box native int
+    call void [mscorlib]System.Console::WriteLine(string, object)
+
     ldstr "Int32OrNativeLoopStyle(0x7fffffff):"
     call void [mscorlib]System.Console::WriteLine(string)
     ldc.i4 0x7fffffff
@@ -101,7 +128,6 @@ pointless:
     call native int Program::Int32OrNativeDeadCode(int32)
     box native int
     call void [mscorlib]System.Console::WriteLine(string, object)
-    */
 
     ldc.i4 0x7fffffff
     call void Program::RunInt32OrNativeMultiUse(int32)
@@ -127,7 +153,6 @@ pointless:
     ret
   }
   
-  /*
   .method public static native int Int32OrNativeReordered(int32 val, bool use_native)
   {
     // The spec is ambiguous whether the addition will be in 32-bits or native size.
@@ -187,7 +212,6 @@ pointless:
     conv.u
     br after_if
   }
-  */
 
   .method public static void RunInt32OrNativeMultiUse(int32 val)
   {
@@ -323,4 +347,20 @@ pointless:
     callvirt instance string [mscorlib]System.Object::ToString()
     ret
   }
+
+  .method public static 
+  	native int M5 (
+  		int32 ''
+  	) cil managed
+  {
+    // Extracted from Random Tests/TestCase-1::M5
+  	.maxstack 6
+  
+  	IL_002e: ldc.i8 2
+  	IL_0037: conv.i
+  	IL_0038: ldarg 0
+  	IL_003c: conv.ovf.u
+  	IL_003d: mul
+  	IL_0067: ret
+  } // end of method TestCases::M5
 }

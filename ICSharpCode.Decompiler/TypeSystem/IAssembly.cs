@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -18,6 +18,7 @@
 
 #nullable enable
 
+using System;
 using System.Collections.Generic;
 
 using ICSharpCode.Decompiler.Metadata;
@@ -51,9 +52,9 @@ namespace ICSharpCode.Decompiler.TypeSystem
 	public interface IModule : ISymbol, ICompilationProvider
 	{
 		/// <summary>
-		/// Gets the underlying metadata file. May return null, if the IAssembly was not created from a PE file.
+		/// Gets the underlying metadata file. May return null, if the module was not created from a file.
 		/// </summary>
-		PEFile? PEFile { get; }
+		MetadataFile? MetadataFile { get; }
 
 		/// <summary>
 		/// Gets whether this assembly is the main assembly of the compilation.
@@ -66,17 +67,22 @@ namespace ICSharpCode.Decompiler.TypeSystem
 		string AssemblyName { get; }
 
 		/// <summary>
+		/// Gets the assembly version.
+		/// </summary>
+		Version AssemblyVersion { get; }
+
+		/// <summary>
 		/// Gets the full assembly name (including public key token etc.)
 		/// </summary>
 		string FullAssemblyName { get; }
 
 		/// <summary>
-		/// Gets the list of all assembly attributes in the project.
+		/// Gets all assembly attributes.
 		/// </summary>
 		IEnumerable<IAttribute> GetAssemblyAttributes();
 
 		/// <summary>
-		/// Gets the list of all module attributes in the project.
+		/// Gets all module attributes.
 		/// </summary>
 		IEnumerable<IAttribute> GetModuleAttributes();
 

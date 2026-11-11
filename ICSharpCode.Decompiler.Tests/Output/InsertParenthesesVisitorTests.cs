@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -68,8 +68,8 @@ namespace ICSharpCode.Decompiler.Tests.Output
 				)
 			);
 
-			Assert.AreEqual("cond = a == b", InsertRequired(expr));
-			Assert.AreEqual("cond = a == b", InsertReadable(expr));
+			Assert.That(InsertRequired(expr), Is.EqualTo("cond = a == b"));
+			Assert.That(InsertReadable(expr), Is.EqualTo("cond = a == b"));
 		}
 
 		[Test]
@@ -86,8 +86,8 @@ namespace ICSharpCode.Decompiler.Tests.Output
 				}
 			);
 
-			Assert.AreEqual("p = () => a + b", InsertRequired(expr));
-			Assert.AreEqual("p = () => a + b", InsertReadable(expr));
+			Assert.That(InsertRequired(expr), Is.EqualTo("p = () => a + b"));
+			Assert.That(InsertReadable(expr), Is.EqualTo("p = () => a + b"));
 		}
 
 		[Test]
@@ -105,8 +105,8 @@ namespace ICSharpCode.Decompiler.Tests.Output
 				}
 			};
 
-			Assert.AreEqual("p + () => a + b", InsertRequired(expr));
-			Assert.AreEqual("p + (() => a + b)", InsertReadable(expr));
+			Assert.That(InsertRequired(expr), Is.EqualTo("p + () => a + b"));
+			Assert.That(InsertReadable(expr), Is.EqualTo("p + (() => a + b)"));
 		}
 
 		[Test]
@@ -124,8 +124,8 @@ namespace ICSharpCode.Decompiler.Tests.Output
 				Right = new IdentifierExpression("p"),
 			};
 
-			Assert.AreEqual("(() => a + b) + p", InsertRequired(expr));
-			Assert.AreEqual("(() => a + b) + p", InsertReadable(expr));
+			Assert.That(InsertRequired(expr), Is.EqualTo("(() => a + b) + p"));
+			Assert.That(InsertReadable(expr), Is.EqualTo("(() => a + b) + p"));
 		}
 
 		[Test]
@@ -138,8 +138,8 @@ namespace ICSharpCode.Decompiler.Tests.Output
 				)
 			};
 
-			Assert.AreEqual("(int)-a", InsertRequired(expr));
-			Assert.AreEqual("(int)(-a)", InsertReadable(expr));
+			Assert.That(InsertRequired(expr), Is.EqualTo("(int)-a"));
+			Assert.That(InsertReadable(expr), Is.EqualTo("(int)(-a)"));
 		}
 
 		[Test]
@@ -152,8 +152,8 @@ namespace ICSharpCode.Decompiler.Tests.Output
 				)
 			};
 
-			Assert.AreEqual("(MyType)(-a)", InsertRequired(expr));
-			Assert.AreEqual("(MyType)(-a)", InsertReadable(expr));
+			Assert.That(InsertRequired(expr), Is.EqualTo("(MyType)(-a)"));
+			Assert.That(InsertReadable(expr), Is.EqualTo("(MyType)(-a)"));
 		}
 
 		[Test]
@@ -166,8 +166,8 @@ namespace ICSharpCode.Decompiler.Tests.Output
 				)
 			};
 
-			Assert.AreEqual("(MyType)!a", InsertRequired(expr));
-			Assert.AreEqual("(MyType)(!a)", InsertReadable(expr));
+			Assert.That(InsertRequired(expr), Is.EqualTo("(MyType)!a"));
+			Assert.That(InsertReadable(expr), Is.EqualTo("(MyType)(!a)"));
 		}
 
 		[Test]
@@ -178,8 +178,8 @@ namespace ICSharpCode.Decompiler.Tests.Output
 				Expression = new PrimitiveExpression(int.MinValue),
 			};
 
-			Assert.AreEqual("(MyType)(-2147483648)", InsertRequired(expr));
-			Assert.AreEqual("(MyType)(-2147483648)", InsertReadable(expr));
+			Assert.That(InsertRequired(expr), Is.EqualTo("(MyType)(-2147483648)"));
+			Assert.That(InsertReadable(expr), Is.EqualTo("(MyType)(-2147483648)"));
 		}
 
 		[Test]
@@ -190,8 +190,8 @@ namespace ICSharpCode.Decompiler.Tests.Output
 				Expression = new PrimitiveExpression(-1.0),
 			};
 
-			Assert.AreEqual("(MyType)(-1.0)", InsertRequired(expr));
-			Assert.AreEqual("(MyType)(-1.0)", InsertReadable(expr));
+			Assert.That(InsertRequired(expr), Is.EqualTo("(MyType)(-1.0)"));
+			Assert.That(InsertReadable(expr), Is.EqualTo("(MyType)(-1.0)"));
 		}
 
 		[Test]
@@ -202,8 +202,8 @@ namespace ICSharpCode.Decompiler.Tests.Output
 				Expression = new PrimitiveExpression(int.MinValue),
 			};
 
-			Assert.AreEqual("(double)-2147483648", InsertRequired(expr));
-			Assert.AreEqual("(double)(-2147483648)", InsertReadable(expr));
+			Assert.That(InsertRequired(expr), Is.EqualTo("(double)-2147483648"));
+			Assert.That(InsertReadable(expr), Is.EqualTo("(double)(-2147483648)"));
 		}
 
 		[Test]
@@ -217,8 +217,8 @@ namespace ICSharpCode.Decompiler.Tests.Output
 				MemberName = "Length"
 			};
 
-			Assert.AreEqual("((string)a).Length", InsertRequired(expr));
-			Assert.AreEqual("((string)a).Length", InsertReadable(expr));
+			Assert.That(InsertRequired(expr), Is.EqualTo("((string)a).Length"));
+			Assert.That(InsertReadable(expr), Is.EqualTo("((string)a).Length"));
 		}
 
 		[Test]
@@ -229,8 +229,8 @@ namespace ICSharpCode.Decompiler.Tests.Output
 				new UnaryOperatorExpression(UnaryOperatorType.Minus, new IdentifierExpression("a"))
 			);
 
-			Assert.AreEqual("- -a", InsertRequired(expr));
-			Assert.AreEqual("-(-a)", InsertReadable(expr));
+			Assert.That(InsertRequired(expr), Is.EqualTo("- -a"));
+			Assert.That(InsertReadable(expr), Is.EqualTo("-(-a)"));
 		}
 
 		[Test]
@@ -250,8 +250,8 @@ namespace ICSharpCode.Decompiler.Tests.Output
 				}
 			};
 
-			Assert.AreEqual("a + (b == null ? c : d)", InsertRequired(expr));
-			Assert.AreEqual("a + ((b == null) ? c : d)", InsertReadable(expr));
+			Assert.That(InsertRequired(expr), Is.EqualTo("a + (b == null ? c : d)"));
+			Assert.That(InsertReadable(expr), Is.EqualTo("a + ((b == null) ? c : d)"));
 		}
 
 		[Test]
@@ -269,16 +269,16 @@ namespace ICSharpCode.Decompiler.Tests.Output
 				FalseExpression = new IdentifierExpression("c")
 			};
 
-			Assert.AreEqual("a is int? ? b : c", InsertRequired(expr));
-			Assert.AreEqual("(a is int?) ? b : c", InsertReadable(expr));
+			Assert.That(InsertRequired(expr), Is.EqualTo("a is int? ? b : c"));
+			Assert.That(InsertReadable(expr), Is.EqualTo("(a is int?) ? b : c"));
 
 			policy.SpaceBeforeConditionalOperatorCondition = false;
 			policy.SpaceAfterConditionalOperatorCondition = false;
 			policy.SpaceBeforeConditionalOperatorSeparator = false;
 			policy.SpaceAfterConditionalOperatorSeparator = false;
 
-			Assert.AreEqual("a is int? ?b:c", InsertRequired(expr));
-			Assert.AreEqual("(a is int?)?b:c", InsertReadable(expr));
+			Assert.That(InsertRequired(expr), Is.EqualTo("a is int? ?b:c"));
+			Assert.That(InsertReadable(expr), Is.EqualTo("(a is int?)?b:c"));
 		}
 
 		[Test]
@@ -302,8 +302,8 @@ namespace ICSharpCode.Decompiler.Tests.Output
 				MemberName = "ToArray"
 			});
 
-			Assert.AreEqual("(from a in b select a.c ()).ToArray ()", InsertRequired(expr));
-			Assert.AreEqual("(from a in b select a.c ()).ToArray ()", InsertReadable(expr));
+			Assert.That(InsertRequired(expr), Is.EqualTo("(from a in b select a.c ()).ToArray ()"));
+			Assert.That(InsertReadable(expr), Is.EqualTo("(from a in b select a.c ()).ToArray ()"));
 		}
 
 		[Test]
@@ -326,10 +326,10 @@ namespace ICSharpCode.Decompiler.Tests.Output
 				query.Clone()
 			);
 
-			Assert.AreEqual("(from a in b select a) + " +
-							"from a in b select a", InsertRequired(expr));
-			Assert.AreEqual("(from a in b select a) + " +
-							"(from a in b select a)", InsertReadable(expr));
+			Assert.That(InsertRequired(expr), Is.EqualTo("(from a in b select a) + " +
+							"from a in b select a"));
+			Assert.That(InsertReadable(expr), Is.EqualTo("(from a in b select a) + " +
+							"(from a in b select a)"));
 		}
 
 		[Test]
@@ -350,8 +350,8 @@ namespace ICSharpCode.Decompiler.Tests.Output
 				Type = new PrimitiveType("int")
 			};
 
-			Assert.AreEqual("(from a in b select a) is int", InsertRequired(expr));
-			Assert.AreEqual("(from a in b select a) is int", InsertReadable(expr));
+			Assert.That(InsertRequired(expr), Is.EqualTo("(from a in b select a) is int"));
+			Assert.That(InsertReadable(expr), Is.EqualTo("(from a in b select a) is int"));
 		}
 
 		[Test]
@@ -365,8 +365,8 @@ namespace ICSharpCode.Decompiler.Tests.Output
 				)
 			);
 
-			Assert.AreEqual("++a++", InsertRequired(expr));
-			Assert.AreEqual("++(a++)", InsertReadable(expr));
+			Assert.That(InsertRequired(expr), Is.EqualTo("++a++"));
+			Assert.That(InsertReadable(expr), Is.EqualTo("++(a++)"));
 		}
 
 		[Test]
@@ -380,8 +380,8 @@ namespace ICSharpCode.Decompiler.Tests.Output
 				)
 			);
 
-			Assert.AreEqual("(++a)++", InsertRequired(expr));
-			Assert.AreEqual("(++a)++", InsertReadable(expr));
+			Assert.That(InsertRequired(expr), Is.EqualTo("(++a)++"));
+			Assert.That(InsertReadable(expr), Is.EqualTo("(++a)++"));
 		}
 
 		[Test]
@@ -397,8 +397,8 @@ namespace ICSharpCode.Decompiler.Tests.Output
 				new IdentifierExpression("c")
 			);
 
-			Assert.AreEqual("a && b && c", InsertRequired(expr));
-			Assert.AreEqual("a && b && c", InsertReadable(expr));
+			Assert.That(InsertRequired(expr), Is.EqualTo("a && b && c"));
+			Assert.That(InsertReadable(expr), Is.EqualTo("a && b && c"));
 		}
 
 		[Test]
@@ -414,8 +414,8 @@ namespace ICSharpCode.Decompiler.Tests.Output
 				)
 			);
 
-			Assert.AreEqual("a && (b && c)", InsertRequired(expr));
-			Assert.AreEqual("a && (b && c)", InsertReadable(expr));
+			Assert.That(InsertRequired(expr), Is.EqualTo("a && (b && c)"));
+			Assert.That(InsertReadable(expr), Is.EqualTo("a && (b && c)"));
 		}
 
 		[Test]
@@ -431,8 +431,8 @@ namespace ICSharpCode.Decompiler.Tests.Output
 				)
 			);
 
-			Assert.AreEqual("a || b && c", InsertRequired(expr));
-			Assert.AreEqual("a || (b && c)", InsertReadable(expr));
+			Assert.That(InsertRequired(expr), Is.EqualTo("a || b && c"));
+			Assert.That(InsertReadable(expr), Is.EqualTo("a || (b && c)"));
 		}
 
 		[Test]
@@ -448,8 +448,8 @@ namespace ICSharpCode.Decompiler.Tests.Output
 				)
 			);
 
-			Assert.AreEqual("a && (b || c)", InsertRequired(expr));
-			Assert.AreEqual("a && (b || c)", InsertReadable(expr));
+			Assert.That(InsertRequired(expr), Is.EqualTo("a && (b || c)"));
+			Assert.That(InsertReadable(expr), Is.EqualTo("a && (b || c)"));
 		}
 
 		[Test]
@@ -463,8 +463,8 @@ namespace ICSharpCode.Decompiler.Tests.Output
 				Arguments = { new PrimitiveExpression(0) }
 			};
 
-			Assert.AreEqual("(new int[1]) [0]", InsertRequired(expr));
-			Assert.AreEqual("(new int[1]) [0]", InsertReadable(expr));
+			Assert.That(InsertRequired(expr), Is.EqualTo("(new int[1]) [0]"));
+			Assert.That(InsertReadable(expr), Is.EqualTo("(new int[1]) [0]"));
 		}
 
 		[Test]
@@ -481,8 +481,35 @@ namespace ICSharpCode.Decompiler.Tests.Output
 				Arguments = { new PrimitiveExpression(0) }
 			};
 
-			Assert.AreEqual("new int[1] { 42 } [0]", InsertRequired(expr));
-			Assert.AreEqual("(new int[1] { 42 }) [0]", InsertReadable(expr));
+			Assert.That(InsertRequired(expr), Is.EqualTo("new int[1] { 42 } [0]"));
+			Assert.That(InsertReadable(expr), Is.EqualTo("(new int[1] { 42 }) [0]"));
+		}
+
+		[Test]
+		public void AssignmentInObjectOrCollectionInitializer()
+		{
+			Expression expr = new ObjectCreateExpression {
+				Type = AstType.Create("List<int>"),
+				Initializer = new ArrayInitializerExpression {
+					Elements = { new AssignmentExpression(new IdentifierExpression("x"), new PrimitiveExpression(42)) }
+				}
+			};
+			Expression expr2 = new ObjectCreateExpression {
+				Type = AstType.Create("Data"),
+				Initializer = new ArrayInitializerExpression {
+					Elements = { new NamedExpression("X", new PrimitiveExpression(42)) }
+				}
+			};
+			Expression expr3 = new ObjectCreateExpression {
+				Type = AstType.Create("Dictionary<int, string>"),
+				Initializer = new ArrayInitializerExpression {
+					Elements = { new AssignmentExpression(new IndexerExpression(null, new PrimitiveExpression(0)), new PrimitiveExpression("42")) }
+				}
+			};
+
+			Assert.That(InsertRequired(expr), Is.EqualTo("new List<int> { (x = 42) }"));
+			Assert.That(InsertRequired(expr2), Is.EqualTo("new Data { X = 42 }"));
+			Assert.That(InsertRequired(expr3), Is.EqualTo("new Dictionary<int, string> { [0] = \"42\" }"));
 		}
 	}
 }

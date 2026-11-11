@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -55,7 +55,7 @@ namespace ICSharpCode.Decompiler.Tests.Output
 			}
 
 			var foundType = compilation.FindType(type).GetDefinition();
-			Assert.IsNotNull(foundType);
+			Assert.That(foundType, Is.Not.Null);
 			return foundType;
 		}
 
@@ -76,7 +76,7 @@ namespace ICSharpCode.Decompiler.Tests.Output
 		{
 			var typeDef = GetDefinition(typeof(Dictionary<,>));
 			ambience.ConversionFlags = flags;
-			Assert.AreEqual(expectedOutput, ambience.ConvertSymbol(typeDef));
+			Assert.That(ambience.ConvertSymbol(typeDef), Is.EqualTo(expectedOutput));
 		}
 
 		[TestCase(None, "Object")]
@@ -92,7 +92,7 @@ namespace ICSharpCode.Decompiler.Tests.Output
 		{
 			var typeDef = GetDefinition(typeof(object));
 			ambience.ConversionFlags = flags;
-			Assert.AreEqual(expectedOutput, ambience.ConvertSymbol(typeDef));
+			Assert.That(ambience.ConvertSymbol(typeDef), Is.EqualTo(expectedOutput));
 		}
 
 		[TestCase(None, "IEnumerable")]
@@ -104,7 +104,7 @@ namespace ICSharpCode.Decompiler.Tests.Output
 		{
 			var typeDef = GetDefinition(typeof(IEnumerable<>));
 			ambience.ConversionFlags = flags;
-			Assert.AreEqual(expectedOutput, ambience.ConvertSymbol(typeDef));
+			Assert.That(ambience.ConvertSymbol(typeDef), Is.EqualTo(expectedOutput));
 		}
 
 		[TestCase(None, "Enumerator")]
@@ -121,7 +121,7 @@ namespace ICSharpCode.Decompiler.Tests.Output
 		{
 			var typeDef = GetDefinition(typeof(List<>.Enumerator));
 			ambience.ConversionFlags = flags;
-			Assert.AreEqual(expectedOutput, ambience.ConvertSymbol(typeDef));
+			Assert.That(ambience.ConvertSymbol(typeDef), Is.EqualTo(expectedOutput));
 		}
 
 		[TestCase(None, "StaticClass")]
@@ -137,7 +137,7 @@ namespace ICSharpCode.Decompiler.Tests.Output
 		{
 			var typeDef = GetDefinition(typeof(StaticClass));
 			ambience.ConversionFlags = flags;
-			Assert.AreEqual(expectedOutput, ambience.ConvertSymbol(typeDef));
+			Assert.That(ambience.ConvertSymbol(typeDef), Is.EqualTo(expectedOutput));
 		}
 
 		[TestCase(None, "SealedClass")]
@@ -153,7 +153,7 @@ namespace ICSharpCode.Decompiler.Tests.Output
 		{
 			var typeDef = GetDefinition(typeof(SealedClass));
 			ambience.ConversionFlags = flags;
-			Assert.AreEqual(expectedOutput, ambience.ConvertSymbol(typeDef));
+			Assert.That(ambience.ConvertSymbol(typeDef), Is.EqualTo(expectedOutput));
 		}
 
 		[TestCase(None, "RefStruct")]
@@ -169,7 +169,7 @@ namespace ICSharpCode.Decompiler.Tests.Output
 		{
 			var typeDef = GetDefinition(typeof(RefStruct));
 			ambience.ConversionFlags = flags;
-			Assert.AreEqual(expectedOutput, ambience.ConvertSymbol(typeDef));
+			Assert.That(ambience.ConvertSymbol(typeDef), Is.EqualTo(expectedOutput));
 		}
 
 		[TestCase(None, "ReadonlyStruct")]
@@ -185,7 +185,7 @@ namespace ICSharpCode.Decompiler.Tests.Output
 		{
 			var typeDef = GetDefinition(typeof(ReadonlyStruct));
 			ambience.ConversionFlags = flags;
-			Assert.AreEqual(expectedOutput, ambience.ConvertSymbol(typeDef));
+			Assert.That(ambience.ConvertSymbol(typeDef), Is.EqualTo(expectedOutput));
 		}
 
 		[TestCase(None, "ReadonlyRefStruct")]
@@ -201,7 +201,7 @@ namespace ICSharpCode.Decompiler.Tests.Output
 		{
 			var typeDef = GetDefinition(typeof(ReadonlyRefStruct));
 			ambience.ConversionFlags = flags;
-			Assert.AreEqual(expectedOutput, ambience.ConvertSymbol(typeDef));
+			Assert.That(ambience.ConvertSymbol(typeDef), Is.EqualTo(expectedOutput));
 		}
 		#endregion
 
@@ -219,7 +219,7 @@ namespace ICSharpCode.Decompiler.Tests.Output
 		{
 			var func = GetDefinition(typeof(Func<,>));
 			ambience.ConversionFlags = flags;
-			Assert.AreEqual(expectedOutput, ambience.ConvertSymbol(func));
+			Assert.That(ambience.ConvertSymbol(func), Is.EqualTo(expectedOutput));
 		}
 		#endregion
 
@@ -232,7 +232,7 @@ namespace ICSharpCode.Decompiler.Tests.Output
 			var field = GetDefinition(typeof(CSharpAmbienceTests.Program)).GetFields(f => f.Name == "test").Single();
 			ambience.ConversionFlags = flags;
 
-			Assert.AreEqual(expectedOutput, ambience.ConvertSymbol(field));
+			Assert.That(ambience.ConvertSymbol(field), Is.EqualTo(expectedOutput));
 		}
 
 		[TestCase(All & ~PlaceReturnTypeAfterParameterList, "private const int ICSharpCode.Decompiler.Tests.Output.CSharpAmbienceTests.Program.TEST2;")]
@@ -242,7 +242,7 @@ namespace ICSharpCode.Decompiler.Tests.Output
 			var field = compilation.FindType(typeof(CSharpAmbienceTests.Program)).GetFields(f => f.Name == "TEST2").Single();
 			ambience.ConversionFlags = flags;
 
-			Assert.AreEqual(expectedOutput, ambience.ConvertSymbol(field));
+			Assert.That(ambience.ConvertSymbol(field), Is.EqualTo(expectedOutput));
 		}
 		#endregion
 
@@ -254,7 +254,7 @@ namespace ICSharpCode.Decompiler.Tests.Output
 			ambience.ConversionFlags = ConversionFlags.StandardConversionFlags | ConversionFlags.ShowDeclaringType;
 			string result = ambience.ConvertSymbol(ev);
 
-			Assert.AreEqual("public event EventHandler Program.ProgramChanged;", result);
+			Assert.That(result, Is.EqualTo("public event EventHandler Program.ProgramChanged;"));
 		}
 
 		[Test]
@@ -264,7 +264,7 @@ namespace ICSharpCode.Decompiler.Tests.Output
 			ambience.ConversionFlags = ConversionFlags.StandardConversionFlags;
 			string result = ambience.ConvertSymbol(ev);
 
-			Assert.AreEqual("public event EventHandler SomeEvent;", result);
+			Assert.That(result, Is.EqualTo("public event EventHandler SomeEvent;"));
 		}
 		#endregion
 
@@ -276,17 +276,27 @@ namespace ICSharpCode.Decompiler.Tests.Output
 			var prop = compilation.FindType(typeof(CSharpAmbienceTests.Program)).GetProperties(p => p.Name == "Test").Single();
 			ambience.ConversionFlags = flags;
 
-			Assert.AreEqual(expectedOutput, ambience.ConvertSymbol(prop));
+			Assert.That(ambience.ConvertSymbol(prop), Is.EqualTo(expectedOutput));
 		}
 
 		[TestCase(StandardConversionFlags, "public int this[int index] { get; }")]
 		[TestCase(ILSpyMainTreeViewMemberFlags, "this[int] : int")]
 		public void Indexer(ConversionFlags flags, string expectedOutput)
 		{
-			var prop = compilation.FindType(typeof(CSharpAmbienceTests.Program)).GetProperties(p => p.IsIndexer).Single();
+			var prop = compilation.FindType(typeof(CSharpAmbienceTests.Program)).GetProperties(p => p.IsIndexer && !p.IsExplicitInterfaceImplementation).Single();
 			ambience.ConversionFlags = flags;
 
-			Assert.AreEqual(expectedOutput, ambience.ConvertSymbol(prop));
+			Assert.That(ambience.ConvertSymbol(prop), Is.EqualTo(expectedOutput));
+		}
+
+		[TestCase(StandardConversionFlags, "int Interface.this[int index] { get; }")]
+		[TestCase(ILSpyMainTreeViewMemberFlags, "Interface.this[int] : int")]
+		public void ExplicitIndexer(ConversionFlags flags, string expectedOutput)
+		{
+			var prop = compilation.FindType(typeof(CSharpAmbienceTests.Program)).GetProperties(p => p.IsIndexer && p.IsExplicitInterfaceImplementation).Single();
+			ambience.ConversionFlags = flags;
+
+			Assert.That(ambience.ConvertSymbol(prop), Is.EqualTo(expectedOutput));
 		}
 		#endregion
 
@@ -298,7 +308,7 @@ namespace ICSharpCode.Decompiler.Tests.Output
 			var prop = compilation.FindType(typeof(CSharpAmbienceTests.Program)).GetConstructors().Single();
 			ambience.ConversionFlags = flags;
 
-			Assert.AreEqual(expectedOutput, ambience.ConvertSymbol(prop));
+			Assert.That(ambience.ConvertSymbol(prop), Is.EqualTo(expectedOutput));
 		}
 
 		[TestCase(StandardConversionFlags, "~Program();")]
@@ -309,7 +319,79 @@ namespace ICSharpCode.Decompiler.Tests.Output
 				.GetMembers(m => m.SymbolKind == SymbolKind.Destructor, GetMemberOptions.IgnoreInheritedMembers).Single();
 			ambience.ConversionFlags = flags;
 
-			Assert.AreEqual(expectedOutput, ambience.ConvertSymbol(dtor));
+			Assert.That(ambience.ConvertSymbol(dtor), Is.EqualTo(expectedOutput));
+		}
+		#endregion
+
+		#region Dynamic (synthesized member) tests
+		[Test]
+		public void DynamicType()
+		{
+			ambience.ConversionFlags = ConversionFlags.None;
+			Assert.That(ambience.ConvertType(SpecialType.Dynamic), Is.EqualTo("dynamic"));
+		}
+
+		[Test]
+		public void DynamicInvokeMember()
+		{
+			// The shape ExpressionBuilder synthesizes for a.Compute(1, "two", d): dynamic return,
+			// per-argument types from the callsite delegate (constants keep their compile-time type),
+			// declared on the dynamic type.
+			var method = new FakeMethod(compilation, SymbolKind.Method) {
+				Name = "Compute",
+				ReturnType = SpecialType.Dynamic,
+				DeclaringType = SpecialType.Dynamic,
+				Parameters = new IParameter[] {
+					new DefaultParameter(compilation.FindType(KnownTypeCode.Int32), string.Empty),
+					new DefaultParameter(compilation.FindType(KnownTypeCode.String), string.Empty),
+					new DefaultParameter(SpecialType.Dynamic, string.Empty),
+				},
+			};
+			ambience.ConversionFlags = ConversionFlags.ShowReturnType | ConversionFlags.ShowParameterList;
+			Assert.That(ambience.ConvertSymbol(method), Is.EqualTo("dynamic Compute(int, string, dynamic)"));
+
+			// The same member as DecompilerTextView.BuildHoverContent renders it (full hover form): the
+			// unnamed synthetic parameters collapse to their types, so there is no dangling-name artifact.
+			ambience.ConversionFlags = ConversionFlags.All & ~(ConversionFlags.ShowBody | ConversionFlags.PlaceReturnTypeAfterParameterList);
+			Assert.That(ambience.ConvertSymbol(method), Is.EqualTo("public dynamic dynamic.Compute(int, string, dynamic)"));
+		}
+		[Test]
+		public void DynamicIndexer()
+		{
+			// The shape ExpressionBuilder synthesizes for a[b]: an indexer with dynamic return, index
+			// parameters typed from the callsite delegate, declared on the dynamic type. It carries no
+			// accessors, which the ambience renders cleanly (no empty { } artifact).
+			var indexer = new FakeProperty(compilation) {
+				Name = "Item",
+				IsIndexer = true,
+				ReturnType = SpecialType.Dynamic,
+				DeclaringType = SpecialType.Dynamic,
+				Parameters = new IParameter[] { new DefaultParameter(compilation.FindType(KnownTypeCode.Int32), string.Empty) },
+			};
+			ambience.ConversionFlags = ConversionFlags.ShowReturnType | ConversionFlags.ShowParameterList;
+			Assert.That(ambience.ConvertSymbol(indexer), Is.EqualTo("dynamic this[int]"));
+
+			ambience.ConversionFlags = ConversionFlags.All & ~(ConversionFlags.ShowBody | ConversionFlags.PlaceReturnTypeAfterParameterList);
+			Assert.That(ambience.ConvertSymbol(indexer), Is.EqualTo("public dynamic dynamic.this[int]"));
+		}
+
+		[Test]
+		public void ParameterizedProperty()
+		{
+			// A named property with parameters (VB.NET parameterized property); C# has no
+			// syntax for it, but signature surfaces show the parameter list in parentheses.
+			var property = new FakeProperty(compilation) {
+				Name = "Data",
+				ReturnType = compilation.FindType(KnownTypeCode.Int32),
+				DeclaringType = SpecialType.Dynamic,
+				Parameters = new IParameter[] { new DefaultParameter(compilation.FindType(KnownTypeCode.Int32), "index") },
+			};
+
+			ambience.ConversionFlags = ILSpyMainTreeViewMemberFlags;
+			Assert.That(ambience.ConvertSymbol(property), Is.EqualTo("Data(int) : int"));
+
+			ambience.ConversionFlags = ConversionFlags.All & ~(ConversionFlags.ShowBody | ConversionFlags.PlaceReturnTypeAfterParameterList);
+			Assert.That(ambience.ConvertSymbol(property), Is.EqualTo("public int dynamic.Data(int index)"));
 		}
 		#endregion
 
@@ -323,7 +405,12 @@ namespace ICSharpCode.Decompiler.Tests.Output
 		readonly struct ReadonlyStruct { }
 		readonly ref struct ReadonlyRefStruct { }
 
-		class Program
+		interface Interface
+		{
+			int this[int x] { get; }
+		}
+
+		class Program : Interface
 		{
 			int test;
 			const int TEST2 = 2;
@@ -331,6 +418,12 @@ namespace ICSharpCode.Decompiler.Tests.Output
 			public int Test { get; set; }
 
 			public int this[int index] {
+				get {
+					return index;
+				}
+			}
+
+			int Interface.this[int index] {
 				get {
 					return index;
 				}

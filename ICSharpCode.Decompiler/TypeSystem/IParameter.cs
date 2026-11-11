@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -26,12 +26,45 @@ namespace ICSharpCode.Decompiler.TypeSystem
 	/// <remarks>
 	/// Should match order in <see cref="CSharp.Syntax.FieldDirection"/>.
 	/// </remarks>
-	public enum ReferenceKind
+	public enum ReferenceKind : byte
 	{
 		None,
 		Out,
 		Ref,
-		In
+		In,
+		RefReadOnly,
+	}
+
+	/// <summary>
+	/// Describes which part of a parameter or local is restricted to the current scope.
+	/// </summary>
+	public enum ScopedKind : byte
+	{
+		None,
+		ScopedRef,
+		ScopedValue,
+	}
+
+	public struct LifetimeAnnotation
+	{
+		/// <summary>
+		/// Gets or sets the scope explicitly encoded by <c>ScopedRefAttribute</c>.
+		/// Implicit and redundant scopedness is excluded.
+		/// </summary>
+		public ScopedKind DeclaredScope { get; set; }
+
+		/// <summary>
+		/// C# 11 scoped annotation: "scoped ref" (ScopedRefAttribute)
+		/// </summary>
+		public bool ScopedRef {
+			get { return DeclaredScope != ScopedKind.None; }
+			set { DeclaredScope = value ? ScopedKind.ScopedRef : ScopedKind.None; }
+		}
+
+		/// <summary>
+		/// Gets or sets whether <c>UnscopedRefAttribute</c> is present.
+		/// </summary>
+		public bool HasUnscopedRefAttribute { get; set; }
 	}
 
 	public interface IParameter : IVariable
@@ -47,19 +80,9 @@ namespace ICSharpCode.Decompiler.TypeSystem
 		ReferenceKind ReferenceKind { get; }
 
 		/// <summary>
-		/// Gets whether this parameter is a C# 'ref' parameter.
+		/// C# 11 scoped annotation.
 		/// </summary>
-		bool IsRef { get; }
-
-		/// <summary>
-		/// Gets whether this parameter is a C# 'out' parameter.
-		/// </summary>
-		bool IsOut { get; }
-
-		/// <summary>
-		/// Gets whether this parameter is a C# 'in' parameter.
-		/// </summary>
-		bool IsIn { get; }
+		LifetimeAnnotation Lifetime { get; }
 
 		/// <summary>
 		/// Gets whether this parameter is a C# 'params' parameter.

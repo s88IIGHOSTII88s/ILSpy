@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2014 Daniel Grunwald
+// Copyright (c) 2014 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -16,6 +16,7 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+#nullable enable
 
 namespace ICSharpCode.Decompiler.IL
 {
@@ -64,11 +65,16 @@ namespace ICSharpCode.Decompiler.IL
 		/// Used for C# <c>double</c>.
 		/// </remarks>
 		F8,
-		/// <summary>Another stack type. Includes objects, value types, ...</summary>
-		O,
-		/// <summary>A managed pointer</summary>
+		/// <summary>Reference type: class type, boxed value type, etc.</summary>
+		Obj,
+		/// <summary>
+		/// A value type other than the primitive types listed above.
+		/// This includes unconstrained generic types which might be value types at runtime.
+		/// </summary>
+		VT,
+		/// <summary>A managed pointer (C# `ref T`, C++/CLI `interior_ptr&lt;T&gt;`)</summary>
 		Ref,
 		/// <summary>Represents the lack of a stack slot</summary>
-		Void
+		Void,
 	}
 }

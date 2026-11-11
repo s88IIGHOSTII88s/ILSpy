@@ -1,4 +1,4 @@
-﻿// Licensed to the .NET Foundation under one or more agreements.
+// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
@@ -29,6 +29,8 @@ namespace ICSharpCode.Decompiler.Metadata
 
 		public ImmutableArray<CustomAttributeNamedArgument<TType>> DecodeNamedArguments(ref BlobReader valueReader, int count)
 		{
+			if (count < 0 || count > valueReader.RemainingBytes)
+				throw new BadImageFormatException();
 			var arguments = ImmutableArray.CreateBuilder<CustomAttributeNamedArgument<TType>>(count);
 			for (int i = 0; i < count; i++)
 			{
@@ -213,6 +215,10 @@ namespace ICSharpCode.Decompiler.Metadata
 			}
 
 			if (count < 0)
+			{
+				throw new BadImageFormatException();
+			}
+			if (count > blobReader.RemainingBytes)
 			{
 				throw new BadImageFormatException();
 			}

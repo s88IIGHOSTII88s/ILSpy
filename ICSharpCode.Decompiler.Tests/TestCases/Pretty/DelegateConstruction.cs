@@ -1,4 +1,4 @@
-﻿// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -19,12 +19,34 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Threading;
+#if CS100
+using System.Threading.Tasks;
 
-namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
+#endif
+
+namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty.DelegateConstruction
 {
 	public static class DelegateConstruction
 	{
+		internal class Dummy
+		{
+			public int baz;
+
+			public List<Dummy> more;
+		}
+
+		[CompilerGenerated]
+		internal class Helper
+		{
+			[CompilerGenerated]
+			internal bool HelpMe(Dummy dum)
+			{
+				return true;
+			}
+		}
+
 		private class InstanceTests
 		{
 			public struct SomeData
@@ -36,14 +58,14 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 
 			public Action CaptureOfThis()
 			{
-				return delegate {
+				return () => {
 					CaptureOfThis();
 				};
 			}
 
 			public Action CaptureOfThisAndParameter(int a)
 			{
-				return delegate {
+				return () => {
 					CaptureOfThisAndParameter(a);
 				};
 			}
@@ -54,7 +76,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 				{
 					if (item > 0)
 					{
-						return delegate {
+						return () => {
 							CaptureOfThisAndParameter(item + a);
 						};
 					}
@@ -69,7 +91,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 					int copyOfItem = item;
 					if (item > 0)
 					{
-						return delegate {
+						return () => {
 							CaptureOfThisAndParameter(item + a + copyOfItem);
 						};
 					}
@@ -96,18 +118,18 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 
 			private void Bug955()
 			{
-				new Thread((ThreadStart)delegate {
+				new Thread(() => {
 				});
 			}
 
 			public void Bug951(int amount)
 			{
-				DoAction(delegate {
+				DoAction(() => {
 					if (amount < 0)
 					{
 						amount = 0;
 					}
-					DoAction(delegate {
+					DoAction(() => {
 						NoOp(amount);
 					});
 				});
@@ -116,12 +138,12 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			public void Bug951b()
 			{
 				int amount = Foo();
-				DoAction(delegate {
+				DoAction(() => {
 					if (amount < 0)
 					{
 						amount = 0;
 					}
-					DoAction(delegate {
+					DoAction(() => {
 						NoOp(amount);
 					});
 				});
@@ -129,8 +151,8 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 
 			public void Bug951c(SomeData data)
 			{
-				DoAction(delegate {
-					DoAction(delegate {
+				DoAction(() => {
+					DoAction(() => {
 						DoSomething(data.Value);
 					});
 				});
@@ -141,11 +163,17 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 				return (int x) => this.x;
 			}
 
+#if ROSLYN
+			// Roslyn names the parameters of an anonymous method declared without a parameter
+			// list "<p0>", which no lambda parameter list can spell, so the delegate form is
+			// kept. Legacy csc names them "param0" - a perfectly good identifier that does
+			// become a lambda - hence the Roslyn-only guard.
 			public Action<object> Bug971_DelegateWithoutParameterList()
 			{
 				return delegate {
 				};
 			}
+#endif
 
 			private void DoAction(Action action)
 			{
@@ -160,10 +188,9 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			}
 		}
 
-
 		public interface IM3
 		{
-			void M3();
+			void M();
 		}
 
 		public class BaseClass : IM3
@@ -174,8 +201,13 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			protected virtual void M2()
 			{
 			}
-			public virtual void M3()
+			public virtual void M()
 			{
+			}
+
+			public static void StaticMethod()
+			{
+
 			}
 		}
 
@@ -184,7 +216,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			protected override void M2()
 			{
 			}
-			public new void M3()
+			public new void M()
 			{
 			}
 
@@ -194,30 +226,30 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 				Noop("M1", M1);
 				Noop("M2.base", base.M2);
 				Noop("M2", M2);
-				Noop("M3.base", base.M3);
-				Noop("M3.base_virt", ((BaseClass)this).M3);
-				Noop("M3.base_interface", ((IM3)this).M3);
+				Noop("M.base", base.M);
+				Noop("M.base_virt", ((BaseClass)this).M);
+				Noop("M.base_interface", ((IM3)this).M);
 #if CS70
-				Noop("M3", this.M3);
-				Noop("M3", M3);
+				Noop("M", this.M);
+				Noop("M", M);
 
 #if CS80
-				static void M3()
+				static void M()
 #else
-				void M3()
+				void M()
 #endif
 				{
 
 				}
 #else
-				Noop("M3", M3);
+				Noop("M", M);
 #endif
 			}
 
 			public void Test2()
 			{
-				Noop("M3.new", new BaseClass().M3);
-				Noop("M3.new", new SubClass().M3);
+				Noop("M.new", new BaseClass().M);
+				Noop("M.new", new SubClass().M);
 			}
 
 			private void Noop(string name, Action _)
@@ -229,8 +261,12 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		{
 			public Func<TCaptured> GetFunc(Func<TNonCaptured, TCaptured> f)
 			{
+#if CS71
+				TCaptured captured = f(default);
+#else
 				TCaptured captured = f(default(TNonCaptured));
-				return delegate {
+#endif
+				return () => {
 					Console.WriteLine(captured.GetType().FullName);
 					return captured;
 				};
@@ -239,13 +275,16 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			public Func<TNonCaptured, TNonCapturedMP, TCaptured> GetFunc<TNonCapturedMP>(Func<TCaptured> f)
 			{
 				TCaptured captured = f();
-				return delegate (TNonCaptured a, TNonCapturedMP d) {
+				return (TNonCaptured a, TNonCapturedMP d) => {
 					Console.WriteLine(a.GetHashCode());
 					Console.WriteLine(captured.GetType().FullName);
 					return captured;
 				};
 			}
 		}
+
+		private delegate void GenericDelegate<T>();
+		public delegate void RefRecursiveDelegate(ref RefRecursiveDelegate d);
 
 		public static Func<string, string, bool> test0 = (string a, string b) => string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b);
 		public static Func<string, string, bool> test1 = (string a, string b) => string.IsNullOrEmpty(a) || !string.IsNullOrEmpty(b);
@@ -314,7 +353,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			for (int i = 0; i < 10; i++)
 			{
 				int counter;
-				list.Add(delegate (int x) {
+				list.Add((int x) => {
 					counter = x;
 				});
 			}
@@ -327,7 +366,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			int counter;
 			for (int i = 0; i < 10; i++)
 			{
-				list.Add(delegate (int x) {
+				list.Add((int x) => {
 					counter = x;
 				});
 			}
@@ -336,26 +375,26 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 
 		public static Action StaticAnonymousMethodNoClosure()
 		{
-			return delegate {
+			return () => {
 				Console.WriteLine();
 			};
 		}
 
 		public static void NameConflict()
 		{
-			// i is captured variable,
-			// j is parameter in anonymous method
+			// i is local in main method,
+			// j is captured variable,
+			// k is parameter in anonymous method
 			// l is local in anonymous method,
-			// k is local in main method
 			// Ensure that the decompiler doesn't introduce name conflicts
 			List<Action<int>> list = new List<Action<int>>();
-			for (int k = 0; k < 10; k++)
+			for (int i = 0; i < 10; i++)
 			{
-				int i;
-				for (i = 0; i < 10; i++)
+				int j;
+				for (j = 0; j < 10; j++)
 				{
-					list.Add(delegate (int j) {
-						for (int l = 0; l < i; l += j)
+					list.Add((int k) => {
+						for (int l = 0; l < j; l += k)
 						{
 							Console.WriteLine();
 						}
@@ -367,17 +406,17 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		public static void NameConflict2(int j)
 		{
 			List<Action<int>> list = new List<Action<int>>();
-			for (int k = 0; k < 10; k++)
+			for (int i = 0; i < 10; i++)
 			{
-				list.Add(delegate (int i) {
-					Console.WriteLine(i);
+				list.Add((int k) => {
+					Console.WriteLine(k);
 				});
 			}
 		}
 
 		public static Action<int> NameConflict3(int i)
 		{
-			return delegate (int j) {
+			return (int j) => {
 				for (int k = 0; k < j; k++)
 				{
 					Console.WriteLine(k);
@@ -398,7 +437,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		public static Func<TCaptured> CapturedTypeParameter1<TNonCaptured, TCaptured>(TNonCaptured a, Func<TNonCaptured, TCaptured> f)
 		{
 			TCaptured captured = f(a);
-			return delegate {
+			return () => {
 				Console.WriteLine(captured.GetType().FullName);
 				return captured;
 			};
@@ -407,7 +446,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		public static Func<TCaptured> CapturedTypeParameter2<TNonCaptured, TCaptured>(TNonCaptured a, Func<TNonCaptured, List<TCaptured>> f)
 		{
 			List<TCaptured> captured = f(a);
-			return delegate {
+			return () => {
 				Console.WriteLine(captured.GetType().FullName);
 				return captured.FirstOrDefault();
 			};
@@ -457,12 +496,124 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			return (T _) => _;
 		}
 
+		private static void Use(Action a)
+		{
+
+		}
+
+		private static void Use2(Func<Func<int, int>, IEnumerable<int>> a)
+		{
+
+		}
+		private static void Use2<T>(GenericDelegate<T> a)
+		{
+		}
+
+		private static void Use3<T>(Func<Func<T, T>> a)
+		{
+		}
+
+		public static void SimpleDelegateReference()
+		{
+			Use(SimpleDelegateReference);
+#if !MCS2
+			Use3(Identity<int>);
+#endif
+		}
+
+		public static void DelegateReferenceWithStaticTarget()
+		{
+			Use(NameConflict);
+			Use(BaseClass.StaticMethod);
+		}
+
+		public static void ExtensionDelegateReference(IEnumerable<int> ints)
+		{
+			Use2(ints.Select);
+		}
+
+#if CS70
+		public static void LocalFunctionDelegateReference()
+		{
+			Use(LocalFunction);
+			Use2<int>(LocalFunction2<int>);
+#if CS80
+			static void LocalFunction()
+#else
+			void LocalFunction()
+#endif
+			{
+			}
+#if CS80
+			static void LocalFunction2<T>()
+#else
+			void LocalFunction2<T>()
+#endif
+			{
+			}
+		}
+#endif
+
 #if CS90
 		public static Func<int, int, int, int> LambdaParameterDiscard()
 		{
 			return (int _, int _, int _) => 0;
 		}
 #endif
+
+#if CS100
+		public static Func<int> LambdaWithAttribute0()
+		{
+			return [My] () => 0;
+		}
+
+		public static Func<int, int> LambdaWithAttribute1()
+		{
+			return [My] (int x) => 0;
+		}
+
+		public static Func<int, int> LambdaWithAttributeOnParam()
+		{
+			return ([My] int x) => 0;
+		}
+
+		public static Func<Task<int>> AsyncLambdaWithAttribute0()
+		{
+			return [My] async () => 0;
+		}
+		public static Action StatementLambdaWithAttribute0()
+		{
+			return [My] () => {
+			};
+		}
+
+		public static Action<int> StatementLambdaWithAttribute1()
+		{
+			return [return: My] (int x) => {
+				Console.WriteLine(x);
+			};
+		}
+		public static Action<int> StatementLambdaWithAttribute2()
+		{
+			return ([My] int x) => {
+				Console.WriteLine(x);
+			};
+		}
+
+		public static int LambdaWithAttributeOnAnonymousTypeParameter()
+		{
+			return new[] {
+				new {
+					X = 1
+				}
+			}.Select([My] (a) => a.X).Sum();
+		}
+#endif
+
+		public static void CallRecursiveDelegate(ref RefRecursiveDelegate d)
+		{
+			d(ref d);
+		}
 	}
 
 	public class Issue1867
@@ -487,4 +638,78 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			return () => m1.value + 1 == 4 && m2.value > 5;
 		}
 	}
+
+	internal class Issue2791
+	{
+		public void M()
+		{
+			Run((object o) => {
+				try
+				{
+					List<int> list = o as List<int>;
+					Action action = () => {
+						list.Select((int x) => x * 2);
+					};
+					Action action2 = () => {
+						list.Select((int x) => x * 2);
+					};
+					Console.WriteLine();
+					action();
+					Console.WriteLine();
+					action2();
+				}
+				catch (Exception)
+				{
+					Console.WriteLine("catch");
+				}
+				finally
+				{
+					Console.WriteLine("finally");
+				}
+			}, null);
+		}
+
+		private void Run(ParameterizedThreadStart del, object x)
+		{
+			del(x);
+		}
+
+		public void AnonymousMethodWithByRefParameters()
+		{
+			RefAction refAction = delegate (ref int reference) {
+				reference++;
+			};
+			OutAction outAction = delegate (out int reference) {
+				reference = 1;
+			};
+			int value = 0;
+			refAction(ref value);
+			outAction(out value);
+			Console.WriteLine(value);
+		}
+
+		public void Issue1572(DelegateConstruction.Dummy dum)
+		{
+#if EXPECTED_OUTPUT
+			DelegateConstruction.Helper CS_0024_003C_003E8__locals0 = new DelegateConstruction.Helper();
+			DelegateConstruction.Dummy dummy = dum.more.Where((DelegateConstruction.Dummy dummy2) => true).Where((DelegateConstruction.Dummy dummy2) => true).FirstOrDefault();
+			Console.WriteLine();
+			dummy.baz++;
+#else
+			DelegateConstruction.Helper h = new DelegateConstruction.Helper();
+			DelegateConstruction.Dummy localDummy = dum.more.Where(h.HelpMe).Where(h.HelpMe).FirstOrDefault();
+			Console.WriteLine();
+			localDummy.baz++;
+#endif
+		}
+	}
+
+	[AttributeUsage(AttributeTargets.All)]
+	internal class MyAttribute : Attribute
+	{
+	}
+
+	public delegate void OutAction(out int value);
+
+	public delegate void RefAction(ref int value);
 }

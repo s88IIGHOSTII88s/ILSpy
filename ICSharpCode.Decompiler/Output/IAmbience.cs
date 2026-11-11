@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -105,9 +105,30 @@ namespace ICSharpCode.Decompiler.Output
 		/// Support <c>record</c> classes.
 		/// </summary>
 		SupportRecordClasses = 0x20000,
+		/// <summary>
+		/// Support <c>record</c> structs.
+		/// </summary>
+		SupportRecordStructs = 0x40000,
+		/// <summary>
+		/// Support <c>&gt;&gt;&gt;</c> as unsigned right shift operator.
+		/// </summary>
+		SupportUnsignedRightShift = 0x80000,
+		/// <summary>
+		/// Support C# 11 <c>operator checked</c>.
+		/// </summary>
+		SupportOperatorChecked = 0x100000,
+		/// <summary>
+		/// Support C# 7.2 <c>private protected</c>.
+		/// </summary>
+		UsePrivateProtectedAccessibility = 0x200000,
+		/// <summary>
+		/// Support C# 14 <c>extension</c> declarations.
+		/// </summary>
+		SupportExtensionDeclarations = 0x400000,
 
 		StandardConversionFlags = ShowParameterNames |
 			ShowAccessibility |
+			UsePrivateProtectedAccessibility |
 			ShowParameterList |
 			ShowParameterModifiers |
 			ShowParameterDefaultValues |
@@ -119,7 +140,7 @@ namespace ICSharpCode.Decompiler.Output
 			ShowDefinitionKeyword |
 			ShowBody,
 
-		All = 0x7ffff,
+		All = 0x1fffff,
 	}
 
 	/// <summary>

@@ -1,14 +1,14 @@
-﻿// Copyright (c) 2017 AlphaSierraPapa for the SharpDevelop Team
-// 
+// Copyright (c) 2026 AlphaSierraPapa for the SharpDevelop Team
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
 // without restriction, including without limitation the rights to use, copy, modify, merge,
 // publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
 // to whom the Software is furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in all copies or
 // substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
 // INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
 // PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
@@ -17,112 +17,92 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System;
-using System.ComponentModel;
-using System.Reflection;
-using System.Runtime.CompilerServices;
-using System.Security.Principal;
-using System.Windows;
-using System.Windows.Input;
+using System.Collections.Generic;
+using System.Linq;
+using System.Xml.Linq;
 
-using ICSharpCode.ILSpy.Commands;
+using CommunityToolkit.Mvvm.ComponentModel;
 
-using Microsoft.Win32;
+using ICSharpCode.ILSpy.AppEnv;
+using ICSharpCode.ILSpyX.Settings;
 
 namespace ICSharpCode.ILSpy.Options
 {
-	public class MiscSettings : INotifyPropertyChanged
+	/// <summary>
+	/// Cross-cutting application-level toggles that don't fit Decompiler or Display.
+	/// Persisted under the <c>&lt;MiscSettings/&gt;</c> XML section; XML attribute names
+	/// and defaults match the WPF host so saved settings round-trip across platforms.
+	/// </summary>
+	public sealed partial class MiscSettings : ObservableObject, ISettingsSection
 	{
+		[ObservableProperty]
 		bool allowMultipleInstances;
+
+		[ObservableProperty]
 		bool loadPreviousAssemblies = true;
 
-		public MiscSettings()
+		readonly HashSet<string> allowedDocumentationLinkOrigins = new(StringComparer.OrdinalIgnoreCase);
+
+		public XName SectionName => "MiscSettings";
+
+		public bool IsDocumentationLinkOriginAllowed(Uri uri)
 		{
-			AddRemoveShellIntegrationCommand = new DelegateCommand<object>(AddRemoveShellIntegration);
+			string? origin = TryGetDocumentationLinkOrigin(uri);
+			bool allowed = origin != null && allowedDocumentationLinkOrigins.Contains(origin);
+			AppLog.Write(AppLog.Category.DocumentationLinks, () =>
+				$"Link check settings={System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(this)} uri={uri.AbsoluteUri} origin={origin ?? "<none>"} allowed={allowed}");
+			return allowed;
 		}
 
-		/// <summary>
-		/// Allow multiple instances.
-		/// </summary>
-		public bool AllowMultipleInstances {
-			get { return allowMultipleInstances; }
-			set {
-				if (allowMultipleInstances != value)
-				{
-					allowMultipleInstances = value;
-					OnPropertyChanged();
-				}
-			}
-		}
-
-		/// <summary>
-		/// Load assemblies that were loaded in the previous instance
-		/// </summary>
-		public bool LoadPreviousAssemblies {
-			get { return loadPreviousAssemblies; }
-			set {
-				if (loadPreviousAssemblies != value)
-				{
-					loadPreviousAssemblies = value;
-					OnPropertyChanged();
-				}
-			}
-		}
-
-		public ICommand AddRemoveShellIntegrationCommand { get; }
-
-		const string rootPath = @"Software\Classes\{0}\shell";
-		const string fullPath = @"Software\Classes\{0}\shell\Open with ILSpy\command";
-
-		private void AddRemoveShellIntegration(object obj)
+		public void AllowDocumentationLinkOrigin(Uri uri)
 		{
-			string commandLine = NativeMethods.ArgumentArrayToCommandLine(Assembly.GetEntryAssembly().Location) + " \"%L\"";
-			if (RegistryEntriesExist())
+			if (TryGetDocumentationLinkOrigin(uri) is { } origin)
+				allowedDocumentationLinkOrigins.Add(origin);
+		}
+
+		public void ClearDocumentationLinkOrigins()
+		{
+			int count = allowedDocumentationLinkOrigins.Count;
+			allowedDocumentationLinkOrigins.Clear();
+			AppLog.Write(AppLog.Category.DocumentationLinks, () =>
+				$"Cleared link origins settings={System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(this)} previousCount={count}");
+		}
+
+		static string? TryGetDocumentationLinkOrigin(Uri uri)
+		{
+			if (!uri.IsAbsoluteUri || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+				return null;
+
+			int defaultPort = uri.Scheme == Uri.UriSchemeHttp ? 80 : 443;
+			string host = uri.IdnHost.ToLowerInvariant();
+			if (host.Length == 0)
+				return null;
+			if (host.Contains(':'))
+				host = "[" + host + "]";
+			return uri.Scheme.ToLowerInvariant() + "://" + host
+				+ (uri.Port == defaultPort ? string.Empty : ":" + uri.Port);
+		}
+
+		public void LoadFromXml(XElement e)
+		{
+			AllowMultipleInstances = (bool?)e.Attribute(nameof(AllowMultipleInstances)) ?? false;
+			LoadPreviousAssemblies = (bool?)e.Attribute(nameof(LoadPreviousAssemblies)) ?? true;
+			allowedDocumentationLinkOrigins.Clear();
+			foreach (var origin in e.Elements("DocumentationLinkOrigin").Select(e => (string?)e.Attribute("Value")))
 			{
-				if (MessageBox.Show(string.Format(Properties.Resources.RemoveShellIntegrationMessage, commandLine), "ILSpy", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
-				{
-					Registry.CurrentUser.CreateSubKey(string.Format(rootPath, "dllfile")).DeleteSubKeyTree("Open with ILSpy");
-					Registry.CurrentUser.CreateSubKey(string.Format(rootPath, "exefile")).DeleteSubKeyTree("Open with ILSpy");
-				}
-			}
-			else
-			{
-				if (MessageBox.Show(string.Format(Properties.Resources.AddShellIntegrationMessage, commandLine), "ILSpy", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
-				{
-					Registry.CurrentUser.CreateSubKey(string.Format(fullPath, "dllfile"))?
-						.SetValue("", commandLine);
-					Registry.CurrentUser.CreateSubKey(string.Format(fullPath, "exefile"))?
-						.SetValue("", commandLine);
-				}
-			}
-			OnPropertyChanged(nameof(AddRemoveShellIntegrationText));
-		}
-
-		private static bool RegistryEntriesExist()
-		{
-			return Registry.CurrentUser.OpenSubKey(string.Format(fullPath, "dllfile")) != null
-				&& Registry.CurrentUser.OpenSubKey(string.Format(fullPath, "exefile")) != null;
-		}
-
-		public string AddRemoveShellIntegrationText {
-			get {
-				return RegistryEntriesExist() ? Properties.Resources.RemoveShellIntegration : Properties.Resources.AddShellIntegration;
+				if (Uri.TryCreate(origin, UriKind.Absolute, out var uri) && TryGetDocumentationLinkOrigin(uri) is { } normalized)
+					allowedDocumentationLinkOrigins.Add(normalized);
 			}
 		}
 
-		#region INotifyPropertyChanged Implementation
-
-		public event PropertyChangedEventHandler PropertyChanged;
-
-		protected virtual void OnPropertyChanged(PropertyChangedEventArgs e)
+		public XElement SaveToXml()
 		{
-			PropertyChanged?.Invoke(this, e);
+			var section = new XElement(SectionName);
+			section.SetAttributeValue(nameof(AllowMultipleInstances), AllowMultipleInstances);
+			section.SetAttributeValue(nameof(LoadPreviousAssemblies), LoadPreviousAssemblies);
+			foreach (var origin in allowedDocumentationLinkOrigins.OrderBy(origin => origin, StringComparer.OrdinalIgnoreCase))
+				section.Add(new XElement("DocumentationLinkOrigin", new XAttribute("Value", origin)));
+			return section;
 		}
-
-		protected void OnPropertyChanged([CallerMemberName] string propertyName = null)
-		{
-			OnPropertyChanged(new PropertyChangedEventArgs(propertyName));
-		}
-
-		#endregion
 	}
 }

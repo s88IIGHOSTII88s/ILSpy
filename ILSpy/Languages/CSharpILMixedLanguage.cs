@@ -1,14 +1,14 @@
-﻿// Copyright (c) 2018 Siegfried Pammer
-// 
+// Copyright (c) 2018 Siegfried Pammer
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
 // without restriction, including without limitation the rights to use, copy, modify, merge,
 // publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
 // to whom the Software is furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in all copies or
 // substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
 // INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
 // PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
@@ -18,16 +18,16 @@
 
 using System;
 using System.Collections.Generic;
-using System.ComponentModel.Composition;
+using System.Composition;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection.Metadata;
-using System.Threading;
-using System.Windows;
-using System.Windows.Media;
 
-using ICSharpCode.AvalonEdit.Highlighting;
+using Avalonia.Media;
+
+using AvaloniaEdit.Highlighting;
+
 using ICSharpCode.Decompiler;
 using ICSharpCode.Decompiler.CSharp;
 using ICSharpCode.Decompiler.CSharp.OutputVisitor;
@@ -36,34 +36,50 @@ using ICSharpCode.Decompiler.Disassembler;
 using ICSharpCode.Decompiler.Metadata;
 using ICSharpCode.Decompiler.TypeSystem;
 using ICSharpCode.Decompiler.Util;
+using ICSharpCode.ILSpyX;
+using ICSharpCode.ILSpyX.Extensions;
 
-namespace ICSharpCode.ILSpy
+using ICSharpCode.ILSpy.TextView;
+
+namespace ICSharpCode.ILSpy.Languages
 {
 	using SequencePoint = ICSharpCode.Decompiler.DebugInfo.SequencePoint;
 
+	/// <summary>
+	/// Disassembles IL with the decompiled C# source interleaved above each instruction (mapped via
+	/// sequence points) as gray comments.
+	/// </summary>
 	[Export(typeof(Language))]
-	class CSharpILMixedLanguage : ILLanguage
+	[Shared]
+	[method: ImportingConstructor]
+	class CSharpILMixedLanguage(SettingsService settingsService) : ILLanguage
 	{
 		public override string Name => "IL with C#";
 
 		protected override ReflectionDisassembler CreateDisassembler(ITextOutput output, DecompilationOptions options)
 		{
+			var displaySettings = settingsService.DisplaySettings;
 			return new ReflectionDisassembler(output,
 				new MixedMethodBodyDisassembler(output, options) {
 					DetectControlStructure = detectControlStructure,
 					ShowSequencePoints = options.DecompilerSettings.ShowDebugInfo
 				},
 				options.CancellationToken) {
-				ShowMetadataTokens = Options.DisplaySettingsPanel.CurrentDisplaySettings.ShowMetadataTokens,
-				ShowMetadataTokensInBase10 = Options.DisplaySettingsPanel.CurrentDisplaySettings.ShowMetadataTokensInBase10,
-				ExpandMemberDefinitions = options.DecompilerSettings.ExpandMemberDefinitions
+				ShowMetadataTokens = displaySettings.ShowMetadataTokens,
+				ShowMetadataTokensInBase10 = displaySettings.ShowMetadataTokensInBase10,
+				ShowRawRVAOffsetAndBytes = displaySettings.ShowRawOffsetsAndBytesBeforeInstruction,
+				ExpandMemberDefinitions = options.DecompilerSettings.ExpandMemberDefinitions,
+				DecodeCustomAttributeBlobs = displaySettings.DecodeCustomAttributeBlobs
 			};
 		}
 
-		static CSharpDecompiler CreateDecompiler(PEFile module, DecompilationOptions options)
+		static CSharpDecompiler CreateDecompiler(MetadataFile module, DecompilationOptions options)
 		{
 			CSharpDecompiler decompiler = new CSharpDecompiler(module, module.GetAssemblyResolver(), options.DecompilerSettings);
 			decompiler.CancellationToken = options.CancellationToken;
+			decompiler.DocumentationProvider = options.DecompilerSettings.ShowXmlDocumentation
+				? module.GetDocumentationProviderOrNull()
+				: null;
 			return decompiler;
 		}
 
@@ -78,10 +94,10 @@ namespace ICSharpCode.ILSpy
 		class MixedMethodBodyDisassembler : MethodBodyDisassembler
 		{
 			readonly DecompilationOptions options;
-			// list sorted by IL offset
-			IList<SequencePoint> sequencePoints;
-			// lines of raw c# source code
-			string[] codeLines;
+			// list sorted by IL offset; non-null only for the duration of a Disassemble pass
+			IList<SequencePoint>? sequencePoints;
+			// lines of raw c# source code; non-null only for the duration of a Disassemble pass
+			string[]? codeLines;
 
 			public MixedMethodBodyDisassembler(ITextOutput output, DecompilationOptions options)
 				: base(output, options.CancellationToken)
@@ -89,7 +105,7 @@ namespace ICSharpCode.ILSpy
 				this.options = options;
 			}
 
-			public override void Disassemble(PEFile module, MethodDefinitionHandle handle)
+			public override void Disassemble(MetadataFile module, MethodDefinitionHandle handle)
 			{
 				try
 				{
@@ -109,8 +125,13 @@ namespace ICSharpCode.ILSpy
 				}
 			}
 
-			protected override void WriteInstruction(ITextOutput output, MetadataReader metadata, MethodDefinitionHandle methodDefinition, ref BlobReader blob)
+			protected override void WriteInstruction(ITextOutput output, MetadataFile metadata, MethodDefinitionHandle methodHandle, ref BlobReader blob, int methodRva)
 			{
+				if (sequencePoints is null || codeLines is null)
+				{
+					base.WriteInstruction(output, metadata, methodHandle, ref blob, methodRva);
+					return;
+				}
 				int index = sequencePoints.BinarySearch(blob.Offset, seq => seq.Offset);
 				if (index >= 0)
 				{
@@ -143,7 +164,7 @@ namespace ICSharpCode.ILSpy
 						highlightingOutput?.EndSpan();
 					}
 				}
-				base.WriteInstruction(output, metadata, methodDefinition, ref blob);
+				base.WriteInstruction(output, metadata, methodHandle, ref blob, methodRva);
 			}
 
 			HighlightingColor gray = new HighlightingColor { Foreground = new SimpleHighlightingBrush(Colors.DarkGray) };
@@ -163,13 +184,13 @@ namespace ICSharpCode.ILSpy
 				output.Write("// ");
 				output.BeginSpan(gray);
 				if (isSingleLine)
-					output.Write(text.Substring(0, startColumn).TrimStart());
+					output.Write(text.AsSpan(0, startColumn).TrimStart());
 				else
-					output.Write(text.Substring(0, startColumn));
+					output.Write(text.AsSpan(0, startColumn));
 				output.EndSpan();
-				output.Write(text.Substring(startColumn, endColumn - startColumn));
+				output.Write(text.AsSpan(startColumn, endColumn - startColumn));
 				output.BeginSpan(gray);
-				output.Write(text.Substring(endColumn));
+				output.Write(text.AsSpan(endColumn));
 				output.EndSpan();
 				output.WriteLine();
 			}

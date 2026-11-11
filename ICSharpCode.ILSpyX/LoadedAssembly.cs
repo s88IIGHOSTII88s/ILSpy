@@ -1,0 +1,860 @@
+// Copyright (c) 2011 AlphaSierraPapa for the SharpDevelop Team
+// 
+// Permission is hereby granted, free of charge, to any person obtaining a copy of this
+// software and associated documentation files (the "Software"), to deal in the Software
+// without restriction, including without limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
+// to whom the Software is furnished to do so, subject to the following conditions:
+// 
+// The above copyright notice and this permission notice shall be included in all copies or
+// substantial portions of the Software.
+// 
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
+// FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Reflection.Metadata;
+using System.Reflection.PortableExecutable;
+using System.Runtime.CompilerServices;
+using System.Threading;
+using System.Threading.Tasks;
+
+using ICSharpCode.Decompiler.DebugInfo;
+using ICSharpCode.Decompiler.Metadata;
+using ICSharpCode.Decompiler.TypeSystem;
+using ICSharpCode.Decompiler.TypeSystem.Implementation;
+using ICSharpCode.Decompiler.Util;
+using ICSharpCode.ILSpyX.FileLoaders;
+using ICSharpCode.ILSpyX.Instrumentation;
+using ICSharpCode.ILSpyX.PdbProvider;
+
+#nullable enable
+
+namespace ICSharpCode.ILSpyX
+{
+	/// <summary>
+	/// Represents a file loaded into ILSpy.
+	/// 
+	/// Note: this class is misnamed.
+	/// The file is not necessarily an assembly, nor is it necessarily loaded.
+	/// 
+	/// A LoadedAssembly can refer to:
+	///   * a .NET module (single-file) loaded into ILSpy
+	///   * a non-existant file
+	///   * a file of unknown format that could not be loaded
+	///   * a .nupkg file or .NET core bundle
+	///   * a standalone portable pdb file or metadata stream
+	///   * a file that is still being loaded in the background
+	/// </summary>
+	[DebuggerDisplay("[LoadedAssembly {shortName}]")]
+	public sealed class LoadedAssembly : IDisposable
+	{
+		/// <summary>
+		/// Maps from MetadataFile (successfully loaded .NET module) back to the LoadedAssembly instance
+		/// that was used to load the module.
+		/// </summary>
+		internal static readonly ConditionalWeakTable<MetadataFile, LoadedAssembly> loadedAssemblies = new ConditionalWeakTable<MetadataFile, LoadedAssembly>();
+
+		readonly Lazy<Task<LoadResult>> lazyLoadingTask;
+		// Routes through Lazy so the actual Task.Run(LoadAsync) only kicks off on first
+		// demand (any caller that awaits or reads .Result). Status checks below use
+		// IsValueCreated so they don't accidentally trigger the load just by polling.
+		Task<LoadResult> loadingTask => lazyLoadingTask.Value;
+
+		/// <summary>
+		/// Fires once when the lazy load task transitions to a completed state (success
+		/// or failure). Subscribers use it to refresh derived state (tree-node icons,
+		/// cached metadata pointers) without themselves calling
+		/// <see cref="GetLoadResultAsync"/>, which would trigger the load.
+		///
+		/// If the load has already finished by the time you subscribe, the event will
+		/// not fire retroactively — check <see cref="IsLoaded"/> after subscribing and
+		/// invoke your handler manually if it returns true.
+		/// </summary>
+		public event Action? Loaded;
+
+		void RaiseLoaded() => Loaded?.Invoke();
+		readonly AssemblyList assemblyList;
+		readonly string fileName;
+		readonly string shortName;
+		readonly IAssemblyResolver? providedAssemblyResolver;
+		readonly FileLoaderRegistry? fileLoaders;
+		readonly bool applyWinRTProjections;
+		readonly bool useDebugSymbols;
+		readonly PackageFolder? packageFolder;
+		readonly PackageEntry? packageEntry;
+
+		public LoadedAssembly? ParentBundle { get; }
+
+		public LoadedAssembly(AssemblyList assemblyList, string fileName,
+			Task<Stream?>? stream = null,
+			FileLoaderRegistry? fileLoaders = null,
+			IAssemblyResolver? assemblyResolver = null,
+			string? pdbFileName = null,
+			bool applyWinRTProjections = false, bool useDebugSymbols = false,
+			PackageFolder? packageFolder = null, PackageEntry? packageEntry = null)
+		{
+			this.assemblyList = assemblyList ?? throw new ArgumentNullException(nameof(assemblyList));
+			this.fileName = fileName ?? throw new ArgumentNullException(nameof(fileName));
+			this.PdbFileName = pdbFileName;
+			this.providedAssemblyResolver = assemblyResolver;
+			this.fileLoaders = fileLoaders;
+			this.applyWinRTProjections = applyWinRTProjections;
+			this.useDebugSymbols = useDebugSymbols;
+			this.packageFolder = packageFolder;
+			this.packageEntry = packageEntry;
+
+			// Lazy: the first GetLoadResultAsync / await / .Result kicks off the work. Lets
+			// callers (e.g. AssemblyListTreeNode) construct LoadedAssembly entries en masse
+			// without flooding the thread pool with metadata-loading tasks; the active
+			// assembly's path-restore awaits first and gets a clean run.
+			//
+			// Continuation hooks the Loaded event so subscribers can refresh their display
+			// (icon / tooltip / lazy children) without themselves triggering the load — they
+			// observe completion rather than start it.
+			var localStream = stream;
+			this.lazyLoadingTask = new Lazy<Task<LoadResult>>(
+				() => {
+					var task = Task.Run(() => LoadAsync(localStream));
+					task.ContinueWith(static (_, state) => ((LoadedAssembly)state!).RaiseLoaded(),
+						this, TaskScheduler.Default);
+					return task;
+				},
+				LazyThreadSafetyMode.ExecutionAndPublication); // requires that this.fileName is set
+			this.shortName = Path.GetFileNameWithoutExtension(fileName);
+		}
+
+		public LoadedAssembly(LoadedAssembly bundle, string fileName, Task<Stream?>? stream,
+			FileLoaderRegistry? fileLoaders = null,
+			IAssemblyResolver? assemblyResolver = null,
+			bool applyWinRTProjections = false, bool useDebugSymbols = false,
+			PackageFolder? packageFolder = null, PackageEntry? packageEntry = null)
+			: this(bundle.assemblyList, fileName, stream, fileLoaders, assemblyResolver, null,
+				  applyWinRTProjections, useDebugSymbols, packageFolder, packageEntry)
+		{
+			this.ParentBundle = bundle;
+		}
+
+		string? targetFrameworkId;
+
+		/// <summary>
+		/// Returns the effective target framework identifier in the form '&lt;framework&gt;,Version=v&lt;version&gt;'.
+		/// An explicit override wins over the detected value.
+		/// </summary>
+		public async Task<string> GetTargetFrameworkIdAsync()
+		{
+			// An explicit override wins over (and bypasses) detection, even once detection has
+			// already cached a value, so the user's framework hint drives reference resolution.
+			// The setter normalizes blank to null, so a non-null override is always a usable TFM.
+			if (TargetFrameworkIdOverride is { } tfmOverride)
+				return tfmOverride;
+			return await GetDetectedTargetFrameworkIdAsync().ConfigureAwait(false);
+		}
+
+		/// <summary>
+		/// Returns the detected target framework identifier in the form '&lt;framework&gt;,Version=v&lt;version&gt;'.
+		/// Returns an empty string if no TargetFrameworkAttribute was found
+		/// or the file doesn't contain an assembly header, i.e., is only a module.
+		///
+		/// Throws an exception if the file does not contain any .NET metadata (e.g. file of unknown format).
+		/// </summary>
+		public async Task<string> GetDetectedTargetFrameworkIdAsync()
+		{
+			var value = LazyInit.VolatileRead(ref targetFrameworkId);
+			if (value == null)
+			{
+				var assembly = await GetMetadataFileAsync().ConfigureAwait(false);
+				value = assembly.DetectTargetFrameworkId() ?? string.Empty;
+				value = LazyInit.GetOrSet(ref targetFrameworkId, value);
+			}
+
+			return value;
+		}
+
+		string? runtimePack;
+
+		public async Task<string> GetRuntimePackAsync()
+		{
+			var value = LazyInit.VolatileRead(ref runtimePack);
+			if (value == null)
+			{
+				var assembly = await GetMetadataFileAsync().ConfigureAwait(false);
+				value = assembly.DetectRuntimePack() ?? string.Empty;
+				value = LazyInit.GetOrSet(ref runtimePack, value);
+			}
+
+			return value;
+		}
+
+		public ReferenceLoadInfo LoadedAssemblyReferencesInfo { get; } = new ReferenceLoadInfo();
+
+		IDebugInfoProvider? debugInfoProvider;
+
+		/// <summary>
+		/// Gets the <see cref="LoadResult"/>.
+		/// </summary>
+		public Task<LoadResult> GetLoadResultAsync()
+		{
+			return loadingTask;
+		}
+
+		/// <summary>
+		/// Gets the <see cref="MetadataFile"/>.
+		/// </summary>
+		public async Task<MetadataFile> GetMetadataFileAsync()
+		{
+			var loadResult = await loadingTask.ConfigureAwait(false);
+			if (loadResult.MetadataFile != null)
+				return loadResult.MetadataFile;
+			else
+				throw loadResult.FileLoadException ?? new MetadataFileNotSupportedException();
+		}
+
+		/// <summary>
+		/// Gets the <see cref="PEFile"/>.
+		/// Returns null in case of load errors.
+		/// </summary>
+		public MetadataFile? GetMetadataFileOrNull()
+		{
+			try
+			{
+				var loadResult = loadingTask.GetAwaiter().GetResult();
+				return loadResult.MetadataFile;
+			}
+			catch (Exception ex)
+			{
+				System.Diagnostics.Trace.TraceError(ex.ToString());
+				return null;
+			}
+		}
+
+		/// <summary>
+		/// Gets the <see cref="MetadataFile"/>.
+		/// Returns null in case of load errors.
+		/// </summary>
+		public async Task<MetadataFile?> GetMetadataFileOrNullAsync()
+		{
+			try
+			{
+				var loadResult = await loadingTask.ConfigureAwait(false);
+				return loadResult.MetadataFile;
+			}
+			catch (Exception ex)
+			{
+				System.Diagnostics.Trace.TraceError(ex.ToString());
+				return null;
+			}
+		}
+
+		ICompilation? typeSystem;
+
+		/// <summary>
+		/// Gets a type system containing all types from this assembly + primitive types from mscorlib.
+		/// Returns null in case of load errors.
+		/// </summary>
+		/// <remarks>
+		/// This is an uncached type system.
+		/// </remarks>
+		public ICompilation? GetTypeSystemOrNull()
+		{
+			var value = Volatile.Read(ref this.typeSystem);
+			if (value == null)
+			{
+				var module = GetMetadataFileOrNull();
+				if (module == null || module.IsMetadataOnly)
+					return null;
+				value = new SimpleCompilation(
+					module.WithOptions(TypeSystemOptions.Default | TypeSystemOptions.Uncached | TypeSystemOptions.KeepModifiers),
+					MinimalCorlib.Instance);
+				value = LazyInit.GetOrSet(ref this.typeSystem, value);
+			}
+
+			return value;
+		}
+
+		readonly object typeSystemWithOptionsLockObj = new object();
+		ICompilation? typeSystemWithOptions;
+		TypeSystemOptions? currentTypeSystemOptions;
+
+		public ICompilation? GetTypeSystemOrNull(TypeSystemOptions options)
+		{
+			lock (typeSystemWithOptionsLockObj)
+			{
+				if (typeSystemWithOptions != null && options == currentTypeSystemOptions)
+					return typeSystemWithOptions;
+				var module = GetMetadataFileOrNull();
+				if (module == null || module.IsMetadataOnly)
+					return null;
+				currentTypeSystemOptions = options;
+				return typeSystemWithOptions = new SimpleCompilation(
+					module.WithOptions(options | TypeSystemOptions.Uncached | TypeSystemOptions.KeepModifiers),
+					MinimalCorlib.Instance);
+			}
+		}
+
+		public AssemblyList AssemblyList => assemblyList;
+
+		public string FileName => fileName;
+
+		/// <summary>
+		/// Finds a file next to this assembly inside its package, if this assembly was loaded from one.
+		/// </summary>
+		public PackageEntry? FindAssociatedPackageEntry(string extension)
+		{
+			return packageFolder?.FindAssociatedEntry(packageEntry?.Name ?? fileName, extension);
+		}
+
+		public string ShortName => shortName;
+
+		// Cached once a successful Text computation completes. Reads after Dispose return
+		// this value (or ShortName fallback) instead of re-walking the metadata, whose
+		// MemoryMappedFile may have been unmapped -- a dereference AVs and the CLR fails
+		// fast on the resulting CorruptingStateException.
+		string? cachedText;
+		volatile bool isDisposed;
+
+		public string Text {
+			get {
+				if (cachedText is not null)
+					return cachedText;
+				if (isDisposed)
+					return ShortName;
+				if (IsLoaded && !HasLoadError)
+				{
+					var result = GetLoadResultAsync().GetAwaiter().GetResult();
+					if (result.MetadataFile != null)
+					{
+						string computed;
+						switch (result.MetadataFile.Kind)
+						{
+							case MetadataFile.MetadataFileKind.PortableExecutable:
+								var metadata = result.MetadataFile.Metadata;
+								string? versionOrInfo;
+								if (metadata.IsAssembly)
+								{
+									versionOrInfo = metadata.GetAssemblyDefinition().Version?.ToString();
+									string tfId = GetTargetFrameworkIdAsync().GetAwaiter().GetResult();
+									if (!string.IsNullOrEmpty(tfId))
+										versionOrInfo += ", " + tfId.Replace("Version=", " ");
+								}
+								else
+								{
+									versionOrInfo = ".netmodule";
+								}
+								computed = versionOrInfo == null
+									? ShortName
+									: string.Format("{0} ({1})", ShortName, versionOrInfo);
+								break;
+							case MetadataFile.MetadataFileKind.ProgramDebugDatabase:
+								computed = ShortName + " (Debug Metadata)";
+								break;
+							case MetadataFile.MetadataFileKind.Metadata:
+								computed = ShortName + " (Metadata)";
+								break;
+							default:
+								computed = ShortName;
+								break;
+						}
+						cachedText = computed;
+						return computed;
+					}
+				}
+				return ShortName;
+			}
+		}
+
+		/// <summary>
+		/// Gets whether loading finished for this file (either successfully or unsuccessfully).
+		/// Reading this property must NOT trigger the lazy load — callers poll it as a status
+		/// check (e.g. tree-icon overlays) and would deadlock if every poll started another
+		/// metadata load.
+		/// </summary>
+		public bool IsLoaded => lazyLoadingTask.IsValueCreated && lazyLoadingTask.Value.IsCompleted;
+
+		/// <summary>
+		/// Gets whether this file was loaded successfully as an assembly (not as a bundle).
+		/// </summary>
+		public bool IsLoadedAsValidAssembly {
+			get {
+				if (!lazyLoadingTask.IsValueCreated)
+					return false;
+				var task = lazyLoadingTask.Value;
+				return task.Status == TaskStatus.RanToCompletion && task.Result.MetadataFile is { IsMetadataOnly: false };
+			}
+		}
+
+		/// <summary>
+		/// Gets whether loading failed (file does not exist, unknown file format).
+		/// Returns false for valid assemblies and valid bundles.
+		/// </summary>
+		public bool HasLoadError => lazyLoadingTask.IsValueCreated && lazyLoadingTask.Value.IsFaulted;
+
+		public bool IsAutoLoaded { get; set; }
+
+		/// <summary>
+		/// Gets the PDB file name or null, if no PDB was found or it's embedded.
+		/// </summary>
+		public string? PdbFileName { get; private set; }
+
+		string? targetFrameworkIdOverride;
+
+		/// <summary>
+		/// Overrides the target framework used to resolve this assembly's references, in the
+		/// '&lt;framework&gt;,Version=v&lt;version&gt;' form (e.g. ".NETFramework,Version=v4.8").
+		/// Null means the framework detected from the TargetFrameworkAttribute is used. Blank or
+		/// whitespace-only values (e.g. a hand-edited assembly-list XML with <c>TargetFramework=""</c>)
+		/// are normalized to null and incidental whitespace is trimmed, so an override never
+		/// suppresses detection with an empty effective TFM.
+		/// Set this before the assembly's references are first resolved (initial load) or follow
+		/// a change with a reload: the resolver is built once per LoadedAssembly and frozen.
+		/// </summary>
+		public string? TargetFrameworkIdOverride {
+			get => targetFrameworkIdOverride;
+			set {
+				var trimmed = value?.Trim();
+				targetFrameworkIdOverride = string.IsNullOrEmpty(trimmed) ? null : trimmed;
+			}
+		}
+
+		async Task<LoadResult> LoadAsync(Task<Stream?>? streamTask)
+		{
+			ILSpyXEventSource.Log.AssemblyLoadStart(fileName);
+			string loaderName = "";
+			bool success = false;
+			try
+			{
+				var result = await LoadCoreAsync(streamTask, name => loaderName = name).ConfigureAwait(false);
+				success = result.MetadataFile != null || result.Package != null;
+				return result;
+			}
+			finally
+			{
+				ILSpyXEventSource.Log.AssemblyLoadStop(fileName, loaderName, success);
+			}
+		}
+
+		async Task<LoadResult> LoadCoreAsync(Task<Stream?>? streamTask, Action<string> reportLoaderName)
+		{
+			using var stream = await PrepareStream();
+			FileLoadContext settings = new FileLoadContext(applyWinRTProjections, ParentBundle);
+
+			LoadResult? result = null;
+
+			if (fileLoaders != null)
+			{
+				foreach (var loader in fileLoaders.RegisteredLoaders)
+				{
+					// In each iteration any of the following things may happen:
+					// Load returns null because the loader is unable to handle the file, we simply continue without recording the result.
+					// Load returns a non-null value that is either a valid result or an exception:
+					// - if it's a success, we use that and end the loop,
+					// - if it's an error, we remember the error, discarding any previous errors.
+					// Load throws an exception, remember the error, discarding any previous errors.
+					stream.Position = 0;
+					try
+					{
+						var nextResult = await loader.Load(fileName, stream, settings).ConfigureAwait(false);
+						if (nextResult != null)
+						{
+							result = nextResult;
+							if (result.IsSuccess)
+							{
+								reportLoaderName(loader.GetType().Name);
+								break;
+							}
+						}
+					}
+					catch (Exception ex)
+					{
+						result = new LoadResult { FileLoadException = ex };
+					}
+				}
+			}
+
+			if (result?.IsSuccess != true)
+			{
+				stream.Position = 0;
+				try
+				{
+					result = await PEFileLoader.LoadPEFile(fileName, stream, settings).ConfigureAwait(false);
+					if (result.IsSuccess)
+						reportLoaderName(nameof(PEFileLoader));
+				}
+				catch (Exception ex)
+				{
+					result = new LoadResult { FileLoadException = ex };
+				}
+			}
+
+			if (result.MetadataFile != null)
+			{
+				lock (loadedAssemblies)
+				{
+					loadedAssemblies.Add(result.MetadataFile, this);
+				}
+
+				if (result.MetadataFile is PEFile module)
+				{
+					debugInfoProvider = LoadDebugInfo(module);
+				}
+			}
+			else if (result.Package != null)
+			{
+				result.Package.LoadedAssembly = this;
+			}
+			else if (result.FileLoadException != null)
+			{
+				throw result.FileLoadException;
+			}
+			return result;
+
+			async Task<Stream> PrepareStream()
+			{
+				// runs on background thread
+				var stream = streamTask != null ? await streamTask.ConfigureAwait(false) : null;
+				if (stream != null)
+				{
+					// Read the module from a precrafted stream
+					if (!stream.CanSeek)
+					{
+						var memoryStream = new MemoryStream();
+						stream.CopyTo(memoryStream);
+						stream.Close();
+						memoryStream.Position = 0;
+						stream = memoryStream;
+					}
+					return stream;
+				}
+				else
+				{
+					return new FileStream(fileName, FileMode.Open, FileAccess.Read);
+				}
+			}
+		}
+
+		IDebugInfoProvider? LoadDebugInfo(PEFile? module)
+		{
+			if (module == null || !useDebugSymbols)
+			{
+				return LoadDebugInfoCore(module);
+			}
+			ILSpyXEventSource.Log.DebugInfoLoadStart(fileName);
+			IDebugInfoProvider? provider = null;
+			try
+			{
+				provider = LoadDebugInfoCore(module);
+				return provider;
+			}
+			finally
+			{
+				ILSpyXEventSource.Log.DebugInfoLoadStop(fileName, provider?.GetType().Name ?? "none");
+			}
+		}
+
+		IDebugInfoProvider? LoadDebugInfoCore(PEFile? module)
+		{
+			if (module == null)
+			{
+				return null;
+			}
+			if (useDebugSymbols)
+			{
+				try
+				{
+					if (PdbFileName != null)
+						return DebugInfoUtils.FromFile(module, PdbFileName)
+							?? DebugInfoUtils.LoadSymbols(module);
+
+					var packagePdb = FindAssociatedPackageEntry(".pdb");
+					if (packagePdb != null)
+					{
+						var packageProvider = DebugInfoUtils.FromStream(module, packagePdb.TryOpenStream(), packagePdb.FullName);
+						if (packageProvider != null)
+							return packageProvider;
+					}
+					return DebugInfoUtils.LoadSymbols(module);
+				}
+				catch (IOException)
+				{
+				}
+				catch (UnauthorizedAccessException)
+				{
+				}
+				catch (InvalidOperationException)
+				{
+					// ignore any errors during symbol loading
+				}
+			}
+			return null;
+		}
+
+		public async Task<IDebugInfoProvider?> LoadDebugInfo(string fileName)
+		{
+			this.PdbFileName = fileName;
+			var assembly = await GetMetadataFileAsync().ConfigureAwait(false);
+			debugInfoProvider = await Task.Run(() => LoadDebugInfo(assembly as PEFile));
+			return debugInfoProvider;
+		}
+
+		sealed class MyAssemblyResolver : IAssemblyResolver, IReferenceLoadInfoProvider
+		{
+			readonly LoadedAssembly parent;
+			readonly bool loadOnDemand;
+			readonly bool applyWinRTProjections;
+
+			readonly IAssemblyResolver? providedAssemblyResolver;
+			readonly AssemblyList assemblyList;
+			readonly AssemblyListSnapshot alreadyLoadedAssemblies;
+			readonly Task<string> tfmTask;
+			readonly ReferenceLoadInfo referenceLoadInfo;
+
+			public MyAssemblyResolver(LoadedAssembly parent, AssemblyListSnapshot assemblyListSnapshot,
+				bool loadOnDemand, bool applyWinRTProjections)
+			{
+				this.parent = parent;
+				this.loadOnDemand = loadOnDemand;
+				this.applyWinRTProjections = applyWinRTProjections;
+
+				this.providedAssemblyResolver = parent.providedAssemblyResolver;
+				this.assemblyList = parent.assemblyList;
+				// Note: we cache a copy of the assembly list in the constructor, so that the
+				// resolve calls only search-by-asm-name in the assemblies that were already loaded
+				// at the time of the GetResolver() call.
+				this.alreadyLoadedAssemblies = assemblyListSnapshot;
+				// If we didn't do this, we'd also search in the assemblies that we just started to load
+				// in previous Resolve() calls; but we don't want to wait for those to be loaded.
+				this.tfmTask = parent.GetTargetFrameworkIdAsync();
+				this.referenceLoadInfo = parent.LoadedAssemblyReferencesInfo;
+			}
+
+			/// <summary>
+			/// The log the resolution messages go to, so the type system can report the forwarder
+			/// chains it cannot follow to the same place.
+			/// </summary>
+			public ReferenceLoadInfo LoadInfo => referenceLoadInfo;
+
+			/// <inheritdoc/>
+			public IDisposable? BeginSnapshot()
+			{
+				return parent.GetUniversalResolver(applyWinRTProjections).BeginSnapshot();
+			}
+
+			public MetadataFile? Resolve(IAssemblyReference reference)
+			{
+				return ResolveAsync(reference).GetAwaiter().GetResult();
+			}
+
+			public async Task<MetadataFile?> ResolveAsync(IAssemblyReference reference)
+			{
+				ILSpyXEventSource.Log.AssemblyResolveStart(reference);
+				var outcome = AssemblyResolveOutcome.NotFound;
+				try
+				{
+					var (module, resolvedVia) = await ResolveCoreAsync(reference).ConfigureAwait(false);
+					outcome = resolvedVia;
+					return module;
+				}
+				finally
+				{
+					ILSpyXEventSource.Log.AssemblyResolveStop(reference, outcome);
+				}
+			}
+
+			/// <summary>
+			/// 0) if we're inside a package, look for filename.dll in parent directories
+			/// 1) try to find exact match by tfm + full asm name in loaded assemblies
+			/// 2) try to find match in search paths
+			/// 3) if a.deps.json is found: search %USERPROFILE%/.nuget/packages/* as well
+			/// 4) look in /dotnet/shared/{runtime-pack}/{closest-version}
+			/// 5) if the version is retargetable or all zeros or ones, search C:\Windows\Microsoft.NET\Framework64\v4.0.30319
+			/// 6) For "mscorlib.dll" we use the exact same assembly with which ILSpy runs
+			/// 7) Search the GAC
+			/// 8) search C:\Windows\Microsoft.NET\Framework64\v4.0.30319
+			/// 9) try to find match by asm name (no tfm/version) in loaded assemblies
+			/// </summary>
+			async Task<(MetadataFile? Module, AssemblyResolveOutcome Outcome)> ResolveCoreAsync(IAssemblyReference reference)
+			{
+				MetadataFile? module;
+				// 0) if we're inside a package, look for filename.dll in parent directories
+				if (providedAssemblyResolver != null)
+				{
+					module = await providedAssemblyResolver.ResolveAsync(reference).ConfigureAwait(false);
+					if (module != null)
+						return (module, AssemblyResolveOutcome.ProvidedByParentResolver);
+				}
+
+				string tfm = await tfmTask.ConfigureAwait(false);
+
+				// 1) try to find exact match by tfm + full asm name in loaded assemblies
+				module = await alreadyLoadedAssemblies.TryGetModuleAsync(reference, tfm).ConfigureAwait(false);
+				if (module != null)
+				{
+					referenceLoadInfo.AddMessageOnce(reference.FullName, MessageKind.Info, "Success - Found in Assembly List");
+					return (module, AssemblyResolveOutcome.FoundInList);
+				}
+
+				string? file = parent.GetUniversalResolver(applyWinRTProjections).FindAssemblyFile(reference);
+
+				if (file != null)
+				{
+					// Load assembly from disk
+					LoadedAssembly? asm;
+					if (loadOnDemand)
+					{
+						asm = assemblyList.OpenAssembly(file, isAutoLoaded: true);
+					}
+					else
+					{
+						asm = assemblyList.FindAssembly(file);
+					}
+					if (asm != null)
+					{
+						referenceLoadInfo.AddMessage(reference.FullName, MessageKind.Info, "Success - Loading from: " + file);
+						module = await asm.GetMetadataFileOrNullAsync().ConfigureAwait(false);
+						return (module, module != null ? AssemblyResolveOutcome.LoadedFromDisk : AssemblyResolveOutcome.NotFound);
+					}
+					return (null, AssemblyResolveOutcome.NotFound);
+				}
+				else
+				{
+					// Assembly not found; try to find a similar-enough already-loaded assembly
+					module = await alreadyLoadedAssemblies.TryGetSimilarModuleAsync(reference).ConfigureAwait(false);
+					if (module == null)
+					{
+						referenceLoadInfo.AddMessageOnce(reference.FullName, MessageKind.Error, "Could not find reference: " + reference.FullName);
+						return (null, AssemblyResolveOutcome.NotFound);
+					}
+					else
+					{
+						referenceLoadInfo.AddMessageOnce(reference.FullName, MessageKind.Info, "Success - Found in Assembly List with different TFM or version: " + module.FileName);
+						return (module, AssemblyResolveOutcome.SimilarNameMatch);
+					}
+				}
+			}
+
+			public MetadataFile? ResolveModule(MetadataFile mainModule, string moduleName)
+			{
+				return ResolveModuleAsync(mainModule, moduleName).GetAwaiter().GetResult();
+			}
+
+			public async Task<MetadataFile?> ResolveModuleAsync(MetadataFile mainModule, string moduleName)
+			{
+				if (providedAssemblyResolver != null)
+				{
+					var module = await providedAssemblyResolver.ResolveModuleAsync(mainModule, moduleName).ConfigureAwait(false);
+					if (module != null)
+						return module;
+				}
+
+				string? directory = Path.GetDirectoryName(mainModule.FileName);
+				if (directory != null)
+				{
+					string file = Path.Combine(directory, moduleName);
+					if (File.Exists(file))
+					{
+						// Load module from disk
+						LoadedAssembly? asm;
+						if (loadOnDemand)
+						{
+							asm = assemblyList.OpenAssembly(file, isAutoLoaded: true);
+						}
+						else
+						{
+							asm = assemblyList.FindAssembly(file);
+						}
+						if (asm != null)
+						{
+							return await asm.GetMetadataFileOrNullAsync().ConfigureAwait(false);
+						}
+					}
+				}
+
+				// Module does not exist on disk, look for one with a matching name in the assemblylist:
+				foreach (LoadedAssembly loaded in alreadyLoadedAssemblies.Assemblies)
+				{
+					var module = await loaded.GetMetadataFileOrNullAsync().ConfigureAwait(false);
+					var reader = module?.Metadata;
+					if (reader == null || reader.IsAssembly)
+						continue;
+					var moduleDef = reader.GetModuleDefinition();
+					if (moduleName.Equals(reader.GetString(moduleDef.Name), StringComparison.OrdinalIgnoreCase))
+					{
+						referenceLoadInfo.AddMessageOnce(moduleName, MessageKind.Info, "Success - Found in Assembly List");
+						return module;
+					}
+				}
+
+				return null;
+			}
+		}
+
+		public IAssemblyResolver GetAssemblyResolver(bool loadOnDemand = true, bool applyWinRTProjections = false)
+		{
+			return new MyAssemblyResolver(this, AssemblyList.GetSnapshot(), loadOnDemand, applyWinRTProjections);
+		}
+
+		internal IAssemblyResolver GetAssemblyResolver(AssemblyListSnapshot snapshot,
+			bool loadOnDemand = true, bool applyWinRTProjections = false)
+		{
+			return new MyAssemblyResolver(this, snapshot, loadOnDemand, applyWinRTProjections);
+		}
+
+		private UniversalAssemblyResolver GetUniversalResolver(bool applyWinRTProjections)
+		{
+			return LazyInitializer.EnsureInitialized(ref this.universalResolver, () => {
+				var targetFramework = this.GetTargetFrameworkIdAsync().GetAwaiter().GetResult();
+				var runtimePack = this.GetRuntimePackAsync().GetAwaiter().GetResult();
+
+				var readerOptions = applyWinRTProjections
+					? MetadataReaderOptions.ApplyWindowsRuntimeProjections
+					: MetadataReaderOptions.None;
+
+				var rootedPath = Path.IsPathRooted(this.FileName) ? this.FileName : null;
+
+				return new UniversalAssemblyResolver(rootedPath, throwOnError: false, targetFramework,
+					runtimePack, PEStreamOptions.PrefetchEntireImage, readerOptions);
+			})!;
+		}
+
+		public AssemblyReferenceClassifier GetAssemblyReferenceClassifier(bool applyWinRTProjections)
+		{
+			return GetUniversalResolver(applyWinRTProjections);
+		}
+
+		/// <summary>
+		/// Returns the debug info for this assembly. Returns null in case of load errors or no debug info is available.
+		/// </summary>
+		public IDebugInfoProvider? GetDebugInfoOrNull()
+		{
+			if (GetMetadataFileOrNull() == null)
+				return null;
+			return debugInfoProvider;
+		}
+
+		UniversalAssemblyResolver? universalResolver;
+
+		public void Dispose()
+		{
+			// Order matters: set the flag BEFORE unmapping the metadata, so any concurrent
+			// Text reader that hasn't yet cached a value bails to ShortName instead of
+			// dereferencing the about-to-be-freed MemoryMappedFile pages. Once set, the flag
+			// also short-circuits future Text getter walks even if cachedText is still null
+			// (load never completed).
+			isDisposed = true;
+			// Only inspect the load task if it's been started. Disposing a never-loaded
+			// LoadedAssembly must not synchronously kick off the load just to dispose its
+			// (still-non-existent) MetadataFile.
+			if (lazyLoadingTask.IsValueCreated && lazyLoadingTask.Value.Status == TaskStatus.RanToCompletion)
+			{
+				lazyLoadingTask.Value.Result.MetadataFile?.Dispose();
+			}
+			(debugInfoProvider as IDisposable)?.Dispose();
+		}
+	}
+}

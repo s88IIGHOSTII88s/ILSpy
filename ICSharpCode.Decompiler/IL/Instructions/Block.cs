@@ -1,4 +1,5 @@
-﻿// Copyright (c) 2014-2016 Daniel Grunwald
+#nullable enable
+// Copyright (c) 2014-2016 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -16,14 +17,13 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 
 using ICSharpCode.Decompiler.IL.Transforms;
 using ICSharpCode.Decompiler.TypeSystem;
-
 namespace ICSharpCode.Decompiler.IL
 {
 	/// <summary>
@@ -48,7 +48,7 @@ namespace ICSharpCode.Decompiler.IL
 
 		public readonly BlockKind Kind;
 		public readonly InstructionCollection<ILInstruction> Instructions;
-		ILInstruction finalInstruction;
+		ILInstruction finalInstruction = null!;
 
 		/// <summary>
 		/// For blocks in a block container, this field holds
@@ -103,9 +103,29 @@ namespace ICSharpCode.Decompiler.IL
 			return clone;
 		}
 
-		internal override void CheckInvariant(ILPhase phase)
+		/// <summary>
+		/// The load of the initializer target an ArrayInitializer block evaluates to. The block
+		/// may end in the implicit conversion of that array to Span&lt;T&gt;/ReadOnlySpan&lt;T&gt;,
+		/// which is returned in <paramref name="conversion"/>; everything else about the block is
+		/// the same in both shapes.
+		/// </summary>
+		internal static LdLoc? MatchArrayInitializerFinal(ILInstruction finalInstruction, out IMethod? conversion)
 		{
-			base.CheckInvariant(phase);
+			conversion = null;
+			if (finalInstruction is CallInstruction { Arguments.Count: 1 } call
+				&& call.Method.IsOperator && call.Method.Name == "op_Implicit"
+				&& (call.Method.ReturnType.IsKnownType(KnownTypeCode.SpanOfT)
+					|| call.Method.ReturnType.IsKnownType(KnownTypeCode.ReadOnlySpanOfT)))
+			{
+				conversion = call.Method;
+				finalInstruction = call.Arguments[0];
+			}
+			return finalInstruction as LdLoc;
+		}
+
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
+		{
+			base.CheckInvariant(phase, compilation);
 			for (int i = 0; i < Instructions.Count - 1; i++)
 			{
 				// only the last instruction may have an unreachable endpoint
@@ -124,10 +144,10 @@ namespace ICSharpCode.Decompiler.IL
 					foreach (var inst in Instructions)
 					{
 						var stloc = inst as StLoc;
-						Debug.Assert(stloc != null, "Instructions in CallWithNamedArgs must be assignments");
-						Debug.Assert(stloc.Variable.Kind == VariableKind.NamedArgument);
-						Debug.Assert(stloc.Variable.IsSingleDefinition && stloc.Variable.LoadCount == 1);
-						Debug.Assert(stloc.Variable.LoadInstructions.Single().Parent == finalInstruction);
+						DebugAssert(stloc != null, "Instructions in CallWithNamedArgs must be assignments");
+						DebugAssert(stloc.Variable.Kind == VariableKind.NamedArgument);
+						DebugAssert(stloc.Variable.IsSingleDefinition && stloc.Variable.LoadCount == 1);
+						DebugAssert(stloc.Variable.LoadInstructions.Single().Parent == finalInstruction);
 					}
 					var call = (CallInstruction)finalInstruction;
 					if (call.IsInstanceCall)
@@ -138,48 +158,84 @@ namespace ICSharpCode.Decompiler.IL
 					}
 					break;
 				case BlockKind.ArrayInitializer:
-					var final = finalInstruction as LdLoc;
+					var final = MatchArrayInitializerFinal(finalInstruction, out _);
 					Debug.Assert(final != null && final.Variable.IsSingleDefinition && final.Variable.Kind == VariableKind.InitializerTarget);
-					IType type = null;
-					Debug.Assert(Instructions[0].MatchStLoc(final.Variable, out var init) && init.MatchNewArr(out type));
+					IType? type = null;
+					Debug.Assert(Instructions[0].MatchStLoc(final!.Variable, out var init) && init.MatchNewArr(out type));
 					for (int i = 1; i < Instructions.Count; i++)
 					{
-						Debug.Assert(Instructions[i].MatchStObj(out ILInstruction target, out _, out var t) && type != null && type.Equals(t));
-						Debug.Assert(target.MatchLdElema(out t, out ILInstruction array) && type.Equals(t));
-						Debug.Assert(array.MatchLdLoc(out ILVariable v) && v == final.Variable);
+						DebugAssert(Instructions[i].MatchStObj(out ILInstruction? target, out _, out var t) && type != null && type.Equals(t));
+						DebugAssert(target.MatchLdElema(out t, out ILInstruction? array) && type.Equals(t));
+						DebugAssert(array.MatchLdLoc(out ILVariable? v) && v == final.Variable);
 					}
 					break;
 				case BlockKind.CollectionInitializer:
 				case BlockKind.ObjectInitializer:
+				case BlockKind.WithInitializer:
 					var final2 = finalInstruction as LdLoc;
 					Debug.Assert(final2 != null);
-					var initVar2 = final2.Variable;
+					var initVar2 = final2!.Variable;
 					Debug.Assert(initVar2.StoreCount == 1 && initVar2.Kind == VariableKind.InitializerTarget);
-					IType type2 = null;
+					IType? type2 = null;
 					bool condition = Instructions[0].MatchStLoc(final2.Variable, out var init2);
 					Debug.Assert(condition);
-					Debug.Assert(init2 is NewObj
-						|| init2 is DefaultValue
-						|| (init2 is CallInstruction ci && TransformCollectionAndObjectInitializers.IsRecordCloneMethodCall(ci))
-						|| (init2 is Block named && named.Kind == BlockKind.CallWithNamedArgs));
-					switch (init2)
+					if (Kind == BlockKind.WithInitializer)
 					{
-						case NewObj newObj:
-							type2 = newObj.Method.DeclaringType;
-							break;
-						case DefaultValue defaultValue:
-							type2 = defaultValue.Type;
-							break;
-						case Block callWithNamedArgs when callWithNamedArgs.Kind == BlockKind.CallWithNamedArgs:
-							type2 = ((CallInstruction)callWithNamedArgs.FinalInstruction).Method.ReturnType;
-							break;
-						default:
-							Debug.Assert(false);
-							break;
+						if (initVar2.Type.IsReferenceType == true)
+						{
+							Debug.Assert(init2 is CallInstruction cloneCall && TransformCollectionAndObjectInitializers.IsRecordCloneMethodCall(cloneCall));
+						}
+						type2 = initVar2.Type;
+					}
+					else
+					{
+						Debug.Assert(init2 is NewObj
+							|| init2 is DefaultValue
+							|| (init2 is CallInstruction c && c.Method.FullNameIs("System.Activator", "CreateInstance") && c.Method.TypeArguments.Count == 1)
+							|| (init2 is Block named && named.Kind == BlockKind.CallWithNamedArgs));
+						switch (init2)
+						{
+							case NewObj newObj:
+								type2 = newObj.Method.DeclaringType;
+								break;
+							case DefaultValue defaultValue:
+								type2 = defaultValue.Type;
+								break;
+							case Block callWithNamedArgs when callWithNamedArgs.Kind == BlockKind.CallWithNamedArgs:
+								type2 = ((CallInstruction)callWithNamedArgs.FinalInstruction).Method.ReturnType;
+								break;
+							case CallInstruction ci2 when TransformCollectionAndObjectInitializers.IsRecordCloneMethodCall(ci2):
+								type2 = ci2.Method.DeclaringType;
+								break;
+							case Call c2 when c2.Method.FullNameIs("System.Activator", "CreateInstance") && c2.Method.TypeArguments.Count == 1:
+								type2 = c2.Method.TypeArguments[0];
+								break;
+							default:
+								Debug.Assert(false);
+								break;
+						}
 					}
 					for (int i = 1; i < Instructions.Count; i++)
 					{
-						Debug.Assert(Instructions[i] is StLoc || AccessPathElement.GetAccessPath(Instructions[i], type2).Kind != IL.Transforms.AccessPathKind.Invalid);
+						if (Instructions[i] is StLoc { Variable: var v })
+						{
+							foreach (var inst in v.LoadInstructions)
+							{
+								Debug.Assert(inst.IsDescendantOf(this));
+							}
+							foreach (var inst in v.AddressInstructions)
+							{
+								Debug.Assert(inst.IsDescendantOf(this));
+							}
+							foreach (ILInstruction inst in v.StoreInstructions)
+							{
+								Debug.Assert(inst.IsDescendantOf(this));
+							}
+						}
+						else
+						{
+							Debug.Assert(AccessPathElement.GetAccessPath(Instructions[i], type2).Kind != AccessPathKind.Invalid);
+						}
 					}
 					break;
 				case BlockKind.DeconstructionConversions:
@@ -187,6 +243,20 @@ namespace ICSharpCode.Decompiler.IL
 					break;
 				case BlockKind.DeconstructionAssignments:
 					Debug.Assert(this.SlotInfo == DeconstructInstruction.AssignmentsSlot);
+					break;
+				case BlockKind.InterpolatedString:
+					Debug.Assert(FinalInstruction is Call { Method: { Name: "ToStringAndClear" }, Arguments: { Count: 1 } });
+					var interpolInit = Instructions[0] as StLoc;
+					DebugAssert(interpolInit != null
+						&& interpolInit.Variable.Kind == VariableKind.InitializerTarget
+						&& interpolInit.Variable.AddressCount == Instructions.Count
+						&& interpolInit.Variable.StoreCount == 1);
+					for (int i = 1; i < Instructions.Count; i++)
+					{
+						Call? inst = Instructions[i] as Call;
+						DebugAssert(inst != null);
+						DebugAssert(inst.Arguments.Count >= 1 && inst.Arguments[0].MatchLdLoca(interpolInit.Variable));
+					}
 					break;
 			}
 		}
@@ -197,6 +267,30 @@ namespace ICSharpCode.Decompiler.IL
 			}
 		}
 
+		public override IType InferType(ICompilation compilation)
+		{
+			return finalInstruction.InferType(compilation);
+		}
+
+		internal override bool CanInlineIntoSlot(int childIndex, ILInstruction expressionBeingMoved)
+		{
+			switch (Kind)
+			{
+				case BlockKind.ControlFlow when Parent is BlockContainer:
+				case BlockKind.ArrayInitializer:
+				case BlockKind.CollectionInitializer:
+				case BlockKind.ObjectInitializer:
+				case BlockKind.CallInlineAssign:
+					// Allow inlining into the first instruction of the block
+					return childIndex == 0;
+				case BlockKind.CallWithNamedArgs:
+					// Allow inlining into any instruction of the block
+					return childIndex < Instructions.Count;
+				default:
+					return false;
+			}
+		}
+
 		/// <summary>
 		/// Gets the name of this block.
 		/// </summary>
@@ -204,7 +298,7 @@ namespace ICSharpCode.Decompiler.IL
 			get { return Disassembler.DisassemblerHelpers.OffsetToString(this.StartILOffset); }
 		}
 
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write("Block ");
@@ -294,7 +388,7 @@ namespace ICSharpCode.Decompiler.IL
 		public void Remove()
 		{
 			Debug.Assert(ChildIndex > 0);
-			var container = (BlockContainer)Parent;
+			var container = (BlockContainer)Parent!;
 			Debug.Assert(container.Blocks[ChildIndex] == this);
 			container.Blocks.SwapRemoveAt(ChildIndex);
 		}
@@ -304,13 +398,14 @@ namespace ICSharpCode.Decompiler.IL
 		/// </summary>
 		public void RunTransforms(IEnumerable<IBlockTransform> transforms, BlockTransformContext context)
 		{
-			this.CheckInvariant(ILPhase.Normal);
+			this.CheckInvariant(ILPhase.Normal, context.TypeSystem);
 			foreach (var transform in transforms)
 			{
 				context.CancellationToken.ThrowIfCancellationRequested();
+				Debug.Assert(context.IndexOfFirstAlreadyTransformedInstruction <= this.Instructions.Count);
 				context.StepStartGroup(transform.GetType().Name);
 				transform.Run(this, context);
-				this.CheckInvariant(ILPhase.Normal);
+				this.CheckInvariant(ILPhase.Normal, context.TypeSystem);
 				context.StepEndGroup();
 			}
 		}
@@ -319,7 +414,7 @@ namespace ICSharpCode.Decompiler.IL
 		/// Gets the predecessor of the given instruction.
 		/// Returns null if inst.Parent is not a block.
 		/// </summary>
-		public static ILInstruction GetPredecessor(ILInstruction inst)
+		public static ILInstruction? GetPredecessor(ILInstruction inst)
 		{
 			if (inst.Parent is Block block && inst.ChildIndex > 0)
 			{
@@ -335,7 +430,8 @@ namespace ICSharpCode.Decompiler.IL
 		/// If inst is a block consisting of a single instruction, returns that instruction.
 		/// Otherwise, returns the input instruction.
 		/// </summary>
-		public static ILInstruction Unwrap(ILInstruction inst)
+		[return: NotNullIfNotNull("inst")]
+		public static ILInstruction? Unwrap(ILInstruction? inst)
 		{
 			if (inst is Block block)
 			{
@@ -349,19 +445,35 @@ namespace ICSharpCode.Decompiler.IL
 		/// Gets the closest parent Block.
 		/// Returns null, if the instruction is not a descendant of a Block.
 		/// </summary>
-		public static Block FindClosestBlock(ILInstruction inst)
+		public static Block? FindClosestBlock(ILInstruction? inst)
 		{
 			var curr = inst;
 			while (curr != null)
 			{
-				if (curr is Block)
-					return (Block)curr;
+				if (curr is Block b)
+					return b;
 				curr = curr.Parent;
 			}
 			return null;
 		}
 
-		public bool MatchInlineAssignBlock(out CallInstruction call, out ILInstruction value)
+		/// <summary>
+		/// Gets the closest ancestor that is child of a control-flow (top-level) Block.
+		/// Returns null, if the instruction is not a descendant of a Block.
+		/// </summary>
+		public static ILInstruction? GetContainingStatement(ILInstruction inst)
+		{
+			var curr = inst;
+			while (curr != null)
+			{
+				if (curr.Parent is Block { Kind: BlockKind.ControlFlow })
+					return curr;
+				curr = curr.Parent;
+			}
+			return null;
+		}
+
+		public bool MatchInlineAssignBlock([NotNullWhen(true)] out CallInstruction? call, [NotNullWhen(true)] out ILInstruction? value)
 		{
 			call = null;
 			value = null;
@@ -379,7 +491,7 @@ namespace ICSharpCode.Decompiler.IL
 			return this.FinalInstruction.MatchLdLoc(tmp);
 		}
 
-		public bool MatchIfAtEndOfBlock(out ILInstruction condition, out ILInstruction trueInst, out ILInstruction falseInst)
+		public bool MatchIfAtEndOfBlock([NotNullWhen(true)] out ILInstruction? condition, [NotNullWhen(true)] out ILInstruction? trueInst, [NotNullWhen(true)] out ILInstruction? falseInst)
 		{
 			condition = null;
 			trueInst = null;
@@ -458,5 +570,17 @@ namespace ICSharpCode.Decompiler.IL
 		/// </summary>
 		DeconstructionAssignments,
 		WithInitializer,
+		/// <summary>
+		/// String interpolation using DefaultInterpolatedStringHandler.
+		/// </summary>
+		/// <example>
+		/// Block {
+		///		stloc I_0 = newobj DefaultInterpolatedStringHandler(...)
+		///		call AppendXXX(I_0, ...)
+		///		...
+		///		final: call ToStringAndClear(ldloc I_0)
+		/// }
+		/// </example>
+		InterpolatedString,
 	}
 }

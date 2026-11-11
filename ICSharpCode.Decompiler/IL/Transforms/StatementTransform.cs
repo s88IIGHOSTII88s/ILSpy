@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2017 Daniel Grunwald
+// Copyright (c) 2017 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -15,6 +15,8 @@
 // FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
+
+#nullable enable
 
 using System;
 using System.Diagnostics;
@@ -112,7 +114,11 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 		{
 			var ctx = new StatementTransformContext(context);
 			int pos = 0;
-			ctx.rerunPosition = block.Instructions.Count - 1;
+			if (context.IndexOfFirstAlreadyTransformedInstruction == 0)
+			{
+				return;
+			}
+			ctx.rerunPosition = context.IndexOfFirstAlreadyTransformedInstruction - 1;
 			while (pos >= 0)
 			{
 				if (ctx.rerunPosition != null)
@@ -131,10 +137,9 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				}
 				foreach (var transform in children)
 				{
-					Debug.Assert(block.HasFlag(InstructionFlags.EndPointUnreachable));
 					transform.Run(block, pos, ctx);
 #if DEBUG
-					block.Instructions[pos].CheckInvariant(ILPhase.Normal);
+					block.Instructions[pos].CheckInvariant(ILPhase.Normal, context.TypeSystem);
 					for (int i = Math.Max(0, pos - 100); i < pos; ++i)
 					{
 						if (block.Instructions[i].IsDirty)
@@ -158,6 +163,10 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					pos--;
 				}
 			}
+			// This invariant can be surprisingly expensive to check if the block has thousands
+			// of instructions and is frequently modified by transforms (invalidating the flags each time)
+			// so we'll check this only once at the end of the block.
+			Debug.Assert(block.HasFlag(InstructionFlags.EndPointUnreachable));
 		}
 	}
 }

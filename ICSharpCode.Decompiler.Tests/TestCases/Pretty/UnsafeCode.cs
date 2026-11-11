@@ -1,4 +1,4 @@
-﻿// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -17,10 +17,66 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System;
+#if !NET40 && ROSLYN
+using System.Runtime.CompilerServices;
+#endif
 using System.Runtime.InteropServices;
 
 namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 {
+	[StructLayout(LayoutKind.Sequential, Size = 1)]
+	internal struct PointerConstructor
+	{
+		public unsafe PointerConstructor(void* pointer)
+		{
+		}
+	}
+
+	internal class SizeofTest
+	{
+		private struct StructWithStaticField
+		{
+			public static object StaticObj;
+
+#if CS110 && NET70
+			public nint A;
+#else
+			public IntPtr A;
+#endif
+		}
+
+		private struct UnmanagedStruct
+		{
+			public StructWithStaticField Value;
+		}
+
+		private struct ManagedStruct
+		{
+			public object Obj;
+		}
+#if CS73
+		private unsafe int GenericMethod<T>() where T : unmanaged
+		{
+			return sizeof(T);
+		}
+#endif
+
+		private unsafe void Test(out int s1, out int s2, out int s3)
+		{
+			s1 = 0;
+			s2 = 0;
+			s3 = 0;
+#if CS73
+			GenericMethod<UnmanagedStruct>();
+#endif
+			s1 = sizeof(UnmanagedStruct);
+#if !NET40 && ROSLYN
+			s2 = Unsafe.SizeOf<UnmanagedStruct>();
+			s3 = Unsafe.SizeOf<ManagedStruct>();
+#endif
+		}
+	}
+
 	public class UnsafeCode
 	{
 		public struct SimpleStruct
@@ -29,6 +85,13 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			public double Y;
 		}
 
+#if CS120
+		public unsafe struct ResultStruct(byte* ptr1, byte* ptr2)
+		{
+			public unsafe byte* ptr1 = ptr1;
+			public unsafe byte* ptr2 = ptr2;
+		}
+#else
 		public struct ResultStruct
 		{
 			public unsafe byte* ptr1;
@@ -40,6 +103,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 				this.ptr2 = ptr2;
 			}
 		}
+#endif
 
 		public struct StructWithFixedSizeMembers
 		{
@@ -164,7 +228,8 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		{
 			int result = 0;
 			*(float*)(&result) = 0.5f;
-			((byte*)(&result))[3] = 3;
+			((sbyte*)(&result))[3] = 3;
+			((sbyte*)(&result))[3] = -1;
 			return result;
 		}
 
@@ -383,9 +448,9 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 
 		public unsafe void PinFixedMember(ref StructWithFixedSizeMembers m)
 		{
-			fixed (int* ptr = m.Integers)
+			fixed (int* integers = m.Integers)
 			{
-				UsePointer(ptr);
+				UsePointer(integers);
 			}
 		}
 
@@ -411,7 +476,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			}
 		}
 
-#if CS73
+#if CS73 && !NET40
 		public unsafe void FixedSpan(Span<int> span)
 		{
 			fixed (int* ptr = span)
@@ -419,13 +484,32 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 				UsePointer(ptr);
 			}
 		}
+#endif
 
-		//public unsafe void FixedCustomReferenceType(CustomPinnable mem)
-		//{
-		//	fixed (int* ptr = mem) {
-		//		UsePointer(ptr);
-		//	}
-		//}
+#if CS73
+		public unsafe void FixedCustomReferenceType(CustomPinnable mem)
+		{
+			fixed (int* ptr = mem)
+			{
+				UsePointer(ptr);
+			}
+		}
+
+		public unsafe void FixedCustomReferenceTypeNoPointerUse(CustomPinnable mem)
+		{
+			fixed (int* ptr = mem)
+			{
+				Console.WriteLine("Hello World!");
+			}
+		}
+
+		public unsafe void FixedCustomReferenceTypeExplicitGetPinnableReference(CustomPinnable mem)
+		{
+			fixed (int* ptr = &mem.GetPinnableReference())
+			{
+				UsePointer(ptr);
+			}
+		}
 #endif
 
 		public unsafe string StackAlloc(int count)
@@ -463,7 +547,11 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 
 		private unsafe void Issue990()
 		{
+#if CS71
+			Data data = default;
+#else
 			Data data = default(Data);
+#endif
 			Data* ptr = &data;
 			ConvertIntToFloat(ptr->Position.GetHashCode());
 		}
@@ -478,7 +566,11 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 
 		private static T Get<T>()
 		{
+#if CS71
+			return default;
+#else
 			return default(T);
+#endif
 		}
 
 		private unsafe static ResultStruct NestedFixedBlocks(byte[] array)
@@ -542,6 +634,18 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			return value.Integers[(int)s];
 		}
 
+#if CS90
+		private unsafe static void* CastNIntToVoidPtr(nint intptr)
+		{
+			return (void*)intptr;
+		}
+
+		private unsafe static void* CastNIntToVoidPtr(nuint intptr)
+		{
+			return (void*)intptr;
+		}
+#endif
+#if !(CS110 && NET70)
 		private unsafe static void* CastToVoidPtr(IntPtr intptr)
 		{
 			return (void*)intptr;
@@ -551,10 +655,53 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		{
 			return (void*)intptr;
 		}
+#endif
 
 		private unsafe static void* CastToVoidPtr(int* intptr)
 		{
 			return intptr;
 		}
+
+		public unsafe void ConditionalPointer(bool a, int* ptr)
+		{
+			UsePointer(a ? ptr : null);
+		}
+
+		public unsafe void UseArrayOfPointers(int*[] arr)
+		{
+			for (int i = 0; i < arr.Length; i++)
+			{
+				arr[i] = null;
+			}
+		}
+
+		public unsafe void PassNullPointer1()
+		{
+			PointerReferenceExpression(null);
+		}
+
+		public unsafe void PassNullPointer2()
+		{
+			UseArrayOfPointers(null);
+		}
+
+		public unsafe static int* PointerToPointer(int** pp)
+		{
+			*pp = null;
+			return pp[3] = *pp;
+		}
+
+		public unsafe static void FixedPointerToPointer(int*[] arr)
+		{
+			fixed (int** ptr = &arr[0])
+			{
+				*ptr = null;
+			}
+		}
+	}
+
+	internal static class UnsafeObjectCreation
+	{
+		private unsafe static readonly PointerConstructor pointerConstructor = new PointerConstructor(null);
 	}
 }

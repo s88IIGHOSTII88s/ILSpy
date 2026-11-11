@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2016 Daniel Grunwald
+// Copyright (c) 2016 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -185,6 +185,11 @@ namespace ICSharpCode.Decompiler.FlowAnalysis
 				return bits[storeIndex];
 			}
 
+			public int NextReachingStore(int startIndex, int endIndex)
+			{
+				return bits.NextSetBit(startIndex, endIndex);
+			}
+
 			public void SetStore(int storeIndex)
 			{
 				Debug.Assert(storeIndex >= FirstStoreIndex);
@@ -296,14 +301,9 @@ namespace ICSharpCode.Decompiler.FlowAnalysis
 				var stores = storesByVar[vi];
 				if (stores != null)
 				{
-					int expectedStoreCount = scope.Variables[vi].StoreCount;
-					if (!scope.Variables[vi].HasInitialValue)
-					{
-						// Extra store for the uninitialized state.
-						expectedStoreCount += 1;
-						// Note that for variables with HasInitialValue=true,
-						// this extra store is already accounted for in ILVariable.StoreCount.
-					}
+					int expectedStoreCount = scope.Variables[vi].StoreInstructions.Count;
+					// Extra store for the uninitialized state.
+					expectedStoreCount += 1;
 					Debug.Assert(stores.Count == expectedStoreCount);
 					stores.CopyTo(allStores, si);
 					// Add all stores except for the first (representing the uninitialized state)
@@ -426,14 +426,18 @@ namespace ICSharpCode.Decompiler.FlowAnalysis
 		protected IEnumerable<ILInstruction> GetStores(State state, ILVariable v)
 		{
 			Debug.Assert(v.Function == scope && analyzedVariables[v.IndexInFunction]);
+			int startIndex = firstStoreIndexForVariable[v.IndexInFunction] + 1;
 			int endIndex = firstStoreIndexForVariable[v.IndexInFunction + 1];
-			for (int si = firstStoreIndexForVariable[v.IndexInFunction] + 1; si < endIndex; si++)
+			while (startIndex < endIndex)
 			{
-				if (state.IsReachingStore(si))
+				int nextReachingStore = state.NextReachingStore(startIndex, endIndex);
+				if (nextReachingStore == -1)
 				{
-					Debug.Assert(((IInstructionWithVariableOperand)allStores[si]).Variable == v);
-					yield return allStores[si];
+					break;
 				}
+				Debug.Assert(((IInstructionWithVariableOperand)allStores[nextReachingStore]).Variable == v);
+				yield return allStores[nextReachingStore];
+				startIndex = nextReachingStore + 1;
 			}
 		}
 

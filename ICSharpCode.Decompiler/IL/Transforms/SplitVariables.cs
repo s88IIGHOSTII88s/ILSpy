@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2016 Daniel Grunwald
+// Copyright (c) 2016 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -64,7 +64,8 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				case VariableKind.StackSlot:
 					// stack slots: are already split by construction,
 					// except for the locals-turned-stackslots in async functions
-					if (v.Function.IsAsync)
+					// or stack slots handled by the infeasible path transform
+					if (v.Function.IsAsync || v.RemoveIfRedundant)
 						goto case VariableKind.Local;
 					else
 						return false;
@@ -103,8 +104,12 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 		{
 			switch (addressLoadingInstruction.Parent)
 			{
-				case LdObj ldobj:
+				case LdObj _:
+				case StObj stobj when stobj.Target == addressLoadingInstruction:
 					return AddressUse.Immediate;
+				case LdObjIfRef:
+					// This is either an immediate use, or we need to check how the parent uses the address.
+					return DetermineAddressUse(addressLoadingInstruction.Parent, targetVar);
 				case LdFlda ldflda:
 					return DetermineAddressUse(ldflda, targetVar);
 				case Await await:
@@ -146,11 +151,17 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			IType returnType = (call is NewObj) ? call.Method.DeclaringType : call.Method.ReturnType;
 			if (returnType.IsByRefLike)
 			{
-				// If the address is returned from the method, it check whether it's consumed immediately.
-				// This can still be fine, as long as we also check the consumer's other arguments for 'stloc targetVar'.
-				if (DetermineAddressUse(call, targetVar) != AddressUse.Immediate)
-					return AddressUse.Unknown;
+				// We exclude Span<T>.Item[int index] and ReadOnlySpan<T>.Item[int index], because it is known that this
+				// or members of this cannot be returned by the method.
+				if (!IsSpanOfTIndexerAccessor(call.Method))
+				{
+					// If the address is returned from the method, it check whether it's consumed immediately.
+					// This can still be fine, as long as we also check the consumer's other arguments for 'stloc targetVar'.
+					if (DetermineAddressUse(call, targetVar) != AddressUse.Immediate)
+						return AddressUse.Unknown;
+				}
 			}
+
 			foreach (var p in call.Method.Parameters)
 			{
 				// catch "out Span<int>" and similar
@@ -167,6 +178,16 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				}
 			}
 			return AddressUse.Immediate;
+		}
+
+		static bool IsSpanOfTIndexerAccessor(IMethod method)
+		{
+			var declaringType = method.DeclaringType;
+			if (!declaringType.IsKnownType(KnownTypeCode.SpanOfT)
+				&& !declaringType.IsKnownType(KnownTypeCode.ReadOnlySpanOfT))
+				return false;
+			return method.AccessorOwner is IProperty { IsIndexer: true, Name: "Item", Parameters: [var param], ReturnType: ByReferenceType { ElementType: var rt } }
+				&& param.Type.IsKnownType(KnownTypeCode.Int32) && rt.Equals(declaringType.TypeArguments[0]);
 		}
 
 		/// <summary>
@@ -268,13 +289,15 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					v.Name = inst.Variable.Name;
 					v.HasGeneratedName = inst.Variable.HasGeneratedName;
 					v.StateMachineField = inst.Variable.StateMachineField;
-					v.HasInitialValue = false; // we'll set HasInitialValue when we encounter an uninit load
+					v.InitialValueIsInitialized = inst.Variable.InitialValueIsInitialized;
+					v.UsesInitialValue = false; // we'll set UsesInitialValue when we encounter an uninit load
+					v.RemoveIfRedundant = inst.Variable.RemoveIfRedundant;
 					newVariables.Add(representative, v);
 					inst.Variable.Function.Variables.Add(v);
 				}
-				if (inst.Variable.HasInitialValue && uninitVariableUsage.TryGetValue(inst.Variable, out var uninitLoad) && uninitLoad == inst)
+				if (inst.Variable.UsesInitialValue && uninitVariableUsage.TryGetValue(inst.Variable, out var uninitLoad) && uninitLoad == inst)
 				{
-					v.HasInitialValue = true;
+					v.UsesInitialValue = true;
 				}
 				return v;
 			}

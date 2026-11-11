@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2011 AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) 2011 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -17,7 +17,6 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Reflection.Metadata;
 using System.Text;
@@ -25,8 +24,6 @@ using System.Text;
 using ICSharpCode.Decompiler.IL;
 using ICSharpCode.Decompiler.Metadata;
 using ICSharpCode.Decompiler.Util;
-
-using SRM = System.Reflection.Metadata;
 
 namespace ICSharpCode.Decompiler.Disassembler
 {
@@ -52,6 +49,8 @@ namespace ICSharpCode.Decompiler.Disassembler
 
 	public static class DisassemblerHelpers
 	{
+		static readonly char[] _validNonLetterIdentifierCharacter = new char[] { '_', '$', '@', '?', '`', '.' };
+
 		public static string OffsetToString(int offset)
 		{
 			return string.Format("IL_{0:x4}", offset);
@@ -70,7 +69,7 @@ namespace ICSharpCode.Decompiler.Disassembler
 				writer.WriteLocalReference(OffsetToString(offset.Value), offset);
 		}
 
-		public static void WriteTo(this SRM.ExceptionRegion exceptionHandler, Metadata.PEFile module, GenericContext context, ITextOutput writer)
+		public static void WriteTo(this ExceptionRegion exceptionHandler, MetadataFile module, MetadataGenericContext context, ITextOutput writer)
 		{
 			writer.Write(".try ");
 			WriteOffsetReference(writer, exceptionHandler.TryOffset);
@@ -104,67 +103,79 @@ namespace ICSharpCode.Decompiler.Disassembler
 		}
 
 		static bool IsValidIdentifierCharacter(char c)
-		{
-			return c == '_' || c == '$' || c == '@' || c == '?' || c == '`';
-		}
+			=> char.IsLetterOrDigit(c) || _validNonLetterIdentifierCharacter.IndexOf(c) >= 0;
 
 		static bool IsValidIdentifier(string identifier)
 		{
 			if (string.IsNullOrEmpty(identifier))
 				return false;
-			if (!(char.IsLetter(identifier[0]) || IsValidIdentifierCharacter(identifier[0])))
-			{
-				// As a special case, .ctor and .cctor are valid despite starting with a dot
+
+			if (char.IsDigit(identifier[0]))
+				return false;
+
+			// As a special case, .ctor and .cctor are valid despite starting with a dot
+			if (identifier[0] == '.')
 				return identifier == ".ctor" || identifier == ".cctor";
-			}
-			for (int i = 1; i < identifier.Length; i++)
-			{
-				if (!(char.IsLetterOrDigit(identifier[i]) || IsValidIdentifierCharacter(identifier[i]) || identifier[i] == '.'))
-					return false;
-			}
-			return true;
+
+			if (identifier.Contains(".."))
+				return false;
+
+			if (Metadata.ILOpCodeExtensions.ILKeywords.Contains(identifier))
+				return false;
+
+			return identifier.All(IsValidIdentifierCharacter);
 		}
 
 		public static string Escape(string identifier)
 		{
-			if (IsValidIdentifier(identifier) && !Metadata.ILOpCodeExtensions.ILKeywords.Contains(identifier))
+			if (IsValidIdentifier(identifier))
 			{
 				return identifier;
 			}
-			else
-			{
-				// The ECMA specification says that ' inside SQString should be ecaped using an octal escape sequence,
-				// but we follow Microsoft's ILDasm and use \'.
-				return "'" + EscapeString(identifier).Replace("'", "\\'") + "'";
-			}
+
+			// The ECMA specification says that ' inside SQString should be ecaped using an octal escape sequence,
+			// but we follow Microsoft's ILDasm and use \'.
+			return $"'{EscapeString(identifier).Replace("'", "\\'")}'";
 		}
 
-		public static void WriteParameterReference(ITextOutput writer, MetadataReader metadata, MethodDefinitionHandle handle, int sequence)
+		public static void WriteParameterReference(ITextOutput writer, MetadataReader metadata, MethodDefinitionHandle handle, int index)
 		{
-			var methodDefinition = metadata.GetMethodDefinition(handle);
-			var signature = methodDefinition.DecodeSignature(new FullTypeNameSignatureDecoder(metadata), default);
-			var parameters = methodDefinition.GetParameters().Select(p => metadata.GetParameter(p)).ToArray();
-			var signatureHeader = signature.Header;
-			int index = sequence;
-			if (signatureHeader.IsInstance && signature.ParameterTypes.Length == parameters.Length)
+			string name = GetParameterName(index);
+			if (name == null)
 			{
-				index--;
-			}
-			if (index < 0 || index >= parameters.Length)
-			{
-				writer.WriteLocalReference(sequence.ToString(), "param_" + index);
+				writer.WriteLocalReference(index.ToString(), "param_" + index);
 			}
 			else
 			{
-				var param = parameters[index];
-				if (param.Name.IsNil)
+				writer.WriteLocalReference(name, "param_" + index);
+			}
+
+			string GetParameterName(int parameterNumber)
+			{
+				var methodDefinition = metadata.GetMethodDefinition(handle);
+				if ((methodDefinition.Attributes & System.Reflection.MethodAttributes.Static) != 0)
 				{
-					writer.WriteLocalReference(sequence.ToString(), "param_" + index);
+					parameterNumber++;
 				}
-				else
+				foreach (var p in methodDefinition.GetParameters())
 				{
-					writer.WriteLocalReference(Escape(metadata.GetString(param.Name)), "param_" + index);
+					var param = metadata.GetParameter(p);
+					if (param.SequenceNumber < parameterNumber)
+					{
+						continue;
+					}
+					else if (param.SequenceNumber == parameterNumber)
+					{
+						if (param.Name.IsNil)
+							return null;
+						return Escape(metadata.GetString(param.Name));
+					}
+					else
+					{
+						break;
+					}
 				}
+				return null;
 			}
 		}
 
@@ -278,7 +289,7 @@ namespace ICSharpCode.Decompiler.Disassembler
 
 		public static string EscapeString(string str)
 		{
-			StringBuilder sb = new StringBuilder();
+			var sb = new StringBuilder();
 			foreach (char ch in str)
 			{
 				switch (ch)
@@ -317,7 +328,7 @@ namespace ICSharpCode.Decompiler.Disassembler
 						// print control characters and uncommon white spaces as numbers
 						if (char.IsControl(ch) || char.IsSurrogate(ch) || (char.IsWhiteSpace(ch) && ch != ' '))
 						{
-							sb.Append("\\u" + ((int)ch).ToString("x4"));
+							sb.AppendFormat("\\u{0:x4}", (int)ch);
 						}
 						else
 						{

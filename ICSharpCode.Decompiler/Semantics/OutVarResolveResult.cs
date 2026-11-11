@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2020 Daniel Grunwald
+// Copyright (c) 2020 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -26,8 +26,11 @@ namespace ICSharpCode.Decompiler.Semantics
 	/// </summary>
 	class OutVarResolveResult : ResolveResult
 	{
-		public static readonly OutVarResolveResult Instance = new OutVarResolveResult();
+		/// <summary>
+		/// Type of the variable originally used in IL. It will be used, if "out var" cannot be used.
+		/// </summary>
+		public readonly IType OriginalVariableType;
 
-		public OutVarResolveResult() : base(SpecialType.NoType) { }
+		public OutVarResolveResult(IType originalVariableType) : base(SpecialType.NoType) { OriginalVariableType = originalVariableType; }
 	}
 }

@@ -1,4 +1,5 @@
-﻿// Copyright (c) 2014 Daniel Grunwald
+#nullable enable
+// Copyright (c) 2014 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -77,6 +78,14 @@ namespace ICSharpCode.Decompiler.IL
 
 		readonly StackType resultType;
 
+		/// <summary>
+		/// Result type of this instruction. If not null, InferType() will return this type.
+		/// Can be used to store an improved C# type for the result of this instruction,
+		/// e.g. `bit.or.i4(bool1, bool2)` can use CSharpResultType = bool after the
+		/// ExpressionTransform has determined that the result is always 0 or 1.
+		/// </summary>
+		public IType? CSharpResultType { get; set; }
+
 		public BinaryNumericInstruction(BinaryNumericOperator op, ILInstruction left, ILInstruction right, bool checkForOverflow, Sign sign)
 			: this(op, left, right, left.ResultType, right.ResultType, checkForOverflow, sign)
 		{
@@ -99,7 +108,7 @@ namespace ICSharpCode.Decompiler.IL
 			// Based on Table 2: Binary Numeric Operations
 			// also works for Table 5: Integer Operations
 			// and for Table 7: Overflow Arithmetic Operations
-			if (left == right || op == BinaryNumericOperator.ShiftLeft || op == BinaryNumericOperator.ShiftRight)
+			if (op == BinaryNumericOperator.ShiftLeft || op == BinaryNumericOperator.ShiftRight)
 			{
 				// Shift op codes use Table 6
 				return left;
@@ -119,18 +128,32 @@ namespace ICSharpCode.Decompiler.IL
 					return StackType.Ref;
 				}
 			}
+			if (left == right)
+			{
+				return left; // same type (but not both Ref)
+			}
 			return StackType.Unknown;
 		}
 
-		public StackType UnderlyingResultType { get => resultType; }
+		public StackType UnderlyingResultType => resultType;
 
 		public sealed override StackType ResultType {
-			get => IsLifted ? StackType.O : resultType;
+			get => IsLifted ? StackType.VT : resultType;
 		}
 
-		internal override void CheckInvariant(ILPhase phase)
+		public override IType InferType(ICompilation compilation)
 		{
-			base.CheckInvariant(phase);
+			if (CSharpResultType != null)
+				return CSharpResultType;
+			IType type = compilation.FindType(UnderlyingResultType);
+			if (IsLifted)
+				return NullableType.Create(compilation, type);
+			return type;
+		}
+
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
+		{
+			base.CheckInvariant(phase, compilation);
 			if (!IsLifted)
 			{
 				Debug.Assert(LeftInputType == Left.ResultType);
@@ -141,14 +164,14 @@ namespace ICSharpCode.Decompiler.IL
 		protected override InstructionFlags ComputeFlags()
 		{
 			var flags = base.ComputeFlags();
-			if (CheckForOverflow || (Operator == BinaryNumericOperator.Div || Operator == BinaryNumericOperator.Rem))
+			if (CheckForOverflow || Operator == BinaryNumericOperator.Div || Operator == BinaryNumericOperator.Rem)
 				flags |= InstructionFlags.MayThrow;
 			return flags;
 		}
 
 		public override InstructionFlags DirectFlags {
 			get {
-				if (CheckForOverflow || (Operator == BinaryNumericOperator.Div || Operator == BinaryNumericOperator.Rem))
+				if (CheckForOverflow || Operator == BinaryNumericOperator.Div || Operator == BinaryNumericOperator.Rem)
 					return base.DirectFlags | InstructionFlags.MayThrow;
 				return base.DirectFlags;
 			}
@@ -183,7 +206,7 @@ namespace ICSharpCode.Decompiler.IL
 			}
 		}
 
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -214,5 +237,3 @@ namespace ICSharpCode.Decompiler.IL
 		}
 	}
 }
-
-

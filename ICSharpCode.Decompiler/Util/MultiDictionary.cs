@@ -1,4 +1,5 @@
-﻿// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
+#nullable enable
+// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -24,7 +25,7 @@ namespace ICSharpCode.Decompiler.Util
 	/// <summary>
 	/// A dictionary that allows multiple pairs with the same key.
 	/// </summary>
-	public class MultiDictionary<TKey, TValue> : ILookup<TKey, TValue>
+	public class MultiDictionary<TKey, TValue> : ILookup<TKey, TValue> where TKey : notnull
 	{
 		readonly Dictionary<TKey, List<TValue>> dict;
 
@@ -33,15 +34,14 @@ namespace ICSharpCode.Decompiler.Util
 			dict = new Dictionary<TKey, List<TValue>>();
 		}
 
-		public MultiDictionary(IEqualityComparer<TKey> comparer)
+		public MultiDictionary(IEqualityComparer<TKey>? comparer)
 		{
 			dict = new Dictionary<TKey, List<TValue>>(comparer);
 		}
 
 		public void Add(TKey key, TValue value)
 		{
-			List<TValue> valueList;
-			if (!dict.TryGetValue(key, out valueList))
+			if (!dict.TryGetValue(key, out List<TValue>? valueList))
 			{
 				valueList = new List<TValue>();
 				dict.Add(key, valueList);
@@ -51,8 +51,7 @@ namespace ICSharpCode.Decompiler.Util
 
 		public bool Remove(TKey key, TValue value)
 		{
-			List<TValue> valueList;
-			if (dict.TryGetValue(key, out valueList))
+			if (dict.TryGetValue(key, out List<TValue>? valueList))
 			{
 				if (valueList.Remove(value))
 				{
@@ -87,6 +86,17 @@ namespace ICSharpCode.Decompiler.Util
 			}
 		}
 
+		public bool TryGetValues(TKey key, out IReadOnlyList<TValue> values)
+		{
+			values = EmptyList<TValue>.Instance;
+			if (dict.TryGetValue(key, out var list))
+			{
+				values = list;
+				return true;
+			}
+			return false;
+		}
+
 		/// <summary>
 		/// Returns the number of different keys.
 		/// </summary>
@@ -106,7 +116,7 @@ namespace ICSharpCode.Decompiler.Util
 			get { return this[key]; }
 		}
 
-		bool ILookup<TKey, TValue>.Contains(TKey key)
+		public bool Contains(TKey key)
 		{
 			return dict.ContainsKey(key);
 		}

@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2018 Daniel Grunwald
+// Copyright (c) 2018 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -21,7 +21,6 @@ using System.Collections.Generic;
 using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
-using System.Text;
 
 using ICSharpCode.Decompiler.Util;
 
@@ -64,16 +63,22 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 			var metadata = module.metadata;
 			var parameter = metadata.GetParameter(handle);
 
-			if (IsOptional && !HasConstantValueInSignature)
-				b.Add(KnownAttribute.Optional);
+			bool defaultValueAssignmentAllowed = this.IsDefaultValueAssignmentAllowed();
 
-			if (!IsOut && !IsIn)
+			if (IsOptional && !defaultValueAssignmentAllowed)
 			{
-				if ((attributes & ParameterAttributes.In) == ParameterAttributes.In)
-					b.Add(KnownAttribute.In);
-				if ((attributes & ParameterAttributes.Out) == ParameterAttributes.Out)
-					b.Add(KnownAttribute.Out);
+				b.Add(KnownAttribute.Optional);
 			}
+
+			if (!IsDecimalConstant && HasConstantValueInSignature && !defaultValueAssignmentAllowed)
+			{
+				b.Add(KnownAttribute.DefaultParameterValue, KnownTypeCode.Object, GetConstantValue(throwOnInvalidMetadata: false));
+			}
+
+			if ((attributes & ParameterAttributes.In) == ParameterAttributes.In && ReferenceKind is not (ReferenceKind.In or ReferenceKind.RefReadOnly))
+				b.Add(KnownAttribute.In);
+			if ((attributes & ParameterAttributes.Out) == ParameterAttributes.Out && ReferenceKind != ReferenceKind.Out)
+				b.Add(KnownAttribute.Out);
 			b.Add(parameter.GetCustomAttributes(), SymbolKind.Parameter);
 			b.AddMarshalInfo(parameter.GetMarshallingDescriptor());
 
@@ -84,9 +89,6 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 		const ParameterAttributes inOut = ParameterAttributes.In | ParameterAttributes.Out;
 
 		public ReferenceKind ReferenceKind => DetectRefKind();
-		public bool IsRef => DetectRefKind() == ReferenceKind.Ref;
-		public bool IsOut => Type.Kind == TypeKind.ByReference && (attributes & inOut) == ParameterAttributes.Out;
-		public bool IsIn => DetectRefKind() == ReferenceKind.In;
 
 		public bool IsOptional => (attributes & ParameterAttributes.Optional) != 0;
 
@@ -103,16 +105,65 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 				if (parameterDef.GetCustomAttributes().HasKnownAttribute(metadata, KnownAttribute.IsReadOnly))
 					return ReferenceKind.In;
 			}
+			if ((module.TypeSystemOptions & TypeSystemOptions.RefReadOnlyParameters) != 0
+				&& (attributes & inOut) == ParameterAttributes.In)
+			{
+				var metadata = module.metadata;
+				var parameterDef = metadata.GetParameter(handle);
+				if (parameterDef.GetCustomAttributes().HasKnownAttribute(metadata, KnownAttribute.RequiresLocation))
+					return ReferenceKind.RefReadOnly;
+			}
 			return ReferenceKind.Ref;
+		}
+
+		public LifetimeAnnotation Lifetime {
+			get {
+				if ((module.TypeSystemOptions & TypeSystemOptions.ScopedRef) == 0)
+				{
+					return default;
+				}
+
+				var metadata = module.metadata;
+				var parameterDef = metadata.GetParameter(handle);
+				var attributes = parameterDef.GetCustomAttributes();
+				bool hasUnscopedRefAttribute = attributes.HasKnownAttribute(metadata, KnownAttribute.UnscopedRef);
+				bool isParamsCollection = (module.TypeSystemOptions & TypeSystemOptions.ParamsCollections) != 0
+					&& attributes.HasKnownAttribute(metadata, KnownAttribute.ParamCollection);
+				ScopedKind declaredScope = ScopedKind.None;
+				if (!hasUnscopedRefAttribute
+					&& !isParamsCollection
+					&& attributes.HasKnownAttribute(metadata, KnownAttribute.ScopedRef))
+				{
+					if (ReferenceKind != ReferenceKind.None)
+					{
+						declaredScope = ScopedKind.ScopedRef;
+					}
+					else if (Type.IsRefLikeOrAllowsRefLikeType())
+					{
+						declaredScope = ScopedKind.ScopedValue;
+					}
+				}
+
+				return new LifetimeAnnotation {
+					DeclaredScope = declaredScope,
+					HasUnscopedRefAttribute = hasUnscopedRefAttribute
+				};
+			}
 		}
 
 		public bool IsParams {
 			get {
-				if (Type.Kind != TypeKind.Array)
-					return false;
 				var metadata = module.metadata;
 				var parameterDef = metadata.GetParameter(handle);
-				return parameterDef.GetCustomAttributes().HasKnownAttribute(metadata, KnownAttribute.ParamArray);
+				if (Type.Kind == TypeKind.Array)
+				{
+					return parameterDef.GetCustomAttributes().HasKnownAttribute(metadata, KnownAttribute.ParamArray);
+				}
+				if (module.TypeSystemOptions.HasFlag(TypeSystemOptions.ParamsCollections))
+				{
+					return parameterDef.GetCustomAttributes().HasKnownAttribute(metadata, KnownAttribute.ParamCollection);
+				}
+				return false;
 			}
 		}
 

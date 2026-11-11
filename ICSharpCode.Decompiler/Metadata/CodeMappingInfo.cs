@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2018 Siegfried Pammer
+// Copyright (c) 2018 Siegfried Pammer
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -32,7 +32,7 @@ namespace ICSharpCode.Decompiler.Metadata
 		/// <summary>
 		/// The module containing the code.
 		/// </summary>
-		public PEFile Module { get; }
+		public MetadataFile Module { get; }
 
 		/// <summary>
 		/// The (parent) TypeDef containing the code.
@@ -45,7 +45,7 @@ namespace ICSharpCode.Decompiler.Metadata
 		/// <summary>
 		/// Creates a <see cref="CodeMappingInfo"/> instance using the given <paramref name="module"/> and <paramref name="type"/>.
 		/// </summary>
-		public CodeMappingInfo(PEFile module, TypeDefinitionHandle type)
+		public CodeMappingInfo(MetadataFile module, TypeDefinitionHandle type)
 		{
 			this.Module = module;
 			this.TypeDefinition = type;

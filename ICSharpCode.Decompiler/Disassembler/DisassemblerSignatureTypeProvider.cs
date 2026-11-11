@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2011 AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) 2011 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -22,16 +22,17 @@ using System.Reflection.Metadata;
 
 using ICSharpCode.Decompiler.IL;
 using ICSharpCode.Decompiler.Metadata;
+using ICSharpCode.Decompiler.TypeSystem;
 
 namespace ICSharpCode.Decompiler.Disassembler
 {
-	public class DisassemblerSignatureTypeProvider : ISignatureTypeProvider<Action<ILNameSyntax>, GenericContext>
+	public class DisassemblerSignatureTypeProvider : ISignatureTypeProvider<Action<ILNameSyntax>, MetadataGenericContext>
 	{
-		readonly PEFile module;
+		readonly MetadataFile module;
 		readonly MetadataReader metadata;
 		readonly ITextOutput output;
 
-		public DisassemblerSignatureTypeProvider(PEFile module, ITextOutput output)
+		public DisassemblerSignatureTypeProvider(MetadataFile module, ITextOutput output)
 		{
 			this.module = module ?? throw new ArgumentNullException(nameof(module));
 			this.output = output ?? throw new ArgumentNullException(nameof(output));
@@ -40,11 +41,14 @@ namespace ICSharpCode.Decompiler.Disassembler
 
 		public Action<ILNameSyntax> GetArrayType(Action<ILNameSyntax> elementType, ArrayShape shape)
 		{
+			int rank = Math.Min(Math.Max(shape.Rank, 1), ArrayType.MaxArrayRank);
 			return syntax => {
 				var syntaxForElementTypes = syntax == ILNameSyntax.SignatureNoNamedTypeParameters ? syntax : ILNameSyntax.Signature;
 				elementType(syntaxForElementTypes);
 				output.Write('[');
-				for (int i = 0; i < shape.Rank; i++)
+				if (shape.Rank != rank)
+					output.Write($"/* invalid rank: {shape.Rank}, clamped to {rank} */");
+				for (int i = 0; i < rank; i++)
 				{
 					if (i > 0)
 						output.Write(", ");
@@ -107,7 +111,7 @@ namespace ICSharpCode.Decompiler.Disassembler
 			};
 		}
 
-		public Action<ILNameSyntax> GetGenericMethodParameter(GenericContext genericContext, int index)
+		public Action<ILNameSyntax> GetGenericMethodParameter(MetadataGenericContext genericContext, int index)
 		{
 			return syntax => {
 				output.Write("!!");
@@ -115,7 +119,7 @@ namespace ICSharpCode.Decompiler.Disassembler
 			};
 		}
 
-		public Action<ILNameSyntax> GetGenericTypeParameter(GenericContext genericContext, int index)
+		public Action<ILNameSyntax> GetGenericTypeParameter(MetadataGenericContext genericContext, int index)
 		{
 			return syntax => {
 				output.Write("!");
@@ -240,7 +244,7 @@ namespace ICSharpCode.Decompiler.Disassembler
 					default:
 						throw new BadImageFormatException($"Unexpected rawTypeKind: {rawTypeKind} (0x{rawTypeKind:x})");
 				}
-				((EntityHandle)handle).WriteTo(module, output, GenericContext.Empty);
+				((EntityHandle)handle).WriteTo(module, output, default);
 			};
 		}
 
@@ -260,11 +264,11 @@ namespace ICSharpCode.Decompiler.Disassembler
 					default:
 						throw new BadImageFormatException($"Unexpected rawTypeKind: {rawTypeKind} (0x{rawTypeKind:x})");
 				}
-				((EntityHandle)handle).WriteTo(module, output, GenericContext.Empty);
+				((EntityHandle)handle).WriteTo(module, output, default);
 			};
 		}
 
-		public Action<ILNameSyntax> GetTypeFromSpecification(MetadataReader reader, GenericContext genericContext, TypeSpecificationHandle handle, byte rawTypeKind)
+		public Action<ILNameSyntax> GetTypeFromSpecification(MetadataReader reader, MetadataGenericContext genericContext, TypeSpecificationHandle handle, byte rawTypeKind)
 		{
 			return reader.GetTypeSpecification(handle).DecodeSignature(this, genericContext);
 		}

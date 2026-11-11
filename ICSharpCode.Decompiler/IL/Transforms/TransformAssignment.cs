@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2015 Siegfried Pammer
+// Copyright (c) 2015 Siegfried Pammer
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -16,11 +16,16 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+#nullable enable
+
 using System;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Linq.Expressions;
 
+using ICSharpCode.Decompiler.CSharp;
+using ICSharpCode.Decompiler.CSharp.Transforms;
 using ICSharpCode.Decompiler.TypeSystem;
 using ICSharpCode.Decompiler.Util;
 
@@ -36,7 +41,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 	/// </remarks>
 	public class TransformAssignment : IStatementTransform
 	{
-		StatementTransformContext context;
+		StatementTransformContext context = null!;
 
 		void IStatementTransform.Run(Block block, int pos, StatementTransformContext context)
 		{
@@ -53,7 +58,8 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			if (context.Settings.IntroduceIncrementAndDecrement)
 			{
 				if (TransformPostIncDecOperatorWithInlineStore(block, pos)
-					|| TransformPostIncDecOperator(block, pos))
+					|| TransformPostIncDecOperator(block, pos)
+					|| TransformPreIncDecOperatorWithInlineStore(block, pos))
 				{
 					// again, new top-level stloc might need inlining:
 					context.RequestRerun();
@@ -107,8 +113,10 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			}
 			ILVariable local;
 			int nextPos;
-			if (block.Instructions[pos + 1] is StLoc localStore)
+			StLoc? localStore;
+			if (block.Instructions[pos + 1] is StLoc localStoreInst)
 			{ // with extra local
+				localStore = localStoreInst;
 				if (localStore.Variable.Kind != VariableKind.Local || !localStore.Value.MatchLdLoc(inst.Variable))
 					return false;
 				// if we're using an extra local, we'll delete "s", so check that that doesn't have any additional uses
@@ -122,9 +130,19 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				local = inst.Variable;
 				localStore = null;
 				nextPos = pos + 1;
+
+				if (local.LoadCount == 1 && local.AddressCount == 0)
+				{
+					// inline assignment would produce a dead store in this case, which is ugly
+					// and causes problems with the deconstruction transform.
+					return false;
+				}
 			}
 			if (block.Instructions[nextPos] is StObj stobj)
 			{
+				// unaligned.stobj cannot be inlined in C#
+				if (stobj.UnalignedPrefix > 0)
+					return false;
 				if (!stobj.Value.MatchLdLoc(inst.Variable))
 					return false;
 				if (!SemanticHelper.IsPure(stobj.Target.Flags) || inst.Variable.IsUsedWithin(stobj.Target))
@@ -138,17 +156,25 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					else if (pointerType is PointerType pointer)
 						newType = pointer.ElementType;
 				}
-				if (IsImplicitTruncation(inst.Value, newType, context.TypeSystem))
+				var truncation = CheckImplicitTruncation(inst.Value, newType, context.TypeSystem);
+				if (truncation == ImplicitTruncationResult.ValueChanged)
 				{
 					// 'stobj' is implicitly truncating the value
 					return false;
+				}
+				if (truncation == ImplicitTruncationResult.ValueChangedDueToSignMismatch)
+				{
+					// Change the sign of the type to skip implicit truncation
+					newType = SwapSign(newType, context.TypeSystem);
 				}
 				context.Step("Inline assignment stobj", stobj);
 				stobj.Type = newType;
 				block.Instructions.Remove(localStore);
 				block.Instructions.Remove(stobj);
 				stobj.Value = inst.Value;
-				inst.ReplaceWith(new StLoc(local, stobj));
+				var inlineAssignment = new StLoc(local, stobj);
+				inst.ReplaceWith(inlineAssignment);
+				context.EndStep(inlineAssignment);
 				// note: our caller will trigger a re-run, which will call HandleStObjCompoundAssign if applicable
 				return true;
 			}
@@ -159,7 +185,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					return false;
 				if (call.ResultType != StackType.Void || call.Arguments.Count == 0)
 					return false;
-				IProperty property = call.Method.AccessorOwner as IProperty;
+				IProperty? property = call.Method.AccessorOwner as IProperty;
 				if (property == null)
 					return false;
 				if (!call.Method.Equals(property.Setter))
@@ -192,7 +218,9 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					Instructions = { call },
 					FinalInstruction = new LdLoc(newVar)
 				};
-				inst.ReplaceWith(new StLoc(local, inlineBlock));
+				var inlineAssignment = new StLoc(local, inlineBlock);
+				inst.ReplaceWith(inlineAssignment);
+				context.EndStep(inlineAssignment);
 				// because the ExpressionTransforms don't look into inline blocks, manually trigger HandleCallCompoundAssign
 				if (HandleCompoundAssign(call, context))
 				{
@@ -207,30 +235,45 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			}
 		}
 
-		static ILInstruction UnwrapSmallIntegerConv(ILInstruction inst, out Conv conv)
+		private static IType SwapSign(IType type, ICompilation compilation)
 		{
-			conv = inst as Conv;
-			if (conv != null && conv.Kind == ConversionKind.Truncate && conv.TargetType.IsSmallIntegerType())
-			{
-				// for compound assignments to small integers, the compiler emits a "conv" instruction
-				return conv.Argument;
-			}
-			else
-			{
-				return inst;
-			}
+			return type.ToPrimitiveType() switch {
+				PrimitiveType.I1 => compilation.FindType(KnownTypeCode.Byte),
+				PrimitiveType.I2 => compilation.FindType(KnownTypeCode.UInt16),
+				PrimitiveType.I4 => compilation.FindType(KnownTypeCode.UInt32),
+				PrimitiveType.I8 => compilation.FindType(KnownTypeCode.UInt64),
+				PrimitiveType.U1 => compilation.FindType(KnownTypeCode.SByte),
+				PrimitiveType.U2 => compilation.FindType(KnownTypeCode.Int16),
+				PrimitiveType.U4 => compilation.FindType(KnownTypeCode.Int32),
+				PrimitiveType.U8 => compilation.FindType(KnownTypeCode.Int64),
+				PrimitiveType.I => compilation.FindType(KnownTypeCode.UIntPtr),
+				PrimitiveType.U => compilation.FindType(KnownTypeCode.IntPtr),
+				_ => throw new ArgumentException("Type must have an opposing sign: " + type, nameof(type))
+			};
 		}
 
-		static bool ValidateCompoundAssign(BinaryNumericInstruction binary, Conv conv, IType targetType, DecompilerSettings settings)
+		static ILInstruction UnwrapSmallIntegerConv(ILInstruction inst, [NotNullWhen(true)] out Conv? conv)
 		{
-			if (!NumericCompoundAssign.IsBinaryCompatibleWithType(binary, targetType, settings))
+			if (inst is Conv { Kind: ConversionKind.Truncate } convInst && convInst.TargetType.IsSmallIntegerType())
+			{
+				// for compound assignments to small integers, the compiler emits a "conv" instruction
+				conv = convInst;
+				return convInst.Argument;
+			}
+			conv = null;
+			return inst;
+		}
+
+		static bool ValidateCompoundAssign(BinaryNumericInstruction binary, Conv? conv, IType targetType, ILTransformContext context)
+		{
+			if (!NumericCompoundAssign.IsBinaryCompatibleWithType(binary, targetType, context))
 				return false;
 			if (conv != null && !(conv.TargetType == targetType.ToPrimitiveType() && conv.CheckForOverflow == binary.CheckForOverflow))
 				return false; // conv does not match binary operation
 			return true;
 		}
 
-		static bool MatchingGetterAndSetterCalls(CallInstruction getterCall, CallInstruction setterCall, out Action<ILTransformContext> finalizeMatch)
+		static bool MatchingGetterAndSetterCalls(CallInstruction? getterCall, CallInstruction? setterCall, out Action<ILTransformContext>? finalizeMatch)
 		{
 			finalizeMatch = null;
 			if (getterCall == null || setterCall == null || !IsSameMember(getterCall.Method.AccessorOwner, setterCall.Method.AccessorOwner))
@@ -339,13 +382,13 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				}
 				if (!IsMatchingCompoundLoad(binary.Left, compoundStore, out var target, out var targetKind, out var finalizeMatch, forbiddenVariable: storeInSetter?.Variable))
 					return false;
-				if (!ValidateCompoundAssign(binary, smallIntConv, targetType, context.Settings))
+				if (!ValidateCompoundAssign(binary, smallIntConv, targetType, context))
 					return false;
 				context.Step($"Compound assignment (binary.numeric)", compoundStore);
 				finalizeMatch?.Invoke(context);
 				newInst = new NumericCompoundAssign(
 					binary, target, targetKind, binary.Right,
-					targetType, CompoundEvalMode.EvaluatesToNewValue);
+					targetType, CompoundEvalMode.EvaluatesToNewValue, context);
 			}
 			else if (setterValue is Call operatorCall && operatorCall.Method.IsOperator)
 			{
@@ -356,13 +399,13 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				ILInstruction rhs;
 				if (operatorCall.Arguments.Count == 2)
 				{
-					if (CSharp.ExpressionBuilder.GetAssignmentOperatorTypeFromMetadataName(operatorCall.Method.Name) == null)
+					if (CSharp.ExpressionBuilder.GetAssignmentOperatorTypeFromMetadataName(operatorCall.Method.Name, context.Settings) == null)
 						return false;
 					rhs = operatorCall.Arguments[1];
 				}
 				else if (operatorCall.Arguments.Count == 1)
 				{
-					if (!(operatorCall.Method.Name == "op_Increment" || operatorCall.Method.Name == "op_Decrement"))
+					if (!UserDefinedCompoundAssign.IsIncrementOrDecrement(operatorCall.Method, context.Settings))
 						return false;
 					// use a dummy node so that we don't need a dedicated instruction for user-defined unary operator calls
 					rhs = new LdcI4(1);
@@ -388,8 +431,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 
 				static ExpressionType ToCompound(ExpressionType from)
 				{
-					return from switch
-					{
+					return from switch {
 						ExpressionType.Add => ExpressionType.AddAssign,
 						ExpressionType.AddChecked => ExpressionType.AddAssignChecked,
 						ExpressionType.And => ExpressionType.AndAssign,
@@ -420,7 +462,17 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					return false; // for now we only support binary compound assignments
 				if (!targetType.IsKnownType(KnownTypeCode.String))
 					return false;
-				if (!IsMatchingCompoundLoad(concatCall.Arguments[0], compoundStore, out var target, out var targetKind, out var finalizeMatch, forbiddenVariable: storeInSetter?.Variable))
+				var arg = concatCall.Arguments[0];
+				if (arg is Call call && CallBuilder.IsStringToReadOnlySpanCharImplicitConversion(call.Method))
+				{
+					arg = call.Arguments[0];
+					if (!(concatCall.Arguments[1] is NewObj { Arguments: [AddressOf addressOf] } newObj) || !ILInlining.IsReadOnlySpanCharCtor(newObj.Method))
+					{
+						return false;
+					}
+				}
+
+				if (!IsMatchingCompoundLoad(arg, compoundStore, out var target, out var targetKind, out var finalizeMatch, forbiddenVariable: storeInSetter?.Variable))
 					return false;
 				context.Step($"Compound assignment (string concatenation)", compoundStore);
 				finalizeMatch?.Invoke(context);
@@ -439,6 +491,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				context.RequestRerun(); // moving stloc to top-level might trigger inlining
 			}
 			compoundStore.ReplaceWith(newInst);
+			context.EndStep(newInst);
 			if (newInst.Parent is Block inlineAssignBlock && inlineAssignBlock.Kind == BlockKind.CallInlineAssign)
 			{
 				// It's possible that we first replaced the instruction in an inline-assign helper block.
@@ -497,50 +550,74 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			var var = nextInst.Variable;
 			var stackVar = inst.Variable;
 			block.Instructions.RemoveAt(pos);
-			nextInst.ReplaceWith(new StLoc(stackVar, new StLoc(var, value)));
+			var inlineAssignment = new StLoc(stackVar, new StLoc(var, value));
+			nextInst.ReplaceWith(inlineAssignment);
+			context.EndStep(inlineAssignment);
 			return true;
+		}
+
+		internal static bool IsImplicitTruncation(ILInstruction value, IType type, ICompilation compilation, bool allowNullableValue = false)
+		{
+			return CheckImplicitTruncation(value, type, compilation, allowNullableValue) != ImplicitTruncationResult.ValuePreserved;
+		}
+
+		internal enum ImplicitTruncationResult : byte
+		{
+			/// <summary>
+			/// The value is not implicitly truncated.
+			/// </summary>
+			ValuePreserved,
+			/// <summary>
+			/// The value is implicitly truncated.
+			/// </summary>
+			ValueChanged,
+			/// <summary>
+			/// The value is implicitly truncated, but the sign of the target type can be changed to remove the truncation.
+			/// </summary>
+			ValueChangedDueToSignMismatch
 		}
 
 		/// <summary>
 		/// Gets whether 'stobj type(..., value)' would evaluate to a different value than 'value'
 		/// due to implicit truncation.
 		/// </summary>
-		static internal bool IsImplicitTruncation(ILInstruction value, IType type, ICompilation compilation, bool allowNullableValue = false)
+		internal static ImplicitTruncationResult CheckImplicitTruncation(ILInstruction value, IType type, ICompilation compilation, bool allowNullableValue = false)
 		{
 			if (!type.IsSmallIntegerType())
 			{
 				// Implicit truncation in ILAst only happens for small integer types;
 				// other types of implicit truncation in IL cause the ILReader to insert
 				// conv instructions.
-				return false;
+				return ImplicitTruncationResult.ValuePreserved;
 			}
 			// With small integer types, test whether the value might be changed by
 			// truncation (based on type.GetSize()) followed by sign/zero extension (based on type.GetSign()).
 			// (it's OK to have false-positives here if we're unsure)
 			if (value.MatchLdcI4(out int val))
 			{
-				switch (type.GetEnumUnderlyingType().GetDefinition()?.KnownTypeCode)
-				{
-					case KnownTypeCode.Boolean:
-						return !(val == 0 || val == 1);
-					case KnownTypeCode.Byte:
-						return !(val >= byte.MinValue && val <= byte.MaxValue);
-					case KnownTypeCode.SByte:
-						return !(val >= sbyte.MinValue && val <= sbyte.MaxValue);
-					case KnownTypeCode.Int16:
-						return !(val >= short.MinValue && val <= short.MaxValue);
-					case KnownTypeCode.UInt16:
-					case KnownTypeCode.Char:
-						return !(val >= ushort.MinValue && val <= ushort.MaxValue);
-				}
+				bool valueFits = (type.GetEnumUnderlyingType().GetDefinition()?.KnownTypeCode) switch {
+					KnownTypeCode.Boolean => val == 0 || val == 1,
+					KnownTypeCode.Byte => val >= byte.MinValue && val <= byte.MaxValue,
+					KnownTypeCode.SByte => val >= sbyte.MinValue && val <= sbyte.MaxValue,
+					KnownTypeCode.Int16 => val >= short.MinValue && val <= short.MaxValue,
+					KnownTypeCode.UInt16 or KnownTypeCode.Char => val >= ushort.MinValue && val <= ushort.MaxValue,
+					_ => false
+				};
+				return valueFits ? ImplicitTruncationResult.ValuePreserved : ImplicitTruncationResult.ValueChanged;
 			}
 			else if (value is Conv conv)
 			{
-				return conv.TargetType != type.ToPrimitiveType();
+				PrimitiveType primitiveType = type.ToPrimitiveType();
+				PrimitiveType convTargetType = conv.TargetType;
+				if (convTargetType == primitiveType)
+					return ImplicitTruncationResult.ValuePreserved;
+				if (primitiveType.GetSize() == convTargetType.GetSize() && primitiveType.GetSign() != convTargetType.GetSign() && primitiveType.HasOppositeSign())
+					return ImplicitTruncationResult.ValueChangedDueToSignMismatch;
+				return ImplicitTruncationResult.ValueChanged;
 			}
 			else if (value is Comp)
 			{
-				return false; // comp returns 0 or 1, which always fits
+				return ImplicitTruncationResult.ValuePreserved; // comp returns 0 or 1, which always fits
 			}
 			else if (value is BinaryNumericInstruction bni)
 			{
@@ -551,14 +628,22 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					case BinaryNumericOperator.BitXor:
 						// If both input values fit into the type without truncation,
 						// the result of a binary operator will also fit.
-						return IsImplicitTruncation(bni.Left, type, compilation, allowNullableValue)
-							|| IsImplicitTruncation(bni.Right, type, compilation, allowNullableValue);
+						var leftTruncation = CheckImplicitTruncation(bni.Left, type, compilation, allowNullableValue);
+						// If the left side is truncating and a sign change is not possible we do not need to evaluate the right side
+						if (leftTruncation == ImplicitTruncationResult.ValueChanged)
+							return ImplicitTruncationResult.ValueChanged;
+						var rightTruncation = CheckImplicitTruncation(bni.Right, type, compilation, allowNullableValue);
+						return CommonImplicitTruncation(leftTruncation, rightTruncation);
 				}
 			}
 			else if (value is IfInstruction ifInst)
 			{
-				return IsImplicitTruncation(ifInst.TrueInst, type, compilation, allowNullableValue)
-					|| IsImplicitTruncation(ifInst.FalseInst, type, compilation, allowNullableValue);
+				var trueTruncation = CheckImplicitTruncation(ifInst.TrueInst, type, compilation, allowNullableValue);
+				// If the true branch is truncating and a sign change is not possible we do not need to evaluate the false branch
+				if (trueTruncation == ImplicitTruncationResult.ValueChanged)
+					return ImplicitTruncationResult.ValueChanged;
+				var falseTruncation = CheckImplicitTruncation(ifInst.FalseInst, type, compilation, allowNullableValue);
+				return CommonImplicitTruncation(trueTruncation, falseTruncation);
 			}
 			else
 			{
@@ -569,10 +654,28 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				}
 				if (inferredType.Kind != TypeKind.Unknown)
 				{
-					return !(inferredType.GetSize() <= type.GetSize() && inferredType.GetSign() == type.GetSign());
+					var inferredPrimitive = inferredType.ToPrimitiveType();
+					var primitiveType = type.ToPrimitiveType();
+
+					bool sameSign = inferredPrimitive.GetSign() == primitiveType.GetSign();
+					if (inferredPrimitive.GetSize() <= primitiveType.GetSize() && sameSign)
+						return ImplicitTruncationResult.ValuePreserved;
+					if (inferredPrimitive.GetSize() == primitiveType.GetSize() && !sameSign && primitiveType.HasOppositeSign())
+						return ImplicitTruncationResult.ValueChangedDueToSignMismatch;
+					return ImplicitTruncationResult.ValueChanged;
 				}
 			}
-			return true;
+			// In unknown cases, assume that the value might be changed by truncation.
+			return ImplicitTruncationResult.ValueChanged;
+		}
+
+		private static ImplicitTruncationResult CommonImplicitTruncation(ImplicitTruncationResult left, ImplicitTruncationResult right)
+		{
+			if (left == right)
+				return left;
+			// Note: in all cases where left!=right, we return ValueChanged:
+			// if only one side can be fixed by changing the sign, we don't want to change the sign of the other side.
+			return ImplicitTruncationResult.ValueChanged;
 		}
 
 		/// <summary>
@@ -585,8 +688,8 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 		/// 
 		/// Every IsCompoundStore() call should be followed by an IsMatchingCompoundLoad() call.
 		/// </remarks>
-		static bool IsCompoundStore(ILInstruction inst, out IType storeType,
-			out ILInstruction value, ICompilation compilation)
+		static bool IsCompoundStore(ILInstruction inst, [NotNullWhen(true)] out IType? storeType,
+			 [NotNullWhen(true)] out ILInstruction? value, ICompilation compilation)
 		{
 			value = null;
 			storeType = null;
@@ -674,10 +777,10 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 		/// Instruction preceding the load.
 		/// </param>
 		static bool IsMatchingCompoundLoad(ILInstruction load, ILInstruction store,
-			out ILInstruction target, out CompoundTargetKind targetKind,
-			out Action<ILTransformContext> finalizeMatch,
-			ILVariable forbiddenVariable = null,
-			ILInstruction previousInstruction = null)
+			 [NotNullWhen(true)] out ILInstruction? target, out CompoundTargetKind targetKind,
+			out Action<ILTransformContext>? finalizeMatch,
+			ILVariable? forbiddenVariable = null,
+			ILInstruction? previousInstruction = null)
 		{
 			target = null;
 			targetKind = 0;
@@ -753,6 +856,84 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 		}
 
 		/// <code>
+		/// stloc l(stloc target(binary.add(ldloc target, ldc.i4 1)))
+		/// </code>
+		bool TransformPreIncDecOperatorWithInlineStore(Block block, int pos)
+		{
+			var store = block.Instructions[pos];
+			if (!IsCompoundStore(store, out var targetType1, out var value1, context.TypeSystem))
+			{
+				return false;
+			}
+			if (!IsCompoundStore(value1, out var targetType2, out var value2, context.TypeSystem))
+			{
+				return false;
+			}
+			if (targetType1 != targetType2)
+				return false;
+			var targetType = targetType1;
+			var stloc_outer = store as StLoc;
+			var stloc_inner = value1 as StLoc;
+			LdLoc? ldloc;
+			var binary = UnwrapSmallIntegerConv(value2, out var conv) as BinaryNumericInstruction;
+			if (binary != null && (binary.Right.MatchLdcI(1) || binary.Right.MatchLdcF4(1) || binary.Right.MatchLdcF8(1)))
+			{
+				if (!(binary.Operator == BinaryNumericOperator.Add || binary.Operator == BinaryNumericOperator.Sub))
+					return false;
+
+				if (conv is not null)
+				{
+					var primitiveType = targetType.ToPrimitiveType();
+					if (primitiveType.GetSize() == conv.TargetType.GetSize() && primitiveType.GetSign() != conv.TargetType.GetSign())
+						targetType = SwapSign(targetType, context.TypeSystem);
+				}
+
+				if (!ValidateCompoundAssign(binary, conv, targetType, context))
+					return false;
+				ldloc = binary.Left as LdLoc;
+			}
+			else if (value2 is Call operatorCall && operatorCall.Method.IsOperator && operatorCall.Arguments.Count == 1)
+			{
+				if (!(operatorCall.Method.Name == "op_Increment" || operatorCall.Method.Name == "op_Decrement"))
+					return false;
+				if (operatorCall.IsLifted)
+					return false; // TODO: add tests and think about whether nullables need special considerations
+				ldloc = operatorCall.Arguments[0] as LdLoc;
+			}
+			else
+			{
+				return false;
+			}
+			if (stloc_outer == null)
+				return false;
+			if (stloc_inner == null)
+				return false;
+			if (ldloc == null)
+				return false;
+			if (!(stloc_outer.Variable.Kind == VariableKind.Local || stloc_outer.Variable.Kind == VariableKind.StackSlot))
+				return false;
+			if (!IsMatchingCompoundLoad(ldloc, stloc_inner, out var target, out var targetKind, out var finalizeMatch))
+				return false;
+			if (IsImplicitTruncation(stloc_outer.Value, stloc_outer.Variable.Type, context.TypeSystem))
+				return false;
+			context.Step(nameof(TransformPreIncDecOperatorWithInlineStore), store);
+			finalizeMatch?.Invoke(context);
+			if (binary != null)
+			{
+				block.Instructions[pos] = new StLoc(stloc_outer.Variable, new NumericCompoundAssign(
+					binary, target, targetKind, binary.Right, targetType, CompoundEvalMode.EvaluatesToNewValue, context));
+			}
+			else
+			{
+				Call operatorCall = (Call)value2;
+				block.Instructions[pos] = new StLoc(stloc_outer.Variable, new UserDefinedCompoundAssign(
+					operatorCall.Method, CompoundEvalMode.EvaluatesToNewValue, target, targetKind, new LdcI4(1)));
+			}
+			context.EndStep(block.Instructions[pos]);
+			return true;
+		}
+
+		/// <code>
 		/// stobj(target, binary.add(stloc l(ldobj(target)), ldc.i4 1))
 		///   where target is pure and does not use 'l', and the 'stloc l' does not truncate
 		/// -->
@@ -778,13 +959,21 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			{
 				return false;
 			}
-			StLoc stloc;
+			StLoc? stloc;
 			var binary = UnwrapSmallIntegerConv(value, out var conv) as BinaryNumericInstruction;
 			if (binary != null && (binary.Right.MatchLdcI(1) || binary.Right.MatchLdcF4(1) || binary.Right.MatchLdcF8(1)))
 			{
 				if (!(binary.Operator == BinaryNumericOperator.Add || binary.Operator == BinaryNumericOperator.Sub))
 					return false;
-				if (!ValidateCompoundAssign(binary, conv, targetType, context.Settings))
+
+				if (conv is not null)
+				{
+					var primitiveType = targetType.ToPrimitiveType();
+					if (primitiveType.GetSize() == conv.TargetType.GetSize() && primitiveType.GetSign() != conv.TargetType.GetSign())
+						targetType = SwapSign(targetType, context.TypeSystem);
+				}
+
+				if (!ValidateCompoundAssign(binary, conv, targetType, context))
 					return false;
 				stloc = binary.Left as StLoc;
 			}
@@ -813,7 +1002,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			if (binary != null)
 			{
 				block.Instructions[pos] = new StLoc(stloc.Variable, new NumericCompoundAssign(
-					binary, target, targetKind, binary.Right, targetType, CompoundEvalMode.EvaluatesToOldValue));
+					binary, target, targetKind, binary.Right, targetType, CompoundEvalMode.EvaluatesToOldValue, context));
 			}
 			else
 			{
@@ -821,6 +1010,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				block.Instructions[pos] = new StLoc(stloc.Variable, new UserDefinedCompoundAssign(
 					operatorCall.Method, CompoundEvalMode.EvaluatesToOldValue, target, targetKind, new LdcI4(1)));
 			}
+			context.EndStep(block.Instructions[pos]);
 			return true;
 		}
 
@@ -852,10 +1042,19 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			var tmpVar = inst.Variable;
 			if (!IsCompoundStore(store, out var targetType, out var value, context.TypeSystem))
 				return false;
-			if (IsImplicitTruncation(inst.Value, targetType, context.TypeSystem))
+			var truncation = CheckImplicitTruncation(inst.Value, targetType, context.TypeSystem);
+			if (truncation == ImplicitTruncationResult.ValueChanged)
 			{
 				// 'stloc tmp' is implicitly truncating the value
 				return false;
+			}
+			if (truncation == ImplicitTruncationResult.ValueChangedDueToSignMismatch)
+			{
+				if (!(store is StObj stObj && stObj.Type.Equals(targetType)))
+				{
+					// We cannot apply the sign change, so we can't fix the truncation
+					return false;
+				}
 			}
 			if (!IsMatchingCompoundLoad(inst.Value, store, out var target, out var targetKind, out var finalizeMatch,
 				forbiddenVariable: inst.Variable,
@@ -865,26 +1064,40 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			}
 			if (UnwrapSmallIntegerConv(value, out var conv) is BinaryNumericInstruction binary)
 			{
-				if (!binary.Left.MatchLdLoc(tmpVar) || !(binary.Right.MatchLdcI(1) || binary.Right.MatchLdcF4(1) || binary.Right.MatchLdcF8(1)))
-					return false;
 				if (!(binary.Operator == BinaryNumericOperator.Add || binary.Operator == BinaryNumericOperator.Sub))
 					return false;
-				if (!ValidateCompoundAssign(binary, conv, targetType, context.Settings))
+				if (!binary.Left.MatchLdLoc(tmpVar))
+					return false;
+				if (targetType is PointerType ptrType)
+				{
+					var right = PointerArithmeticOffset.Detect(binary.Right, ptrType.ElementType, binary.CheckForOverflow);
+					if (right is null || !right.MatchLdcI(1))
+						return false;
+				}
+				else if (!(binary.Right.MatchLdcI(1) || binary.Right.MatchLdcF4(1) || binary.Right.MatchLdcF8(1)))
+					return false;
+				if (truncation == ImplicitTruncationResult.ValueChangedDueToSignMismatch && store is StObj stObj)
+				{
+					// Change the sign of the type to skip implicit truncation
+					stObj.Type = targetType = SwapSign(targetType, context.TypeSystem);
+				}
+				if (!ValidateCompoundAssign(binary, conv, targetType, context))
 					return false;
 				context.Step("TransformPostIncDecOperator (builtin)", inst);
 				finalizeMatch?.Invoke(context);
 				inst.Value = new NumericCompoundAssign(binary, target, targetKind, binary.Right,
-					targetType, CompoundEvalMode.EvaluatesToOldValue);
+					targetType, CompoundEvalMode.EvaluatesToOldValue, context);
 			}
 			else if (value is Call operatorCall && operatorCall.Method.IsOperator && operatorCall.Arguments.Count == 1)
 			{
 				if (!operatorCall.Arguments[0].MatchLdLoc(tmpVar))
 					return false;
-				if (!(operatorCall.Method.Name == "op_Increment" || operatorCall.Method.Name == "op_Decrement"))
+				if (!UserDefinedCompoundAssign.IsIncrementOrDecrement(operatorCall.Method, context.Settings))
 					return false;
 				if (operatorCall.IsLifted)
 					return false; // TODO: add tests and think about whether nullables need special considerations
 				context.Step("TransformPostIncDecOperator (user-defined)", inst);
+				Debug.Assert(truncation == ImplicitTruncationResult.ValuePreserved);
 				finalizeMatch?.Invoke(context);
 				inst.Value = new UserDefinedCompoundAssign(operatorCall.Method,
 					CompoundEvalMode.EvaluatesToOldValue, target, targetKind, new LdcI4(1));
@@ -902,7 +1115,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			return true;
 		}
 
-		static bool IsSameMember(IMember a, IMember b)
+		static bool IsSameMember(IMember? a, IMember? b)
 		{
 			if (a == null || b == null)
 				return false;

@@ -1,3 +1,4 @@
+#!/usr/bin/env pwsh
 $ErrorActionPreference = "Stop"
 
 $baseCommit = "d779383cb85003d6dabeb976f0845631e07bf463";
@@ -6,10 +7,10 @@ $baseCommitRev = 1;
 # make sure this matches artifacts-only branches list in appveyor.yml!
 $masterBranches = '^refs/heads/(master|release/.+)$';
 
-$globalAssemblyInfoTemplateFile = "ILSpy/Properties/AssemblyInfo.template.cs";
+$decompilerVersionInfoTemplateFile = "ICSharpCode.Decompiler/Properties/DecompilerVersionInfo.template.cs";
 
 $versionParts = @{};
-Get-Content $globalAssemblyInfoTemplateFile | where { $_ -match 'string (\w+) = "?(\w+)"?;' } | foreach { $versionParts.Add($Matches[1], $Matches[2]) }
+Get-Content $decompilerVersionInfoTemplateFile | where { $_ -match 'string (\w+) = "?(\w+)"?;' } | foreach { $versionParts.Add($Matches[1], $Matches[2]) }
 
 $major = $versionParts.Major;
 $minor = $versionParts.Minor;
@@ -17,9 +18,9 @@ $build = $versionParts.Build;
 $versionName = $versionParts.VersionName;
 
 if ($versionName -ne "null") {
-    $versionName = "-$versionName";
+	$versionName = "-$versionName";
 } else {
-    $versionName = "";
+	$versionName = "";
 }
 
 Write-Host "GITHUB_REF: '$env:GITHUB_REF'";

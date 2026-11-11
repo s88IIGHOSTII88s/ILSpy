@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2014 AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) 2014 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -27,11 +27,11 @@ namespace CustomAttributes
 		public enum EnumWithFlag
 		{
 			All = 0xF,
-			None = 0x0,
-			Item1 = 0x1,
-			Item2 = 0x2,
-			Item3 = 0x4,
-			Item4 = 0x8
+			None = 0,
+			Item1 = 1,
+			Item2 = 2,
+			Item3 = 4,
+			Item4 = 8
 		}
 		[AttributeUsage(AttributeTargets.All)]
 		public class MyAttribute : Attribute
@@ -40,6 +40,18 @@ namespace CustomAttributes
 			{
 			}
 		}
+#if CS110
+		[AttributeUsage(AttributeTargets.All, AllowMultiple = true)]
+		public class GenericAttribute<T> : Attribute
+		{
+			public GenericAttribute()
+			{
+			}
+			public GenericAttribute(T val)
+			{
+			}
+		}
+#endif
 		[My(ULongEnum.MaxUInt64)]
 		public enum ULongEnum : ulong
 		{
@@ -145,5 +157,26 @@ namespace CustomAttributes
 		public static void BoxedLiteralsArray()
 		{
 		}
+#if CS110
+		[Generic<int>]
+		[Generic<string>]
+		public static void UseGenericAttribute()
+		{
+		}
+		[Generic<int>(42)]
+		[Generic<string>("Hi")]
+		[Generic<object>("Hi")]
+		[Generic<object>((short)42)]
+		public static void UseGenericAttributeWithArg()
+		{
+		}
+		[Generic<List<int>>]
+		[Generic<Dictionary<string, List<int>>>]
+		[Generic<int[]>]
+		[Generic<StringComparison>(StringComparison.Ordinal)]
+		public static void UseGenericAttributeWithComplexTypes()
+		{
+		}
+#endif
 	}
 }

@@ -1,4 +1,4 @@
-﻿// 
+// 
 // LambdaExpression.cs
 //
 // Author:
@@ -24,63 +24,27 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
+#nullable enable
+
 namespace ICSharpCode.Decompiler.CSharp.Syntax
 {
 	/// <summary>
-	/// [async] Parameters => Body
+	/// <c>lambda_expression ::= attribute_section* 'async'? parameter* '=&gt;' ( block | expression )</c> (C# grammar §12.22.1)
 	/// </summary>
-	public class LambdaExpression : Expression
+	[DecompilerAstNode]
+	public sealed partial class LambdaExpression : Expression
 	{
-		public readonly static TokenRole AsyncModifierRole = new TokenRole("async");
-		public static readonly Role<AstNode> BodyRole = new Role<AstNode>("Body", AstNode.Null);
+		public const string AsyncModifier = "async";
 
-		bool isAsync;
+		[Slot("AttributeSection")]
+		public partial AstNodeCollection<AttributeSection> Attributes { get; }
 
-		public bool IsAsync {
-			get { return isAsync; }
-			set { ThrowIfFrozen(); isAsync = value; }
-		}
+		public bool IsAsync { get; set; }
 
-		public CSharpTokenNode LParToken {
-			get { return GetChildByRole(Roles.LPar); }
-		}
+		[Slot("Parameter")]
+		public partial AstNodeCollection<ParameterDeclaration> Parameters { get; }
 
-		public AstNodeCollection<ParameterDeclaration> Parameters {
-			get { return GetChildrenByRole(Roles.Parameter); }
-		}
-
-		public CSharpTokenNode RParToken {
-			get { return GetChildByRole(Roles.RPar); }
-		}
-
-		public CSharpTokenNode ArrowToken {
-			get { return GetChildByRole(Roles.Arrow); }
-		}
-
-		public AstNode Body {
-			get { return GetChildByRole(BodyRole); }
-			set { SetChildByRole(BodyRole, value); }
-		}
-
-		public override void AcceptVisitor(IAstVisitor visitor)
-		{
-			visitor.VisitLambdaExpression(this);
-		}
-
-		public override T AcceptVisitor<T>(IAstVisitor<T> visitor)
-		{
-			return visitor.VisitLambdaExpression(this);
-		}
-
-		public override S AcceptVisitor<T, S>(IAstVisitor<T, S> visitor, T data)
-		{
-			return visitor.VisitLambdaExpression(this, data);
-		}
-
-		protected internal override bool DoMatch(AstNode other, PatternMatching.Match match)
-		{
-			LambdaExpression o = other as LambdaExpression;
-			return o != null && this.IsAsync == o.IsAsync && this.Parameters.DoMatch(o.Parameters, match) && this.Body.DoMatch(o.Body, match);
-		}
+		[Slot("LambdaBody")]
+		public partial AstNode Body { get; set; }
 	}
 }

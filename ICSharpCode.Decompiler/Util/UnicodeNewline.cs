@@ -1,3 +1,4 @@
+#nullable enable
 //
 // UnicodeNewline.cs
 //
@@ -36,7 +37,6 @@ namespace ICSharpCode.Decompiler.Util
 		/// </summary>
 		LF = 0x0A,
 
-
 		CRLF = 0x0D0A,
 
 		/// <summary>
@@ -69,7 +69,6 @@ namespace ICSharpCode.Decompiler.Util
 		/// </summary>
 		PS = 0x2029
 	}
-
 
 	/// <summary>
 	/// Defines unicode new lines according to  Unicode Technical Report #13
@@ -118,7 +117,7 @@ namespace ICSharpCode.Decompiler.Util
 		/// <returns>0 == no new line, otherwise it returns either 1 or 2 depending of the length of the delimiter.</returns>
 		/// <param name="curChar">The current character.</param>
 		/// <param name="nextChar">A callback getting the next character (may be null).</param>
-		public static int GetDelimiterLength(char curChar, Func<char> nextChar = null)
+		public static int GetDelimiterLength(char curChar, Func<char>? nextChar = null)
 		{
 			if (curChar == CR)
 			{
@@ -152,7 +151,6 @@ namespace ICSharpCode.Decompiler.Util
 			return 0;
 		}
 
-
 		/// <summary>
 		/// Determines if a char is a new line delimiter.
 		/// </summary>
@@ -161,7 +159,7 @@ namespace ICSharpCode.Decompiler.Util
 		/// <param name = "length">The length of the delimiter</param>
 		/// <param name = "type">The type of the delimiter</param>
 		/// <param name="nextChar">A callback getting the next character (may be null).</param>
-		public static bool TryGetDelimiterLengthAndType(char curChar, out int length, out UnicodeNewline type, Func<char> nextChar = null)
+		public static bool TryGetDelimiterLengthAndType(char curChar, out int length, out UnicodeNewline type, Func<char>? nextChar = null)
 		{
 			if (curChar == CR)
 			{
@@ -275,7 +273,7 @@ namespace ICSharpCode.Decompiler.Util
 		/// <returns>0 == no new line, otherwise it returns either 1 or 2 depending of the length of the delimiter.</returns>
 		/// <param name="curChar">The current character.</param>
 		/// <param name="nextChar">A callback getting the next character (may be null).</param>
-		public static UnicodeNewline GetDelimiterType(char curChar, Func<char> nextChar = null)
+		public static UnicodeNewline GetDelimiterType(char curChar, Func<char>? nextChar = null)
 		{
 			switch (curChar)
 			{

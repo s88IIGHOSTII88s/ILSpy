@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -139,6 +139,47 @@ namespace ICSharpCode.Decompiler.Tests.Pretty
 			}
 		}
 
+		internal class OverridingParent : Parent
+		{
+#if LEGACY_CSC
+			public virtual int Prop {
+				get {
+					return 1;
+				}
+			}
+#else
+			public virtual int Prop => 1;
+#endif
+
+			public override void Virtual()
+			{
+			}
+		}
+
+		internal class OverridingChild : OverridingParent
+		{
+#if LEGACY_CSC
+			public override int Prop {
+				get {
+					return 2;
+				}
+			}
+#else
+			public override int Prop => 2;
+#endif
+
+			// Neither member is overridden here, so the unqualified spelling would bind to the
+			// same one and the qualifier looks redundant - but Virtual is an override and Prop is
+			// overridden further down, so dropping it would dispatch to this type's member
+			// instead of the one the base call names.
+			public void BaseQualifiersOnOverriddenMembers()
+			{
+				base.Virtual();
+				base.Prop.ToString();
+			}
+		}
+
+#pragma warning disable CS8981
 		private class i
 		{
 			public static void Test()
@@ -279,7 +320,7 @@ namespace ICSharpCode.Decompiler.Tests.Pretty
 		{
 			int fieldConflict = 5;
 			Capturer(() => this.fieldConflict + fieldConflict);
-			Capturer(delegate {
+			Capturer(() => {
 				int innerConflict = 5;
 				return this.fieldConflict + fieldConflict + Capturer2(() => this.innerConflict + innerConflict + this.fieldConflict + fieldConflict);
 			});
@@ -304,15 +345,30 @@ namespace ICSharpCode.Decompiler.Tests.Pretty
 		{
 			System.Array.Sort(Array);
 		}
-
-		private void LocalConflictsWithTypeName()
+#if CS70
+		private void LocalConflictsWithLocalFunction()
 		{
-			for (int i = 0; i < 10; i++)
+			int num = 0;
+			LocalFunction();
+
+			void LocalFunction()
 			{
-				QualifierTests.i.Test();
+				QualifierTests qualifierTests2 = qualifierTests();
+				i.Test();
+				Z(qualifierTests2);
+			}
+
+			QualifierTests qualifierTests()
+			{
+				num.ToString();
+				return new QualifierTests(new string[0]);
 			}
 		}
 
+		private void Z(QualifierTests qualifierTests)
+		{
+		}
+#endif
 		public QualifierTests(string[] Array)
 		{
 			System.Array.Sort(Array);

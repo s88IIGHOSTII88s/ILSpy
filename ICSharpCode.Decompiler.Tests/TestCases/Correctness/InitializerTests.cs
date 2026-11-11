@@ -1,4 +1,4 @@
-﻿// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -318,28 +318,12 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Correctness
 			};
 		}
 
-		public static void NotAStructInitializer_DefaultConstructor()
-		{
-			InitializerTests.StructData data = new InitializerTests.StructData();
-			data.Field = 1;
-			data.Property = 2;
-			InitializerTests.X(InitializerTests.Y(), data);
-		}
-
 		public static void StructInitializer_DefaultConstructor()
 		{
 			InitializerTests.X(InitializerTests.Y(), new InitializerTests.StructData {
 				Field = 1,
 				Property = 2
 			});
-		}
-
-		public static void NotAStructInitializer_ExplicitConstructor()
-		{
-			InitializerTests.StructData data = new InitializerTests.StructData(0);
-			data.Field = 1;
-			data.Property = 2;
-			InitializerTests.X(InitializerTests.Y(), data);
 		}
 
 		public static void StructInitializer_ExplicitConstructor()
@@ -391,7 +375,43 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Correctness
 
 		}
 
+#if CS60
+		class Issue2622a
+		{
+			public class C
+			{
+				public ServiceHost M()
+				{
+					return new ServiceHost(typeof(EWSService), null) {
+						Description = { Endpoints = { [0] = { Behaviors = { new EwsWebHttpBehavior() } } } }
+					};
+				}
+			}
 
+			class EWSService { }
+
+			public class ServiceHost
+			{
+				public ServiceHost(Type type, object x) { }
+
+				public Descr Description { get; }
+			}
+
+			public class Descr
+			{
+				public List<EP> Endpoints { get; }
+			}
+
+			public class EP
+			{
+				public List<Beh> Behaviors { get; }
+			}
+
+			public abstract class Beh { }
+
+			public class EwsWebHttpBehavior : Beh { }
+		}
+#endif
 
 		class Issue855
 		{

@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2014 Daniel Grunwald
+// Copyright (c) 2014 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -16,10 +16,15 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+#nullable enable
+
+using System;
+using System.Collections.Generic;
 using System.Linq;
 
 using ICSharpCode.Decompiler.CSharp.Syntax;
 using ICSharpCode.Decompiler.Semantics;
+using ICSharpCode.Decompiler.TypeSystem;
 
 namespace ICSharpCode.Decompiler.CSharp.Transforms
 {
@@ -40,8 +45,24 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			return false;
 		}
 
-		string ReplaceInvalid(string s)
+		string ReplaceInvalid(string s, ISet<string>? existingNames = null)
 		{
+			// A property backing field that stayed declared (the property is not an
+			// auto-property and the "field" keyword is unavailable or insufficient) gets a
+			// readable name instead of the generic escape of "<P>k__BackingField". The mapping
+			// is name-deterministic like the escape itself, so declarations and references
+			// stay consistent without symbol tracking.
+			if (s.StartsWith("<", System.StringComparison.Ordinal)
+				&& PatternStatementTransform.NameCouldBeBackingFieldOfAutomaticProperty(s, out string? propertyName))
+			{
+				var readable = ReplaceInvalid(propertyName) + "__BackingField";
+				// "P__BackingField" is a plausible identifier a human could have written, unlike
+				// the generic escape it replaces. If the tree already contains that name, the
+				// rename would produce two members with one name; fall back to the escape, which
+				// keeps the output compilable at the cost of readability.
+				if (existingNames?.Contains(readable) != true)
+					return readable;
+			}
 			string name = string.Concat(s.Select(ch => IsValid(ch) ? ch.ToString() : string.Format("_{0:X4}", (int)ch)));
 			if (name.Length >= 1 && !(char.IsLetter(name[0]) || name[0] == '_'))
 				name = "_" + name;
@@ -50,9 +71,18 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 
 		public void Run(AstNode rootNode, TransformContext context)
 		{
+			// Every name already in the tree, so the readable backing-field rename can detect
+			// that its target name is taken.
+			var existingNames = new HashSet<string>(
+				rootNode.DescendantsAndSelf.OfType<Identifier>().Select(i => i.Name), StringComparer.Ordinal);
 			foreach (var ident in rootNode.DescendantsAndSelf.OfType<Identifier>())
 			{
-				ident.Name = ReplaceInvalid(ident.Name);
+				string newName = ReplaceInvalid(ident.Name, existingNames);
+				if (newName != ident.Name)
+				{
+					context.Step($"Escape identifier '{ident.Name}'", ident);
+					ident.Name = newName;
+				}
 			}
 		}
 	}
@@ -134,6 +164,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 						switch (trr.Type.FullName)
 						{
 							case "System.Security.UnverifiableCodeAttribute":
+							case "System.Runtime.CompilerServices.RefSafetyRulesAttribute":
 								attribute.Remove();
 								break;
 						}
@@ -151,4 +182,57 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			}
 		}
 	}
+
+	/// <summary>
+	/// This transform is used to remove attributes that are embedded 
+	/// </summary>
+	public class RemoveEmbeddedAttributes : DepthFirstAstVisitor, IAstTransform
+	{
+		internal static readonly HashSet<string> attributeNames = new HashSet<string>() {
+			"System.Runtime.CompilerServices.IsReadOnlyAttribute",
+			"System.Runtime.CompilerServices.IsByRefLikeAttribute",
+			"System.Runtime.CompilerServices.IsUnmanagedAttribute",
+			"System.Runtime.CompilerServices.NullableAttribute",
+			"System.Runtime.CompilerServices.NullableContextAttribute",
+			"System.Runtime.CompilerServices.NativeIntegerAttribute",
+			"System.Runtime.CompilerServices.ParamCollectionAttribute",
+			"System.Runtime.CompilerServices.RefSafetyRulesAttribute",
+			"System.Runtime.CompilerServices.ScopedRefAttribute",
+			"System.Runtime.CompilerServices.RequiresLocationAttribute",
+			"Microsoft.CodeAnalysis.EmbeddedAttribute",
+		};
+
+		internal static readonly HashSet<string> nonEmbeddedAttributeNames = new HashSet<string>() {
+			// non-embedded attributes, but we still want to remove them
+			"System.Runtime.CompilerServices.CompilerFeatureRequiredAttribute",
+			"System.Runtime.CompilerServices.RequiredMemberAttribute",
+			"System.Runtime.CompilerServices.IsExternalInit",
+		};
+
+		public override void VisitTypeDeclaration(TypeDeclaration typeDeclaration)
+		{
+			var typeDefinition = typeDeclaration.GetSymbol() as ITypeDefinition;
+			if (typeDefinition == null)
+				return;
+
+			if (attributeNames.Contains(typeDefinition.FullName))
+			{
+				if (!typeDefinition.HasAttribute(KnownAttribute.Embedded))
+					return;
+			}
+			else if (!nonEmbeddedAttributeNames.Contains(typeDefinition.FullName))
+				return;
+
+			if (typeDeclaration.Parent is NamespaceDeclaration ns && ns.Members.Count == 1)
+				ns.Remove();
+			else
+				typeDeclaration.Remove();
+		}
+
+		public void Run(AstNode rootNode, TransformContext context)
+		{
+			rootNode.AcceptVisitor(this);
+		}
+	}
+
 }

@@ -1,10 +1,29 @@
-﻿using System;
+// Copyright (c) 2016 Daniel Grunwald
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy of this
+// software and associated documentation files (the "Software"), to deal in the Software
+// without restriction, including without limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
+// to whom the Software is furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all copies or
+// substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
+// FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 
 using ICSharpCode.Decompiler.FlowAnalysis;
 using ICSharpCode.Decompiler.IL.ControlFlow;
+using ICSharpCode.Decompiler.Util;
 
 namespace ICSharpCode.Decompiler.IL.Transforms
 {
@@ -53,11 +72,19 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 		/// </summary>
 		public ControlFlowGraph ControlFlowGraph { get; set; }
 
+		/// <summary>
+		/// Initially equal to Block.Instructions.Count indicating that nothing has been transformed yet.
+		/// Set by <see cref="ConditionDetection"/> when another already transformed block is merged into
+		/// the current block. Subsequent <see cref="IBlockTransform"/>s must update this value, for example,
+		/// by resetting it to Block.Instructions.Count. <see cref="StatementTransform"/> will use this value to
+		/// skip already transformed instructions.
+		/// </summary>
+		public int IndexOfFirstAlreadyTransformedInstruction { get; set; }
+
 		public BlockTransformContext(ILTransformContext context) : base(context)
 		{
 		}
 	}
-
 
 	/// <summary>
 	/// IL transform that runs a list of per-block transforms.
@@ -96,27 +123,36 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			}
 		}
 
-		void VisitBlock(ControlFlowNode cfgNode, BlockTransformContext context)
+		/// <summary>
+		/// Walks the dominator tree rooted at entryNode, calling the transforms on each block.
+		/// </summary>
+		void VisitBlock(ControlFlowNode entryNode, BlockTransformContext context)
 		{
-			Block block = (Block)cfgNode.UserData;
-			context.StepStartGroup(block.Label, block);
-
-			context.ControlFlowNode = cfgNode;
-			context.Block = block;
-			block.RunTransforms(PreOrderTransforms, context);
-
-			// First, process the children in the dominator tree.
-			// The ConditionDetection transform requires dominated blocks to
-			// be already processed.
-			foreach (var child in cfgNode.DominatorTreeChildren)
+			IEnumerable<ControlFlowNode> Preorder(ControlFlowNode cfgNode)
 			{
-				VisitBlock(child, context);
+				// preorder processing:
+				Block block = (Block)cfgNode.UserData;
+				context.StepStartGroup(block.Label, block);
+
+				context.ControlFlowNode = cfgNode;
+				context.Block = block;
+				context.IndexOfFirstAlreadyTransformedInstruction = block.Instructions.Count;
+				block.RunTransforms(PreOrderTransforms, context);
+
+				// process the children
+				return cfgNode.DominatorTreeChildren;
 			}
 
-			context.ControlFlowNode = cfgNode;
-			context.Block = block;
-			block.RunTransforms(PostOrderTransforms, context);
-			context.StepEndGroup();
+			foreach (var cfgNode in TreeTraversal.PostOrder(entryNode, Preorder))
+			{
+				// in post-order:
+				Block block = (Block)cfgNode.UserData;
+				context.ControlFlowNode = cfgNode;
+				context.Block = block;
+				context.IndexOfFirstAlreadyTransformedInstruction = block.Instructions.Count;
+				block.RunTransforms(PostOrderTransforms, context);
+				context.StepEndGroup();
+			}
 		}
 	}
 }

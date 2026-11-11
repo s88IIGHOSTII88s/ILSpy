@@ -1,14 +1,14 @@
-﻿// Copyright (c) 2011 AlphaSierraPapa for the SharpDevelop Team
-// 
+// Copyright (c) 2026 AlphaSierraPapa for the SharpDevelop Team
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
 // without restriction, including without limitation the rights to use, copy, modify, merge,
 // publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
 // to whom the Software is furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in all copies or
 // substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
 // INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
 // PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
@@ -22,89 +22,57 @@ using System.Reflection.Metadata.Ecma335;
 
 using ICSharpCode.Decompiler;
 using ICSharpCode.Decompiler.Disassembler;
-using ICSharpCode.Decompiler.IL;
 using ICSharpCode.Decompiler.Metadata;
 
-namespace ICSharpCode.ILSpy.Metadata
+namespace ICSharpCode.ILSpy.Metadata.CorTables
 {
-	internal class MethodSpecTableTreeNode : MetadataTableTreeNode
+	/// <summary>
+	/// View of the MethodSpec table — concrete instantiations of generic methods like
+	/// <c>List&lt;int&gt;.Add</c>. Each row points back at the open generic method
+	/// (MethodDef or MemberRef) and carries a blob holding the type-argument list.
+	/// </summary>
+	public sealed class MethodSpecTableTreeNode : MetadataTableTreeNode<MethodSpecTableTreeNode.MethodSpecEntry>
 	{
-		public MethodSpecTableTreeNode(PEFile module)
-			: base(HandleKind.MethodSpecification, module)
+		public MethodSpecTableTreeNode(MetadataFile metadataFile)
+			: base(TableIndex.MethodSpec, metadataFile)
 		{
 		}
 
-		public override object Text => $"2B MethodSpec ({module.Metadata.GetTableRowCount(TableIndex.MethodSpec)})";
-
-		public override object Icon => Images.Literal;
-
-		public override bool View(ViewModels.TabPageModel tabPage)
+		protected override IReadOnlyList<MethodSpecEntry> LoadTable()
 		{
-			tabPage.Title = Text.ToString();
-			tabPage.SupportsLanguageSwitching = false;
-
-			var view = Helpers.PrepareDataGrid(tabPage, this);
-			var metadata = module.Metadata;
-
 			var list = new List<MethodSpecEntry>();
-			MethodSpecEntry scrollTargetEntry = default;
-
-			foreach (var row in metadata.GetMethodSpecifications())
-			{
-				MethodSpecEntry entry = new MethodSpecEntry(module, row);
-				if (entry.RID == this.scrollTarget)
-				{
-					scrollTargetEntry = entry;
-				}
-				list.Add(entry);
-			}
-
-			view.ItemsSource = list;
-
-			tabPage.Content = view;
-
-			if (scrollTargetEntry.RID > 0)
-			{
-				ScrollItemIntoView(view, scrollTargetEntry);
-			}
-
-			return true;
+			foreach (var row in metadataFile.Metadata.GetMethodSpecifications())
+				list.Add(new MethodSpecEntry(metadataFile, row));
+			return list;
 		}
 
-		struct MethodSpecEntry
+		public sealed class MethodSpecEntry
 		{
-			readonly int metadataOffset;
-			readonly PEFile module;
-			readonly MetadataReader metadata;
+			readonly MetadataFile metadataFile;
 			readonly MethodSpecificationHandle handle;
 			readonly MethodSpecification methodSpec;
 
 			public int RID => MetadataTokens.GetRowNumber(handle);
 
+			[ColumnInfo("X8")]
 			public int Token => MetadataTokens.GetToken(handle);
 
-			public int Offset => metadataOffset
-				+ metadata.GetTableMetadataOffset(TableIndex.MethodSpec)
-				+ metadata.GetTableRowSize(TableIndex.MethodSpec) * (RID - 1);
+			[ColumnInfo("X8")]
+			public int Offset => GetRowOffset(metadataFile, TableIndex.MethodSpec, RID);
 
-			[StringFormat("X8")]
+			[ColumnInfo("X8", Kind = ColumnKind.Token)]
 			public int Method => MetadataTokens.GetToken(methodSpec.Method);
 
-			public string MethodTooltip {
-				get {
-					ITextOutput output = new PlainTextOutput();
-					methodSpec.Method.WriteTo(module, output, GenericContext.Empty);
-					return output.ToString();
-				}
-			}
+			string? methodTooltip;
+			public string? MethodTooltip => GenerateTooltip(ref methodTooltip, metadataFile, methodSpec.Method);
 
-			[StringFormat("X")]
+			[ColumnInfo("X8", Kind = ColumnKind.HeapOffset)]
 			public int Signature => MetadataTokens.GetHeapOffset(methodSpec.Signature);
 
-			public string SignatureTooltip {
+			public string? SignatureTooltip {
 				get {
 					ITextOutput output = new PlainTextOutput();
-					var signature = methodSpec.DecodeSignature(new DisassemblerSignatureTypeProvider(module, output), GenericContext.Empty);
+					var signature = methodSpec.DecodeSignature(new DisassemblerSignatureTypeProvider(metadataFile, output), default);
 					bool first = true;
 					foreach (var type in signature)
 					{
@@ -118,19 +86,12 @@ namespace ICSharpCode.ILSpy.Metadata
 				}
 			}
 
-			public MethodSpecEntry(PEFile module, MethodSpecificationHandle handle)
+			public MethodSpecEntry(MetadataFile metadataFile, MethodSpecificationHandle handle)
 			{
-				this.metadataOffset = module.Reader.PEHeaders.MetadataStartOffset;
-				this.module = module;
-				this.metadata = module.Metadata;
+				this.metadataFile = metadataFile;
 				this.handle = handle;
-				this.methodSpec = metadata.GetMethodSpecification(handle);
+				methodSpec = metadataFile.Metadata.GetMethodSpecification(handle);
 			}
-		}
-
-		public override void Decompile(Language language, ITextOutput output, DecompilationOptions options)
-		{
-			language.WriteCommentLine(output, "MethodSpecs");
 		}
 	}
 }

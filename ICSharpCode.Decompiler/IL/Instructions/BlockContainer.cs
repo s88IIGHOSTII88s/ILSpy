@@ -1,4 +1,5 @@
-﻿// Copyright (c) 2014 Daniel Grunwald
+#nullable enable
+// Copyright (c) 2014 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -19,11 +20,12 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 
 using ICSharpCode.Decompiler.IL.Transforms;
+using ICSharpCode.Decompiler.TypeSystem;
 using ICSharpCode.Decompiler.Util;
-
 namespace ICSharpCode.Decompiler.IL
 {
 	/// <summary>
@@ -42,7 +44,11 @@ namespace ICSharpCode.Decompiler.IL
 		public readonly InstructionCollection<Block> Blocks;
 
 		public ContainerKind Kind { get; set; }
-		public StackType ExpectedResultType { get; set; }
+		IType? expectedResultType; // null means void
+		public IType? ExpectedResultType {
+			get => expectedResultType;
+			set => expectedResultType = value;
+		}
 
 		int leaveCount;
 
@@ -57,13 +63,18 @@ namespace ICSharpCode.Decompiler.IL
 			}
 		}
 
-		Block entryPoint;
+		Block? entryPoint;
 
 		/// <summary>
 		/// Gets the container's entry point. This is the first block in the Blocks collection.
 		/// </summary>
 		public Block EntryPoint {
-			get { return entryPoint; }
+			get {
+				// HACK: While it's possible to have BlockContainers without entry point,
+				// normally every container must have an entry point according to its invariant.
+				// Thus it's easier on the transforms if this property returns a non-nullable EntryPoint.
+				return entryPoint!;
+			}
 			private set {
 				if (entryPoint != null && IsConnected)
 					entryPoint.IncomingEdgeCount--;
@@ -73,16 +84,16 @@ namespace ICSharpCode.Decompiler.IL
 			}
 		}
 
-		public BlockContainer(ContainerKind kind = ContainerKind.Normal, StackType expectedResultType = StackType.Void) : base(OpCode.BlockContainer)
+		public BlockContainer(ContainerKind kind = ContainerKind.Normal, IType? expectedResultType = null) : base(OpCode.BlockContainer)
 		{
 			this.Kind = kind;
 			this.Blocks = new InstructionCollection<Block>(this, 0);
-			this.ExpectedResultType = expectedResultType;
+			this.expectedResultType = expectedResultType;
 		}
 
 		public override ILInstruction Clone()
 		{
-			BlockContainer clone = new BlockContainer();
+			BlockContainer clone = new BlockContainer(this.Kind, this.expectedResultType);
 			clone.AddILRange(this);
 			clone.Blocks.AddRange(this.Blocks.Select(block => (Block)block.Clone()));
 			// Adjust branch instructions to point to the new container
@@ -102,7 +113,7 @@ namespace ICSharpCode.Decompiler.IL
 		protected internal override void InstructionCollectionUpdateComplete()
 		{
 			base.InstructionCollectionUpdateComplete();
-			this.EntryPoint = this.Blocks.FirstOrDefault();
+			this.EntryPoint = this.Blocks.FirstOrDefault()!;
 		}
 
 		protected override void Connected()
@@ -119,7 +130,7 @@ namespace ICSharpCode.Decompiler.IL
 				entryPoint.IncomingEdgeCount--;
 		}
 
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.WriteLocalReference("BlockContainer", this, isDefinition: true);
@@ -174,7 +185,7 @@ namespace ICSharpCode.Decompiler.IL
 			return Blocks[index];
 		}
 
-		protected override void SetChild(int index, ILInstruction value)
+		protected override void SetChild(int index, ILInstruction? value)
 		{
 			if (Blocks[index] != value)
 				throw new InvalidOperationException("Cannot replace blocks in BlockContainer");
@@ -185,16 +196,16 @@ namespace ICSharpCode.Decompiler.IL
 			return BlockSlot;
 		}
 
-		internal override void CheckInvariant(ILPhase phase)
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
 		{
-			base.CheckInvariant(phase);
+			base.CheckInvariant(phase, compilation);
 			Debug.Assert(Blocks.Count > 0 && EntryPoint == Blocks[0]);
-			Debug.Assert(!IsConnected || EntryPoint?.IncomingEdgeCount >= 1);
-			Debug.Assert(EntryPoint == null || Parent is ILFunction || !ILRangeIsEmpty);
+			Debug.Assert(!IsConnected || EntryPoint.IncomingEdgeCount >= 1);
+			Debug.Assert(Parent is ILFunction || !ILRangeIsEmpty);
 			Debug.Assert(Blocks.All(b => b.HasFlag(InstructionFlags.EndPointUnreachable)));
 			Debug.Assert(Blocks.All(b => b.Kind == BlockKind.ControlFlow)); // this also implies that the blocks don't use FinalInstruction
 			Debug.Assert(TopologicalSort(deleteUnreachableBlocks: true).Count == Blocks.Count, "Container should not have any unreachable blocks");
-			Block bodyStartBlock;
+			Block? bodyStartBlock;
 			switch (Kind)
 			{
 				case ContainerKind.Normal:
@@ -227,6 +238,20 @@ namespace ICSharpCode.Decompiler.IL
 					Debug.Assert(bodyStartBlock == Blocks[1]);
 					break;
 			}
+		}
+
+		public override StackType ResultType {
+			get {
+				if (expectedResultType != null)
+					return expectedResultType.GetStackType();
+				else
+					return StackType.Void;
+			}
+		}
+
+		public override IType InferType(ICompilation compilation)
+		{
+			return expectedResultType ?? compilation.FindType(StackType.Void);
 		}
 
 		protected override InstructionFlags ComputeFlags()
@@ -273,7 +298,7 @@ namespace ICSharpCode.Decompiler.IL
 			// Visit blocks in post-order
 			BitSet visited = new BitSet(Blocks.Count);
 			List<Block> postOrder = new List<Block>();
-			Visit(EntryPoint);
+			GraphTraversal.DepthFirstSearch(new[] { EntryPoint }, MarkAsVisited, Successors, postOrder.Add, reverseSuccessors: true);
 			postOrder.Reverse();
 			if (!deleteUnreachableBlocks)
 			{
@@ -285,24 +310,30 @@ namespace ICSharpCode.Decompiler.IL
 			}
 			return postOrder;
 
-			void Visit(Block block)
+			bool MarkAsVisited(Block block)
 			{
 				Debug.Assert(block.Parent == this);
 				if (!visited[block.ChildIndex])
 				{
 					visited[block.ChildIndex] = true;
-
-					foreach (var branch in block.Descendants.OfType<Branch>())
-					{
-						if (branch.TargetBlock.Parent == this)
-						{
-							Visit(branch.TargetBlock);
-						}
-					}
-
-					postOrder.Add(block);
+					return true;
 				}
-			};
+				else
+				{
+					return false;
+				}
+			}
+
+			IEnumerable<Block> Successors(Block block)
+			{
+				foreach (var branch in block.Descendants.OfType<Branch>())
+				{
+					if (branch.TargetBlock.Parent == this)
+					{
+						yield return branch.TargetBlock;
+					}
+				}
+			}
 		}
 
 		/// <summary>
@@ -319,7 +350,7 @@ namespace ICSharpCode.Decompiler.IL
 			Blocks.ReplaceList(newOrder);
 		}
 
-		public static BlockContainer FindClosestContainer(ILInstruction inst)
+		public static BlockContainer? FindClosestContainer(ILInstruction? inst)
 		{
 			while (inst != null)
 			{
@@ -330,18 +361,18 @@ namespace ICSharpCode.Decompiler.IL
 			return null;
 		}
 
-		public static BlockContainer FindClosestSwitchContainer(ILInstruction inst)
+		public static BlockContainer? FindClosestSwitchContainer(ILInstruction? inst)
 		{
 			while (inst != null)
 			{
-				if (inst is BlockContainer bc && bc.entryPoint.Instructions.FirstOrDefault() is SwitchInstruction)
+				if (inst is BlockContainer { Kind: ContainerKind.Switch } bc)
 					return bc;
 				inst = inst.Parent;
 			}
 			return null;
 		}
 
-		public bool MatchConditionBlock(Block block, out ILInstruction condition, out Block bodyStartBlock)
+		public bool MatchConditionBlock(Block block, [NotNullWhen(true)] out ILInstruction? condition, [NotNullWhen(true)] out Block? bodyStartBlock)
 		{
 			condition = null;
 			bodyStartBlock = null;

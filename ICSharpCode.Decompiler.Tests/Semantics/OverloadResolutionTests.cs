@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -18,10 +18,12 @@
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Linq.Expressions;
 
 using ICSharpCode.Decompiler.CSharp.Resolver;
+using ICSharpCode.Decompiler.Metadata;
 using ICSharpCode.Decompiler.Semantics;
 using ICSharpCode.Decompiler.Tests.TypeSystem;
 using ICSharpCode.Decompiler.TypeSystem;
@@ -86,10 +88,10 @@ namespace ICSharpCode.Decompiler.Tests.Semantics
 		{
 			OverloadResolution r = new OverloadResolution(compilation, MakeArgumentList(typeof(ushort)));
 			var c1 = MakeMethod(typeof(int));
-			Assert.AreEqual(OverloadResolutionErrors.None, r.AddCandidate(c1));
-			Assert.AreEqual(OverloadResolutionErrors.None, r.AddCandidate(MakeMethod(typeof(uint))));
-			Assert.IsFalse(r.IsAmbiguous);
-			Assert.AreSame(c1, r.BestCandidate);
+			Assert.That(r.AddCandidate(c1), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(r.AddCandidate(MakeMethod(typeof(uint))), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(!r.IsAmbiguous);
+			Assert.That(r.BestCandidate, Is.SameAs(c1));
 		}
 
 		[Test]
@@ -98,66 +100,66 @@ namespace ICSharpCode.Decompiler.Tests.Semantics
 			ResolveResult[] args = { new ConstantResolveResult(compilation.FindType(KnownTypeCode.Int32), 1) };
 			OverloadResolution r = new OverloadResolution(compilation, args);
 			var c1 = MakeMethod(typeof(uint));
-			Assert.AreEqual(OverloadResolutionErrors.None, r.AddCandidate(c1));
-			Assert.AreEqual(OverloadResolutionErrors.None, r.AddCandidate(MakeMethod(typeof(long))));
-			Assert.IsFalse(r.IsAmbiguous);
-			Assert.AreSame(c1, r.BestCandidate);
+			Assert.That(r.AddCandidate(c1), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(r.AddCandidate(MakeMethod(typeof(long))), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(!r.IsAmbiguous);
+			Assert.That(r.BestCandidate, Is.SameAs(c1));
 		}
 
-		[Test, Ignore("Broken after migration to ICS.Decompiler")]
+		[Test]
 		public void NullableIntAndNullableUIntIsAmbiguous()
 		{
 			OverloadResolution r = new OverloadResolution(compilation, MakeArgumentList(typeof(ushort?)));
-			Assert.AreEqual(OverloadResolutionErrors.None, r.AddCandidate(MakeMethod(typeof(int?))));
-			Assert.AreEqual(OverloadResolutionErrors.None, r.AddCandidate(MakeMethod(typeof(uint?))));
-			Assert.AreEqual(OverloadResolutionErrors.AmbiguousMatch, r.BestCandidateErrors);
+			Assert.That(r.AddCandidate(MakeMethod(typeof(int?))), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(r.AddCandidate(MakeMethod(typeof(uint?))), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(r.BestCandidateErrors, Is.EqualTo(OverloadResolutionErrors.AmbiguousMatch));
 
 			// then adding a matching overload solves the ambiguity:
-			Assert.AreEqual(OverloadResolutionErrors.None, r.AddCandidate(MakeMethod(typeof(ushort?))));
-			Assert.AreEqual(OverloadResolutionErrors.None, r.BestCandidateErrors);
-			Assert.IsNull(r.BestCandidateAmbiguousWith);
+			Assert.That(r.AddCandidate(MakeMethod(typeof(ushort?))), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(r.BestCandidateErrors, Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(r.BestCandidateAmbiguousWith, Is.Null);
 		}
 
 		[Test]
 		public void ParamsMethodMatchesEmptyArgumentList()
 		{
 			OverloadResolution r = new OverloadResolution(compilation, MakeArgumentList());
-			Assert.AreEqual(OverloadResolutionErrors.None, r.AddCandidate(MakeParamsMethod(typeof(int[]))));
-			Assert.IsTrue(r.BestCandidateIsExpandedForm);
+			Assert.That(r.AddCandidate(MakeParamsMethod(typeof(int[]))), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(r.BestCandidateIsExpandedForm);
 		}
 
 		[Test]
 		public void ParamsMethodMatchesOneArgumentInExpandedForm()
 		{
 			OverloadResolution r = new OverloadResolution(compilation, MakeArgumentList(typeof(int)));
-			Assert.AreEqual(OverloadResolutionErrors.None, r.AddCandidate(MakeParamsMethod(typeof(int[]))));
-			Assert.IsTrue(r.BestCandidateIsExpandedForm);
+			Assert.That(r.AddCandidate(MakeParamsMethod(typeof(int[]))), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(r.BestCandidateIsExpandedForm);
 		}
 
 		[Test]
 		public void ParamsMethodMatchesInUnexpandedForm()
 		{
 			OverloadResolution r = new OverloadResolution(compilation, MakeArgumentList(typeof(int[])));
-			Assert.AreEqual(OverloadResolutionErrors.None, r.AddCandidate(MakeParamsMethod(typeof(int[]))));
-			Assert.IsFalse(r.BestCandidateIsExpandedForm);
+			Assert.That(r.AddCandidate(MakeParamsMethod(typeof(int[]))), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(!r.BestCandidateIsExpandedForm);
 		}
 
 		[Test]
 		public void LessArgumentsPassedToParamsIsBetter()
 		{
 			OverloadResolution r = new OverloadResolution(compilation, MakeArgumentList(typeof(int), typeof(int), typeof(int)));
-			Assert.AreEqual(OverloadResolutionErrors.None, r.AddCandidate(MakeParamsMethod(typeof(int[]))));
-			Assert.AreEqual(OverloadResolutionErrors.None, r.AddCandidate(MakeParamsMethod(typeof(int), typeof(int[]))));
-			Assert.IsFalse(r.IsAmbiguous);
-			Assert.AreEqual(2, r.BestCandidate.Parameters.Count);
+			Assert.That(r.AddCandidate(MakeParamsMethod(typeof(int[]))), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(r.AddCandidate(MakeParamsMethod(typeof(int), typeof(int[]))), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(!r.IsAmbiguous);
+			Assert.That(r.BestCandidate.Parameters.Count, Is.EqualTo(2));
 		}
 
 		[Test]
 		public void CallInvalidParamsDeclaration()
 		{
 			OverloadResolution r = new OverloadResolution(compilation, MakeArgumentList(typeof(int[,])));
-			Assert.AreEqual(OverloadResolutionErrors.ArgumentTypeMismatch, r.AddCandidate(MakeParamsMethod(typeof(int))));
-			Assert.IsFalse(r.BestCandidateIsExpandedForm);
+			Assert.That(r.AddCandidate(MakeParamsMethod(typeof(int))), Is.EqualTo(OverloadResolutionErrors.ArgumentTypeMismatch));
+			Assert.That(!r.BestCandidateIsExpandedForm);
 		}
 
 		[Test]
@@ -167,10 +169,10 @@ namespace ICSharpCode.Decompiler.Tests.Semantics
 			var m2 = MakeMethod(1);
 
 			OverloadResolution r = new OverloadResolution(compilation, MakeArgumentList());
-			Assert.AreEqual(OverloadResolutionErrors.None, r.AddCandidate(m1));
-			Assert.AreEqual(OverloadResolutionErrors.None, r.AddCandidate(m2));
-			Assert.IsFalse(r.IsAmbiguous);
-			Assert.AreSame(m1, r.BestCandidate);
+			Assert.That(r.AddCandidate(m1), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(r.AddCandidate(m2), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(!r.IsAmbiguous);
+			Assert.That(r.BestCandidate, Is.SameAs(m1));
 		}
 
 		[Test]
@@ -186,22 +188,22 @@ namespace ICSharpCode.Decompiler.Tests.Semantics
 			// Call: Foo<int>();
 			OverloadResolution o;
 			o = new OverloadResolution(compilation, new ResolveResult[0], typeArguments: new[] { compilation.FindType(typeof(int)) });
-			Assert.AreEqual(OverloadResolutionErrors.None, o.AddCandidate(resolvedM1));
-			Assert.AreEqual(OverloadResolutionErrors.ConstructedTypeDoesNotSatisfyConstraint, o.AddCandidate(resolvedM2));
-			Assert.AreSame(resolvedM1, o.BestCandidate);
+			Assert.That(o.AddCandidate(resolvedM1), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(o.AddCandidate(resolvedM2), Is.EqualTo(OverloadResolutionErrors.ConstructedTypeDoesNotSatisfyConstraint));
+			Assert.That(o.BestCandidate, Is.SameAs(resolvedM1));
 
 			// Call: Foo<string>();
 			o = new OverloadResolution(compilation, new ResolveResult[0], typeArguments: new[] { compilation.FindType(typeof(string)) });
-			Assert.AreEqual(OverloadResolutionErrors.ConstructedTypeDoesNotSatisfyConstraint, o.AddCandidate(resolvedM1));
-			Assert.AreEqual(OverloadResolutionErrors.None, o.AddCandidate(resolvedM2));
-			Assert.AreSame(resolvedM2, o.BestCandidate);
+			Assert.That(o.AddCandidate(resolvedM1), Is.EqualTo(OverloadResolutionErrors.ConstructedTypeDoesNotSatisfyConstraint));
+			Assert.That(o.AddCandidate(resolvedM2), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(o.BestCandidate, Is.SameAs(resolvedM2));
 
 			// Call: Foo<int?>();
 			o = new OverloadResolution(compilation, new ResolveResult[0], typeArguments: new[] { compilation.FindType(typeof(int?)) });
-			Assert.AreEqual(OverloadResolutionErrors.ConstructedTypeDoesNotSatisfyConstraint, o.AddCandidate(resolvedM1));
-			Assert.AreEqual(OverloadResolutionErrors.ConstructedTypeDoesNotSatisfyConstraint, o.AddCandidate(resolvedM2));
-			Assert.AreEqual(OverloadResolutionErrors.None, o.AddCandidate(resolvedM3));
-			Assert.AreSame(resolvedM3, o.BestCandidate);
+			Assert.That(o.AddCandidate(resolvedM1), Is.EqualTo(OverloadResolutionErrors.ConstructedTypeDoesNotSatisfyConstraint));
+			Assert.That(o.AddCandidate(resolvedM2), Is.EqualTo(OverloadResolutionErrors.ConstructedTypeDoesNotSatisfyConstraint));
+			Assert.That(o.AddCandidate(resolvedM3), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(o.BestCandidate, Is.SameAs(resolvedM3));
 		}
 
 		class SkeetEvilOverloadResolutionTestCase
@@ -276,10 +278,10 @@ namespace ICSharpCode.Decompiler.Tests.Semantics
 			};
 
 			OverloadResolution r = new OverloadResolution(compilation, args);
-			Assert.AreEqual(OverloadResolutionErrors.None, r.AddCandidate(m1));
-			Assert.AreEqual(OverloadResolutionErrors.None, r.AddCandidate(m2));
-			Assert.AreSame(m2, r.BestCandidate);
-			Assert.AreEqual(OverloadResolutionErrors.None, r.BestCandidateErrors);
+			Assert.That(r.AddCandidate(m1), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(r.AddCandidate(m2), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(r.BestCandidate, Is.SameAs(m2));
+			Assert.That(r.BestCandidateErrors, Is.EqualTo(OverloadResolutionErrors.None));
 		}
 
 		[Test]
@@ -294,13 +296,13 @@ namespace ICSharpCode.Decompiler.Tests.Semantics
 			};
 
 			OverloadResolution r = new OverloadResolution(compilation, args);
-			Assert.AreEqual(OverloadResolutionErrors.None, r.AddCandidate(m1));
-			Assert.AreEqual(OverloadResolutionErrors.None, r.AddCandidate(m2));
-			Assert.AreSame(m2, r.BestCandidate);
-			Assert.AreEqual(OverloadResolutionErrors.None, r.BestCandidateErrors);
+			Assert.That(r.AddCandidate(m1), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(r.AddCandidate(m2), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(r.BestCandidate, Is.SameAs(m2));
+			Assert.That(r.BestCandidateErrors, Is.EqualTo(OverloadResolutionErrors.None));
 		}
 
-		[Test, Ignore("Broken on SRM branch???")]
+		[Test]
 		public void Lambda_DelegateAndExpressionTreeOverloadsAreAmbiguous()
 		{
 			var m1 = MakeMethod(typeof(Func<int>));
@@ -312,9 +314,9 @@ namespace ICSharpCode.Decompiler.Tests.Semantics
 			};
 
 			OverloadResolution r = new OverloadResolution(compilation, args);
-			Assert.AreEqual(OverloadResolutionErrors.None, r.AddCandidate(m1));
-			Assert.AreEqual(OverloadResolutionErrors.None, r.AddCandidate(m2));
-			Assert.AreEqual(OverloadResolutionErrors.AmbiguousMatch, r.BestCandidateErrors);
+			Assert.That(r.AddCandidate(m1), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(r.AddCandidate(m2), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(r.BestCandidateErrors, Is.EqualTo(OverloadResolutionErrors.AmbiguousMatch));
 		}
 
 		[Test, Ignore("Overload Resolution bug")]
@@ -329,10 +331,10 @@ namespace ICSharpCode.Decompiler.Tests.Semantics
 			OverloadResolution r = new OverloadResolution(compilation, args);
 			foreach (var method in container.GetMethods(m => m.Name == "Method"))
 			{
-				Assert.AreEqual(OverloadResolutionErrors.None, r.AddCandidate(method));
+				Assert.That(r.AddCandidate(method), Is.EqualTo(OverloadResolutionErrors.None));
 			}
 
-			Assert.AreEqual(container.GetMethods(m => m.Name == "Method").Last(), r.BestCandidate);
+			Assert.That(r.BestCandidate, Is.EqualTo(container.GetMethods(m => m.Name == "Method").Last()));
 		}
 
 		class BetterFunctionMemberIsNotTransitiveTestCase
@@ -347,5 +349,178 @@ namespace ICSharpCode.Decompiler.Tests.Semantics
 				Method(a => a.ToString());
 			}
 		}
+
+		#region First-class span betterness
+
+		public struct ConvertibleToBothReadOnlySpans
+		{
+			public static implicit operator ReadOnlySpan<int>(ConvertibleToBothReadOnlySpans c)
+			{
+				return default;
+			}
+
+			public static implicit operator ReadOnlySpan<long>(ConvertibleToBothReadOnlySpans c)
+			{
+				return default;
+			}
+		}
+
+		static IMethod MakeMethodIn(ICompilation c, params Type[] parameterTypes)
+		{
+			var m = new FakeMethod(c, SymbolKind.Method);
+			m.Name = "Method";
+			m.Parameters = parameterTypes
+				.Select(t => (IParameter)new DefaultParameter(c.FindType(t), string.Empty, owner: m))
+				.ToList();
+			return m;
+		}
+
+		[Test]
+		public void ReadOnlySpanOverloadsWithUnrelatedElementTypesAreAmbiguous()
+		{
+			// C# 14 spec, 12.6.4.7: ReadOnlySpan<E1> is a better conversion target than
+			// ReadOnlySpan<E2> only if an implicit conversion exists from ReadOnlySpan<E1>
+			// to ReadOnlySpan<E2> - the span types, not the element types. No span conversion
+			// relates ReadOnlySpan<int> and ReadOnlySpan<long>, so neither target is better
+			// and the call is ambiguous; Roslyn reports CS0121.
+			var c = RefAssemblyCompilation.Instance;
+			var r = new OverloadResolution(c, new[] {
+				new ResolveResult(c.FindType(typeof(ConvertibleToBothReadOnlySpans)))
+			});
+			Assert.That(r.AddCandidate(MakeMethodIn(c, typeof(ReadOnlySpan<int>))), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(r.AddCandidate(MakeMethodIn(c, typeof(ReadOnlySpan<long>))), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(r.IsAmbiguous);
+		}
+
+		static IMethod MakeByRefMethodIn(ICompilation c, Type parameterType, ReferenceKind kind)
+		{
+			var m = new FakeMethod(c, SymbolKind.Method);
+			m.Name = "Method";
+			m.Parameters = new List<IParameter> {
+				new DefaultParameter(new ByReferenceType(c.FindType(parameterType)), string.Empty,
+					owner: m, referenceKind: kind)
+			};
+			return m;
+		}
+
+		static IMethod MakeInMethodIn(ICompilation c, Type parameterType)
+			=> MakeByRefMethodIn(c, parameterType, ReferenceKind.In);
+
+		[Test]
+		public void InReadOnlySpanParameter_BindsAnArrayWithoutInButNotWithIn()
+		{
+			// Roslyn: OnlyIn(arr) compiles - a value argument may bind to an 'in' parameter
+			// through the implicit span conversion (a temporary is created). OnlyIn(in arr)
+			// is CS1503: an explicit 'in' argument must have the parameter's own type.
+			var c = RefAssemblyCompilation.Instance;
+			var arrayArg = new ResolveResult(new ArrayType(c, c.FindType(KnownTypeCode.Int32)));
+
+			var implicitIn = new OverloadResolution(c, new[] { arrayArg });
+			Assert.That(implicitIn.AddCandidate(MakeInMethodIn(c, typeof(ReadOnlySpan<int>))),
+				Is.EqualTo(OverloadResolutionErrors.None));
+
+			var explicitIn = new OverloadResolution(c, new[] {
+				new ByReferenceResolveResult(arrayArg, ReferenceKind.In)
+			});
+			Assert.That(explicitIn.AddCandidate(MakeInMethodIn(c, typeof(ReadOnlySpan<int>))),
+				Is.Not.EqualTo(OverloadResolutionErrors.None));
+		}
+
+		[Test]
+		public void InReadOnlySpanParameter_BindsAnIdentityArgumentWithAndWithoutIn()
+		{
+			var c = RefAssemblyCompilation.Instance;
+			var rosArg = new ResolveResult(c.FindType(typeof(ReadOnlySpan<int>)));
+
+			var implicitIn = new OverloadResolution(c, new[] { rosArg });
+			Assert.That(implicitIn.AddCandidate(MakeInMethodIn(c, typeof(ReadOnlySpan<int>))),
+				Is.EqualTo(OverloadResolutionErrors.None));
+
+			var explicitIn = new OverloadResolution(c, new[] {
+				new ByReferenceResolveResult(rosArg, ReferenceKind.In)
+			});
+			Assert.That(explicitIn.AddCandidate(MakeInMethodIn(c, typeof(ReadOnlySpan<int>))),
+				Is.EqualTo(OverloadResolutionErrors.None));
+		}
+
+		[Test]
+		public void ByValueOverloadPreferredOverInOverload_WithoutInAtTheCall()
+		{
+			// Roslyn: for F(ReadOnlySpan<int>) vs F(in ReadOnlySpan<int>), a call without 'in'
+			// picks the by-value overload - both for an identity argument and through the
+			// span conversion from int[].
+			var c = RefAssemblyCompilation.Instance;
+			foreach (var arg in new[] {
+				new ResolveResult(c.FindType(typeof(ReadOnlySpan<int>))),
+				new ResolveResult(new ArrayType(c, c.FindType(KnownTypeCode.Int32)))
+			})
+			{
+				var r = new OverloadResolution(c, new[] { arg });
+				var byValue = MakeMethodIn(c, typeof(ReadOnlySpan<int>));
+				Assert.That(r.AddCandidate(byValue), Is.EqualTo(OverloadResolutionErrors.None));
+				Assert.That(r.AddCandidate(MakeInMethodIn(c, typeof(ReadOnlySpan<int>))),
+					Is.EqualTo(OverloadResolutionErrors.None));
+				Assert.That(!r.IsAmbiguous, $"argument {arg.Type}");
+				Assert.That(r.BestCandidate, Is.SameAs(byValue), $"argument {arg.Type}");
+			}
+		}
+
+		[Test]
+		public void RefAndOutParametersNeverBindThroughASpanConversion()
+		{
+			// Roslyn: CS1503 for both 'M(ref arr)' against 'ref ReadOnlySpan<int>' and
+			// 'M(out arr)' against 'out ReadOnlySpan<int>' - ref and out demand the
+			// parameter's own type; the span conversion does not apply. A value argument
+			// without the keyword is a passing-mode mismatch regardless of conversions.
+			var c = RefAssemblyCompilation.Instance;
+			var arrayArg = new ResolveResult(new ArrayType(c, c.FindType(KnownTypeCode.Int32)));
+			foreach (var kind in new[] { ReferenceKind.Ref, ReferenceKind.Out })
+			{
+				var byRefArgument = new OverloadResolution(c, new[] {
+					new ByReferenceResolveResult(arrayArg, kind)
+				});
+				Assert.That(byRefArgument.AddCandidate(MakeByRefMethodIn(c, typeof(ReadOnlySpan<int>), kind)),
+					Is.Not.EqualTo(OverloadResolutionErrors.None), kind.ToString());
+
+				var valueArgument = new OverloadResolution(c, new[] { arrayArg });
+				Assert.That(valueArgument.AddCandidate(MakeByRefMethodIn(c, typeof(ReadOnlySpan<int>), kind)),
+					Is.Not.EqualTo(OverloadResolutionErrors.None), kind.ToString());
+			}
+		}
+
+		[Test]
+		public void InOverloadIsTheOnlyCandidateWithInAtTheCall()
+		{
+			// Roslyn: F(in ros) picks the in-overload; the by-value overload cannot take an
+			// 'in' argument.
+			var c = RefAssemblyCompilation.Instance;
+			var r = new OverloadResolution(c, new[] {
+				new ByReferenceResolveResult(new ResolveResult(c.FindType(typeof(ReadOnlySpan<int>))), ReferenceKind.In)
+			});
+			Assert.That(r.AddCandidate(MakeMethodIn(c, typeof(ReadOnlySpan<int>))),
+				Is.Not.EqualTo(OverloadResolutionErrors.None));
+			var inOverload = MakeInMethodIn(c, typeof(ReadOnlySpan<int>));
+			Assert.That(r.AddCandidate(inOverload), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(r.BestCandidate, Is.SameAs(inOverload));
+		}
+
+		[Test]
+		public void ReadOnlySpanOfStringPreferredOverReadOnlySpanOfObject()
+		{
+			// The positive direction of the same rule: string[] converts to both targets, and
+			// the covariant span conversion ReadOnlySpan<string> -> ReadOnlySpan<object>
+			// exists, so ReadOnlySpan<string> is the better target.
+			var c = RefAssemblyCompilation.Instance;
+			var r = new OverloadResolution(c, new[] {
+				new ResolveResult(new ArrayType(c, c.FindType(KnownTypeCode.String)))
+			});
+			var better = MakeMethodIn(c, typeof(ReadOnlySpan<string>));
+			Assert.That(r.AddCandidate(better), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(r.AddCandidate(MakeMethodIn(c, typeof(ReadOnlySpan<object>))), Is.EqualTo(OverloadResolutionErrors.None));
+			Assert.That(!r.IsAmbiguous);
+			Assert.That(r.BestCandidate, Is.SameAs(better));
+		}
+
+		#endregion
 	}
 }

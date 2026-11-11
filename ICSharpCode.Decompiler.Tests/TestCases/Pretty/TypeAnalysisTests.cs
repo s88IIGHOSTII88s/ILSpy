@@ -1,4 +1,4 @@
-﻿// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -44,7 +44,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 				return (ushort)((uint64Field & 0xFFFF000000000000uL) >> 48);
 			}
 			set {
-				uint64Field = (uint64Field & 0xFFFFFFFFFFFFuL) | ((ulong)value << 48);
+				uint64Field = (uint64Field & 0xFFFFFFFFFFFFL) | ((ulong)value << 48);
 			}
 		}
 
@@ -106,7 +106,19 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 
 		public uint RShiftByteWithZeroExtension(byte num)
 		{
+			// zero extend -> cast to unsigned -> unsigned shift
 			return (uint)num >> 8;
+		}
+
+		public int RShiftByteWithZeroExtensionReturnAsSigned(byte num)
+		{
+#if CS110
+			// zero extend -> unsigned shift
+			return num >>> 8;
+#else
+			// zero extend -> cast to unsigned -> unsigned shift -> cast to signed
+			return (int)((uint)num >> 8);
+#endif
 		}
 
 		public int RShiftByteAsSByte(byte num)
@@ -121,9 +133,25 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 
 		public uint RShiftSByteWithZeroExtension(sbyte num)
 		{
-			return (uint)num >> 8;
+			return (uint)((byte)num >> 4);
 		}
 
+		public uint RShiftSByteWithSignExtension(sbyte num)
+		{
+			// sign extend -> cast to unsigned -> unsigned shift
+			return (uint)num >> 4;
+		}
+
+		public int RShiftSByteWithSignExtensionReturnAsSigned(sbyte num)
+		{
+#if CS110
+			// sign extend -> unsigned shift
+			return num >>> 4;
+#else
+			// sign extend -> cast to unsigned -> unsigned shift -> cast to signed
+			return (int)((uint)num >> 4);
+#endif
+		}
 		public int RShiftSByteAsByte(sbyte num)
 		{
 			return (byte)num >> 8;
@@ -217,6 +245,39 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			return byteArray[(ushort)i];
 		}
 
+		public void EnumSubtractionWithHighBitValues(UIntEnum value)
+		{
+			if (value - UIntEnum.Val1 <= 4)
+			{
+				Console.WriteLine(value - UIntEnum.Val1);
+			}
+		}
+
+		public void EnumSubtractionWithHighBitValues16(UShortEnum value)
+		{
+			// A 16-bit enum member always fits its underlying type as a positive constant,
+			// so the compiler emits it as such and enum-minus-underlying resolves right away.
+			if ((int)(value - 65035) <= 4)
+			{
+				Console.WriteLine((int)(value - 65035));
+			}
+		}
+
+		public void EnumSubtractionWithHighBitValues64(ULongEnum value)
+		{
+			if (value - ULongEnum.Val1 <= 4)
+			{
+				Console.WriteLine(value - ULongEnum.Val1);
+			}
+		}
+
+		public void EnumSubtractionWithZeroExtendedValue(ULongEnum value)
+		{
+			// Val3 is emitted as a zero-extended uint constant (ldc.i4.m1 + conv.u8), so it
+			// must not be reinterpreted as the sign-extended long -1.
+			Console.WriteLine((ulong)(value - uint.MaxValue));
+		}
+
 		public StringComparison EnumDiffNumber(StringComparison data)
 		{
 			return data - 1;
@@ -306,5 +367,66 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		{
 			return (string)(object)a;
 		}
+
+		public static bool CompareLast32Bits(long a, long b)
+		{
+			return (int)a == (int)b;
+		}
+
+		public static bool Last32BitsAreZero(long a)
+		{
+			return (int)a == 0;
+		}
+
+		public static byte BoolToIntLocalUsedTwice(byte b, bool flag)
+		{
+			int num = (flag ? 1 : 0);
+			return (byte)(b + num >> num);
+		}
+
+		public static int BoolToIntLocalAsLoopBound(object[] array, bool skipFirst)
+		{
+			int num = (skipFirst ? 1 : 0);
+			int num2 = array.Length - 1;
+			while (num2 >= num && array[num2] == null)
+			{
+				num2--;
+			}
+			return num2;
+		}
+
+		public static byte CharToByte(char c)
+		{
+			return (byte)c;
+		}
+
+		public static byte CharToByteChecked(char c)
+		{
+			return checked((byte)c);
+		}
+
+		public static UShortEnum ShortToUShortEnum(short s)
+		{
+			return (UShortEnum)s;
+		}
+	}
+
+	public enum UIntEnum : uint
+	{
+		Val1 = 4294966795u,
+		Val2 = 4294966799u
+	}
+
+	public enum ULongEnum : ulong
+	{
+		Val1 = 18446744073709551115uL,
+		Val2 = 18446744073709551119uL,
+		Val3 = 4294967295uL
+	}
+
+	public enum UShortEnum : ushort
+	{
+		Val1 = 65035,
+		Val2 = 65039
 	}
 }

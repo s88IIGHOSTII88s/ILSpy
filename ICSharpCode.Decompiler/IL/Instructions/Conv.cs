@@ -1,4 +1,5 @@
-﻿// Copyright (c) 2014 Daniel Grunwald
+#nullable enable
+// Copyright (c) 2014 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -100,6 +101,7 @@ namespace ICSharpCode.Decompiler.IL
 
 		/// <summary>
 		/// Gets whether the conversion performs overflow-checking.
+		/// This can be used with these conversion kinds: FloatToInt, Truncate, Nop.
 		/// </summary>
 		public readonly bool CheckForOverflow;
 
@@ -133,10 +135,6 @@ namespace ICSharpCode.Decompiler.IL
 		/// For conversions to integer types, the input Sign is set iff overflow-checking is enabled.
 		/// For conversions to floating-point types, the input sign is always set.
 		/// </summary>
-		/// <remarks>
-		/// The input sign does not have any effect on whether the conversion zero-extends or sign-extends;
-		/// that is purely determined by the <c>TargetType</c>.
-		/// </remarks>
 		public readonly Sign InputSign;
 
 		/// <summary>
@@ -145,7 +143,7 @@ namespace ICSharpCode.Decompiler.IL
 		/// <remarks>
 		/// For lifted conversions, corresponds to the underlying target type.
 		/// 
-		/// Target type == PrimitiveType.None can happen for implicit conversions to O in invalid IL.
+		/// Target type == PrimitiveType.None can happen for implicit conversions to Obj in invalid IL.
 		/// </remarks>
 		public readonly PrimitiveType TargetType;
 
@@ -168,11 +166,11 @@ namespace ICSharpCode.Decompiler.IL
 			this.IsLifted = isLifted;
 		}
 
-		internal override void CheckInvariant(ILPhase phase)
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
 		{
-			base.CheckInvariant(phase);
+			base.CheckInvariant(phase, compilation);
 			// Debug.Assert(Kind != ConversionKind.Invalid); // invalid conversion can happen with invalid IL/missing references
-			Debug.Assert(Argument.ResultType == (IsLifted ? StackType.O : InputType));
+			Debug.Assert(Argument.ResultType == (IsLifted ? StackType.VT : InputType));
 			Debug.Assert(!(IsLifted && Kind == ConversionKind.StopGCTracking));
 		}
 
@@ -230,7 +228,7 @@ namespace ICSharpCode.Decompiler.IL
 						case StackType.F8:
 							return ConversionKind.FloatToInt;
 						case StackType.Ref:
-						case StackType.O:
+						case StackType.Obj:
 							return ConversionKind.StopGCTracking;
 						default:
 							return ConversionKind.Invalid;
@@ -252,7 +250,7 @@ namespace ICSharpCode.Decompiler.IL
 						case StackType.F8:
 							return ConversionKind.FloatToInt;
 						case StackType.Ref:
-						case StackType.O:
+						case StackType.Obj:
 							return ConversionKind.StopGCTracking;
 						default:
 							return ConversionKind.Invalid;
@@ -295,7 +293,7 @@ namespace ICSharpCode.Decompiler.IL
 						case StackType.I:
 						case StackType.I8:
 							return ConversionKind.StartGCTracking;
-						case StackType.O:
+						case StackType.Obj:
 							return ConversionKind.ObjectInterior;
 						default:
 							return ConversionKind.Invalid;
@@ -306,14 +304,32 @@ namespace ICSharpCode.Decompiler.IL
 		}
 
 		public override StackType ResultType {
-			get => IsLifted ? StackType.O : TargetType.GetStackType();
+			get => IsLifted ? StackType.VT : TargetType.GetStackType();
+		}
+
+		public override IType InferType(ICompilation compilation)
+		{
+			var ktc = TargetType.ToKnownTypeCode();
+			IType type;
+			if (ktc != KnownTypeCode.None)
+			{
+				type = compilation.FindType(ktc);
+			}
+			else
+			{
+				type = compilation.FindType(TargetType.GetStackType());
+			}
+			if (IsLifted)
+				return NullableType.Create(compilation, type);
+			else
+				return type;
 		}
 
 		public StackType UnderlyingResultType {
 			get => TargetType.GetStackType();
 		}
 
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);

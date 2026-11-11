@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2018 Daniel Grunwald
+// Copyright (c) 2018 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -61,6 +61,8 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 		IModule IEntity.ParentModule => DeclaringType?.GetDefinition()?.ParentModule;
 
 		IEnumerable<IAttribute> IEntity.GetAttributes() => EmptyList<IAttribute>.Instance;
+		bool IEntity.HasAttribute(KnownAttribute attribute) => false;
+		IAttribute IEntity.GetAttribute(KnownAttribute attribute) => null;
 
 		public Accessibility Accessibility { get; set; } = Accessibility.Public;
 
@@ -107,6 +109,7 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 		}
 
 		bool IField.IsReadOnly => false;
+		bool IField.ReturnTypeIsRefReadOnly => false;
 		bool IField.IsVolatile => false;
 
 		bool IVariable.IsConst => false;
@@ -148,9 +151,9 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 		bool IMethod.IsOperator => symbolKind == SymbolKind.Operator;
 
 		bool IMethod.HasBody => false;
-		bool IMethod.IsAccessor => false;
-		IMember IMethod.AccessorOwner => null;
-		MethodSemanticsAttributes IMethod.AccessorKind => 0;
+		public bool IsAccessor => AccessorOwner is not null;
+		public IMember AccessorOwner { get; set; }
+		public MethodSemanticsAttributes AccessorKind { get; set; }
 
 		IMethod IMethod.ReducedFrom => null;
 
@@ -175,5 +178,56 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 				Accessibility = accessibility,
 			};
 		}
+	}
+
+	sealed class FakeProperty : FakeMember, IProperty
+	{
+		public FakeProperty(ICompilation compilation)
+			: base(compilation)
+		{
+		}
+
+		public override SymbolKind SymbolKind
+			=> IsIndexer ? SymbolKind.Indexer : SymbolKind.Property;
+
+		public override IMember Specialize(TypeParameterSubstitution substitution)
+			=> SpecializedProperty.Create(this, substitution);
+
+		public bool CanGet => Getter is not null;
+		public bool CanSet => Setter is not null;
+		public IMethod Getter { get; set; }
+		public IMethod Setter { get; set; }
+		public bool IsIndexer { get; set; }
+		public bool ReturnTypeIsRefReadOnly => false;
+		public IReadOnlyList<IParameter> Parameters { get; set; }
+
+		public override string ToString() =>
+			"FakeProperty " + ReturnType + " " + DeclaringType.Name + "." + Name +
+				(Parameters.Count == 0
+					? ""
+					: "[" + string.Join(", ", Parameters) + "]") +
+				" { " +
+					(CanGet ? "get; " : "") +
+					(CanSet ? "set; " : "") +
+				"}";
+	}
+
+	sealed class FakeEvent : FakeMember, IEvent
+	{
+		public FakeEvent(ICompilation compilation)
+			: base(compilation)
+		{ }
+
+		public override SymbolKind SymbolKind => SymbolKind.Event;
+
+		public override IMember Specialize(TypeParameterSubstitution substitution)
+			=> SpecializedEvent.Create(this, substitution);
+
+		public bool CanAdd => AddAccessor is not null;
+		public bool CanRemove => RemoveAccessor is not null;
+		public bool CanInvoke => InvokeAccessor is not null;
+		public IMethod AddAccessor { get; set; }
+		public IMethod RemoveAccessor { get; set; }
+		public IMethod InvokeAccessor { get; set; }
 	}
 }

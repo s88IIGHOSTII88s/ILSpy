@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2015 Siegfried Pammer
+// Copyright (c) 2015 Siegfried Pammer
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -15,6 +15,8 @@
 // FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
+
+using System.Reflection;
 
 using ICSharpCode.Decompiler.IL;
 using ICSharpCode.Decompiler.TypeSystem.Implementation;
@@ -265,7 +267,7 @@ namespace ICSharpCode.Decompiler.TypeSystem
 				case TypeKind.Unknown:
 					if (type.IsReferenceType == true)
 					{
-						return StackType.O;
+						return StackType.Obj;
 					}
 					return StackType.Unknown;
 				case TypeKind.ByReference:
@@ -276,17 +278,18 @@ namespace ICSharpCode.Decompiler.TypeSystem
 				case TypeKind.FunctionPointer:
 					return StackType.I;
 				case TypeKind.TypeParameter:
-					// Type parameters are always considered StackType.O, even
-					// though they might be instantiated with primitive types.
-					return StackType.O;
+					// Type parameters are always considered StackType.Obj or StackType.VT,
+					// even though they might be instantiated with primitive types.
+					if (type.IsReferenceType == true)
+						return StackType.Obj;
+					else
+						return StackType.VT;
 				case TypeKind.ModOpt:
 				case TypeKind.ModReq:
 					return type.SkipModifiers().GetStackType();
 			}
 			ITypeDefinition typeDef = type.GetEnumUnderlyingType().GetDefinition();
-			if (typeDef == null)
-				return StackType.O;
-			switch (typeDef.KnownTypeCode)
+			switch (typeDef?.KnownTypeCode)
 			{
 				case KnownTypeCode.Boolean:
 				case KnownTypeCode.Char:
@@ -310,7 +313,10 @@ namespace ICSharpCode.Decompiler.TypeSystem
 				case KnownTypeCode.UIntPtr:
 					return StackType.I;
 				default:
-					return StackType.O;
+					if (type.IsReferenceType == true)
+						return StackType.Obj;
+					else
+						return StackType.VT;
 			}
 		}
 
@@ -483,7 +489,7 @@ namespace ICSharpCode.Decompiler.TypeSystem
 					return KnownTypeCode.Single;
 				case StackType.F8:
 					return KnownTypeCode.Double;
-				case StackType.O:
+				case StackType.Obj:
 					return KnownTypeCode.Object;
 				case StackType.Void:
 					return KnownTypeCode.Void;

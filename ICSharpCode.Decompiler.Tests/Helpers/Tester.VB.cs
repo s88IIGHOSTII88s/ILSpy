@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2015 Daniel Grunwald
+// Copyright (c) 2015 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -16,13 +16,14 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 using System;
-using System.CodeDom.Compiler;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+
+using CliWrap;
+using CliWrap.Buffered;
 
 using NUnit.Framework;
 
@@ -30,7 +31,7 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 {
 	partial class Tester
 	{
-		public static CompilerResults CompileVB(string sourceFileName, CompilerOptions flags = CompilerOptions.UseDebug, string outputFileName = null)
+		public static async Task<CompilerResults> CompileVB(string sourceFileName, CompilerOptions flags = CompilerOptions.UseDebug, string outputFileName = null)
 		{
 			List<string> sourceFileNames = new List<string> { sourceFileName };
 			foreach (Match match in Regex.Matches(File.ReadAllText(sourceFileName), @"#include ""([\w\d./]+)"""))
@@ -40,56 +41,102 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 
 			var preprocessorSymbols = GetPreprocessorSymbols(flags).Select(symbol => new KeyValuePair<string, object>(symbol, 1)).ToList();
 
-			if (!flags.HasFlag(CompilerOptions.UseMcs))
+			if ((flags & CompilerOptions.UseMcsMask) == 0)
 			{
-				CompilerResults results = new CompilerResults(new TempFileCollection());
-				results.PathToAssembly = outputFileName ?? Path.GetTempFileName();
+				CompilerResults results = new CompilerResults();
+				results.PathToAssembly = outputFileName;
 
-				var (roslynVersion, languageVersion) = (flags & CompilerOptions.UseRoslynMask) switch
-				{
-					0 => ("legacy", "11"),
-					CompilerOptions.UseRoslyn1_3_2 => ("1.3.2", "14"),
-					CompilerOptions.UseRoslyn2_10_0 => ("2.10.0", "latest"),
-					_ => (RoslynLatestVersion, flags.HasFlag(CompilerOptions.Preview) ? "preview" : "latest")
+				bool targetNet40 = (flags & CompilerOptions.TargetNet40) != 0;
+
+				var (roslynVersion, languageVersion, targetFramework) = (flags & CompilerOptions.UseRoslynMask) switch {
+					0 => ("legacy", "11", null),
+					CompilerOptions.UseRoslyn1_3_2 => ("1.3.2", "14", null),
+					CompilerOptions.UseRoslyn2_10_0 => ("2.10.0", "latest", targetNet40 ? null : ".NETCoreApp,Version=v2.2"),
+					CompilerOptions.UseRoslyn3_11_0 => ("3.11.0", "latest", targetNet40 ? null : ".NETCoreApp,Version=v5.0"),
+					_ => (roslynLatestVersion, flags.HasFlag(CompilerOptions.Preview) ? "preview" : "latest", targetNet40 ? null : CurrentNetCoreVersion.AppVersion)
 				};
 
 				var vbcPath = roslynToolset.GetVBCompiler(roslynVersion);
 
 				IEnumerable<string> references;
-				if ((flags & CompilerOptions.UseRoslynMask) != 0)
+				string libPath;
+				if ((flags & CompilerOptions.UseRoslynMask) != 0 && targetFramework != null)
 				{
-					if (flags.HasFlag(CompilerOptions.ReferenceCore))
+					var coreRefAsmPath = RefAssembliesToolset.GetPath(targetFramework);
+					// On Windows vbc.exe binds the core library through its implicit desktop SDK
+					// path, so the plain reference list works. Without that implicit SDK, the
+					// netcore-2.2 reference set needs the same reference list as the C# side
+					// (System.Private.CoreLib plus the facade assemblies): its facades are split
+					// across many files and vbc only binds special types like System.Void from an
+					// assembly that defines them rather than following type forwards.
+					IEnumerable<string> referenceNames = !OperatingSystem.IsWindows() && targetFramework == ".NETCoreApp,Version=v2.2"
+						? core220DefaultReferences
+						: coreDefaultReferences;
+					if (!OperatingSystem.IsWindows() && targetFramework == ".NETCoreApp,Version=v2.2")
 					{
-						references = coreDefaultReferences.Value.Select(r => "-r:\"" + r + "\"");
+						// The VB runtime comes from the legacy reference set instead (see the
+						// -vbruntime handling below); referencing the target framework's own
+						// Microsoft.VisualBasic as well would be a BC32210 identity conflict.
+						referenceNames = referenceNames.Where(r => r != "Microsoft.VisualBasic.dll");
 					}
-					else
-					{
-						references = roslynDefaultReferences.Value.Select(r => "-r:\"" + r + "\"");
-					}
+					references = referenceNames.Select(r => "-r:\"" + r + "\"");
+					libPath = coreRefAsmPath;
 				}
 				else
 				{
-					references = defaultReferences.Value.Select(r => "-r:\"" + r + "\"");
+					references = defaultReferences.Select(r => "-r:\"" + r + "\"");
+					if (!OperatingSystem.IsWindows())
+					{
+						// The dotnet-hosted compiler has no implicit mscorlib reference
+						// (see CompileCSharp); vbc resolves the bare name via -libpath.
+						references = references.Prepend("-r:\"mscorlib.dll\"");
+					}
+					libPath = RefAssembliesToolset.GetPath("legacy");
 				}
 				if (flags.HasFlag(CompilerOptions.ReferenceVisualBasic))
 				{
-					if ((flags & CompilerOptions.UseRoslynMask) != 0)
-					{
-						references = references.Concat(visualBasic.Value.Select(r => "-r:\"" + r + "\""));
-					}
-					else
+					// In the non-Windows netcore-2.2 configuration the VB runtime comes in via
+					// -vbruntime (see below); also referencing the reference set's own
+					// Microsoft.VisualBasic facade would be a BC32210 identity conflict.
+					if (OperatingSystem.IsWindows() || targetFramework != ".NETCoreApp,Version=v2.2")
 					{
 						references = references.Concat(new[] { "-r:\"Microsoft.VisualBasic.dll\"" });
 					}
 				}
-				string otherOptions = $"-noconfig " +
+				string otherOptions = $"-nologo -noconfig " +
 					"-optioninfer+ -optionexplicit+ " +
 					$"-langversion:{languageVersion} " +
 					$"/optimize{(flags.HasFlag(CompilerOptions.Optimize) ? "+ " : "- ")}";
 
-				// note: the /shared switch is undocumented. It allows us to use the VBCSCompiler.exe compiler
-				// server to speed up testing
-				if (roslynVersion != "legacy")
+				if (!OperatingSystem.IsWindows())
+				{
+					// The dotnet-hosted vbc has no implicit SDK path for resolving the standard
+					// libraries and the VB runtime. The My templates are disabled because they
+					// need ApplicationServices types missing from the .NET build of
+					// Microsoft.VisualBasic (the .NET SDK sets _MYTYPE=Empty for the same
+					// reason); the decompile comparison strips the My namespace anyway.
+					otherOptions += $"-sdkpath:\"{libPath}\" ";
+					otherOptions += "-define:_MYTYPE=\\\"Empty\\\" ";
+					if ((flags & CompilerOptions.UseRoslynMask) != 0 && targetFramework != null)
+					{
+						// In the .NET reference packs Microsoft.VisualBasic.dll is a
+						// type-forwarding facade, and vbc does not follow forwards when binding
+						// its runtime helpers (e.g. ProjectData); point it at the implementation.
+						// Before .NET Core 3.0 there is no Microsoft.VisualBasic.Core.dll and the
+						// core build of the VB runtime is a trimmed-down subset (no UBound etc.);
+						// use the legacy reference set's desktop implementation instead, which is
+						// also what vbc.exe on Windows implicitly uses as its default VB runtime.
+						string vbRuntime = Path.Combine(libPath, "Microsoft.VisualBasic.Core.dll");
+						if (!File.Exists(vbRuntime))
+						{
+							vbRuntime = Path.Combine(RefAssembliesToolset.GetPath("legacy"), "Microsoft.VisualBasic.dll");
+						}
+						otherOptions += $"-vbruntime:\"{vbRuntime}\" ";
+					}
+				}
+
+				// See UseCompilerServer for why /shared is not passed to every compiler.
+				if (roslynVersion != "legacy" && UseCompilerServer(roslynVersion))
 				{
 					otherOptions += "/shared ";
 				}
@@ -125,25 +172,22 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 					otherOptions += " \"-d:" + string.Join(",", preprocessorSymbols.Select(kv => kv.Key + "=" + kv.Value)) + "\" ";
 				}
 
-				ProcessStartInfo info = new ProcessStartInfo(vbcPath);
-				info.Arguments = $"{otherOptions}{string.Join(" ", references)} -out:\"{Path.GetFullPath(results.PathToAssembly)}\" {string.Join(" ", sourceFileNames.Select(fn => '"' + Path.GetFullPath(fn) + '"'))}";
-				info.RedirectStandardError = true;
-				info.RedirectStandardOutput = true;
-				info.UseShellExecute = false;
+				var command = WrapCompiler(vbcPath, $"{otherOptions}-libpath:\"{libPath}\" {string.Join(" ", references)} -out:\"{Path.GetFullPath(results.PathToAssembly)}\" {string.Join(" ", sourceFileNames.Select(fn => '"' + Path.GetFullPath(fn) + '"'))}")
+					.WithValidation(CommandResultValidation.None);
+				//Console.WriteLine($"\"{command.TargetFilePath}\" {command.Arguments}");
 
-				Console.WriteLine($"\"{info.FileName}\" {info.Arguments}");
+				var result = await command.ExecuteBufferedAsync().ConfigureAwait(false);
 
-				Process process = Process.Start(info);
+				if (!string.IsNullOrWhiteSpace(result.StandardOutput))
+				{
+					Console.WriteLine("output:" + Environment.NewLine + result.StandardOutput);
+				}
+				if (!string.IsNullOrWhiteSpace(result.StandardError))
+				{
+					Console.WriteLine("errors:" + Environment.NewLine + result.StandardError);
+				}
+				Assert.That(result.ExitCode, Is.EqualTo(0), "vbc failed");
 
-				var outputTask = process.StandardOutput.ReadToEndAsync();
-				var errorTask = process.StandardError.ReadToEndAsync();
-
-				Task.WaitAll(outputTask, errorTask);
-				process.WaitForExit();
-
-				Console.WriteLine("output: " + outputTask.Result);
-				Console.WriteLine("errors: " + errorTask.Result);
-				Assert.AreEqual(0, process.ExitCode, "vbc failed");
 				return results;
 			}
 			else

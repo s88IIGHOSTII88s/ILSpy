@@ -1,4 +1,22 @@
-﻿using System.Collections.Generic;
+// Copyright (c) 2011 Artur Zgodziński
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy of this
+// software and associated documentation files (the "Software"), to deal in the Software
+// without restriction, including without limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
+// to whom the Software is furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all copies or
+// substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
+// FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+using System.Collections.Generic;
 
 using ICSharpCode.Decompiler.CSharp;
 using ICSharpCode.Decompiler.CSharp.Syntax;
@@ -20,41 +38,12 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 				if (section.Attributes.Count == 0)
 					section.Remove();
 			}
-			if (section.AttributeTarget == "module" && type.Identifier == "UnverifiableCode")
+			if (section.AttributeTarget == "module" && type.Identifier is "UnverifiableCode" or "RefSafetyRules")
 			{
 				attribute.Remove();
 				if (section.Attributes.Count == 0)
 					section.Remove();
 			}
-		}
-
-		public void Run(AstNode rootNode, TransformContext context)
-		{
-			rootNode.AcceptVisitor(this);
-		}
-	}
-
-	public class RemoveEmbeddedAttributes : DepthFirstAstVisitor, IAstTransform
-	{
-		HashSet<string> attributeNames = new HashSet<string>() {
-			"System.Runtime.CompilerServices.IsReadOnlyAttribute",
-			"System.Runtime.CompilerServices.IsByRefLikeAttribute",
-			"System.Runtime.CompilerServices.IsUnmanagedAttribute",
-			"System.Runtime.CompilerServices.NullableAttribute",
-			"System.Runtime.CompilerServices.NullableContextAttribute",
-			"System.Runtime.CompilerServices.NativeIntegerAttribute",
-			"Microsoft.CodeAnalysis.EmbeddedAttribute",
-		};
-
-		public override void VisitTypeDeclaration(TypeDeclaration typeDeclaration)
-		{
-			var typeDefinition = typeDeclaration.GetSymbol() as ITypeDefinition;
-			if (typeDefinition == null || !attributeNames.Contains(typeDefinition.FullName))
-				return;
-			if (typeDeclaration.Parent is NamespaceDeclaration ns && ns.Members.Count == 1)
-				ns.Remove();
-			else
-				typeDeclaration.Remove();
 		}
 
 		public void Run(AstNode rootNode, TransformContext context)

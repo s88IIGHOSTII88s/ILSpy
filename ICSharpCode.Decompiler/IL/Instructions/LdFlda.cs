@@ -1,4 +1,5 @@
-﻿// Copyright (c) 2014 Daniel Grunwald
+#nullable enable
+// Copyright (c) 2014 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -18,17 +19,19 @@
 
 using System.Diagnostics;
 
+using ICSharpCode.Decompiler.TypeSystem;
+
 namespace ICSharpCode.Decompiler.IL
 {
 	public sealed partial class LdFlda
 	{
-		internal override void CheckInvariant(ILPhase phase)
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
 		{
-			base.CheckInvariant(phase);
+			base.CheckInvariant(phase, compilation);
 			switch (field.DeclaringType.IsReferenceType)
 			{
 				case true:
-					Debug.Assert(target.ResultType == StackType.O,
+					Debug.Assert(target.ResultType == StackType.Obj,
 						"Class fields can only be accessed with an object on the stack");
 					break;
 				case false:
@@ -37,8 +40,7 @@ namespace ICSharpCode.Decompiler.IL
 					break;
 				case null:
 					// field of unresolved type
-					Debug.Assert(target.ResultType == StackType.O || target.ResultType == StackType.I
-						|| target.ResultType == StackType.Ref || target.ResultType == StackType.Unknown,
+					Debug.Assert(target.ResultType is StackType.Obj or StackType.VT or StackType.I or StackType.Ref or StackType.Unknown,
 						"Field of unresolved type with invalid target");
 					break;
 			}
@@ -47,28 +49,35 @@ namespace ICSharpCode.Decompiler.IL
 
 	public sealed partial class StObj
 	{
-		/// <summary>
-		/// For a store to a field or array element, C# will only throw NullReferenceException/IndexOfBoundsException
-		/// after the value-to-be-stored has been computed.
-		/// This means a LdFlda/LdElema used as target for StObj must have DelayExceptions==true to allow a translation to C#
-		/// without changing the program semantics. See https://github.com/icsharpcode/ILSpy/issues/2050
-		/// </summary>
-		public bool CanInlineIntoTargetSlot(ILInstruction inst)
+		internal override bool SatisfiesSlotRestrictionForInlining(int childIndex, ILInstruction newChild)
 		{
-			switch (inst.OpCode)
+			if (childIndex == 0) // target slot
 			{
-				case OpCode.LdElema:
-				case OpCode.LdFlda:
-					Debug.Assert(inst.HasDirectFlag(InstructionFlags.MayThrow));
-					// If the ldelema/ldflda may throw a non-delayed exception, inlining will cause it
-					// to turn into a delayed exception after the translation to C#.
-					// This is only valid if the value computation doesn't involve any side effects.
-					return SemanticHelper.IsPure(this.Value.Flags);
-				// Note that after inlining such a ldelema/ldflda, the normal inlining rules will
-				// prevent us from inlining an effectful instruction into the value slot.
-				default:
-					return true;
+				Debug.Assert(GetChildSlot(childIndex) == TargetSlot);
+				// For a store to a field or array element, C# will only throw NullReferenceException/IndexOfBoundsException
+				// after the value-to-be-stored has been computed.
+				// This means a LdFlda/LdElema used as target for StObj must have DelayExceptions==true to allow a translation to C#
+				// without changing the program semantics. See https://github.com/icsharpcode/ILSpy/issues/2050
+				switch (newChild.OpCode)
+				{
+					case OpCode.LdElema:
+					case OpCode.LdFlda:
+					{
+						Debug.Assert(newChild.HasDirectFlag(InstructionFlags.MayThrow));
+						// If the ldelema/ldflda may throw a non-delayed exception, inlining will cause it
+						// to turn into a delayed exception after the translation to C#.
+						// This is only valid if the value computation doesn't involve any side effects.
+						if (!SemanticHelper.IsPure(this.Value.Flags))
+						{
+							return false;
+						}
+						// Note that after inlining such a ldelema/ldflda, the normal inlining rules will
+						// prevent us from inlining an effectful instruction into the value slot.
+						break;
+					}
+				}
 			}
+			return base.SatisfiesSlotRestrictionForInlining(childIndex, newChild);
 		}
 
 		/// <summary>

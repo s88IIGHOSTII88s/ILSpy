@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -76,9 +76,6 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 		public IEnumerable<IAttribute> GetAttributes() => attributes;
 
 		public ReferenceKind ReferenceKind => referenceKind;
-		public bool IsRef => referenceKind == ReferenceKind.Ref;
-		public bool IsOut => referenceKind == ReferenceKind.Out;
-		public bool IsIn => referenceKind == ReferenceKind.In;
 
 		public bool IsParams => isParams;
 
@@ -100,6 +97,8 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 			get { return IsOptional; }
 		}
 
+		public LifetimeAnnotation Lifetime => default;
+
 		public object GetConstantValue(bool throwOnInvalidMetadata)
 		{
 			return defaultValue;
@@ -113,12 +112,14 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 		public static string ToString(IParameter parameter)
 		{
 			StringBuilder b = new StringBuilder();
-			if (parameter.IsRef)
-				b.Append("ref ");
-			if (parameter.IsOut)
-				b.Append("out ");
-			if (parameter.IsIn)
-				b.Append("in ");
+			b.Append(parameter.ReferenceKind switch {
+				ReferenceKind.None => "",
+				ReferenceKind.Ref => "ref ",
+				ReferenceKind.Out => "out ",
+				ReferenceKind.In => "in ",
+				ReferenceKind.RefReadOnly => "ref readonly ",
+				_ => throw new NotSupportedException()
+			});
 			if (parameter.IsParams)
 				b.Append("params ");
 			b.Append(parameter.Name);

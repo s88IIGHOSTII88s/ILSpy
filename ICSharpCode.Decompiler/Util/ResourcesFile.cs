@@ -1,4 +1,5 @@
-﻿// Copyright (c) 2018 Daniel Grunwald
+#nullable enable
+// Copyright (c) 2018 Daniel Grunwald
 // Based on the .NET Core ResourceReader; make available under the MIT license
 // by the .NET Foundation.
 // 
@@ -30,7 +31,7 @@ namespace ICSharpCode.Decompiler.Util
 	/// <summary>
 	/// .resources file.
 	/// </summary>
-	public class ResourcesFile : IEnumerable<KeyValuePair<string, object>>, IDisposable
+	public sealed class ResourcesFile : IEnumerable<KeyValuePair<string, object?>>, IDisposable
 	{
 		sealed class MyBinaryReader : BinaryReader
 		{
@@ -75,25 +76,34 @@ namespace ICSharpCode.Decompiler.Util
 			StartOfUserTypes = 0x40
 		}
 
+		enum SerializationFormat
+		{
+			BinaryFormatter = 1,
+			TypeConverterByteArray = 2,
+			TypeConverterString = 3,
+			ActivatorStream = 4
+		}
+
 		/// <summary>Holds the number used to identify resource files.</summary>
 		public const int MagicNumber = unchecked((int)0xBEEFCACE);
 		const int ResourceSetVersion = 2;
 
 		readonly MyBinaryReader reader;
 		readonly int version;
+		readonly bool usesSerializationFormat;
 		readonly int numResources;
 		readonly string[] typeTable;
 		readonly int[] namePositions;
 		readonly long fileStartPosition;
 		readonly long nameSectionPosition;
 		readonly long dataSectionPosition;
-		long[] startPositions;
+		long[]? startPositions;
 
 		/// <summary>
 		/// Creates a new ResourcesFile.
 		/// </summary>
 		/// <param name="stream">Input stream.</param>
-		/// <param name="leaveOpen">Whether the stream should be help open when the ResourcesFile is disposed.</param>
+		/// <param name="leaveOpen">Whether the stream should be held open when the ResourcesFile is disposed.</param>
 		/// <remarks>
 		/// The stream is must be held open while the ResourcesFile is in use.
 		/// The stream must be seekable; any operation using the ResourcesFile will end up seeking the stream.
@@ -129,7 +139,8 @@ namespace ICSharpCode.Decompiler.Util
 				// We don't care about numBytesToSkip; read the rest of the header
 
 				// readerType:
-				reader.ReadString();
+				string readerType = reader.ReadString();
+				usesSerializationFormat = readerType == "System.Resources.Extensions.DeserializingResourceReader, System.Resources.Extensions, Version=4.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51";
 				// resourceSetType:
 				reader.ReadString();
 			}
@@ -141,18 +152,16 @@ namespace ICSharpCode.Decompiler.Util
 				throw new BadImageFormatException($"Unsupported resource set version: {version}");
 
 			numResources = reader.ReadInt32();
-			if (numResources < 0)
-			{
-				throw new BadImageFormatException(ResourcesHeaderCorrupted);
-			}
+			// Every resource contributes at least a 4-byte name hash and a 4-byte name position.
+			// Bounding the count by the bytes that remain also keeps numResources * 2 in
+			// GetStartPositions from overflowing.
+			CheckLengthOrThrow(numResources, bytesPerElement: 8);
 
 			// Read type positions into type positions array.
 			// But delay initialize the type table.
 			int numTypes = reader.ReadInt32();
-			if (numTypes < 0)
-			{
-				throw new BadImageFormatException(ResourcesHeaderCorrupted);
-			}
+			// Every type name is a length-prefixed string of at least one byte.
+			CheckLengthOrThrow(numTypes, bytesPerElement: 1);
 			typeTable = new string[numTypes];
 			for (int i = 0; i < numTypes; i++)
 			{
@@ -220,6 +229,22 @@ namespace ICSharpCode.Decompiler.Util
 			reader.Dispose();
 		}
 
+		/// <summary>
+		/// Validates a count or byte length read from the file before it is used to size an
+		/// allocation. Every element occupies at least <paramref name="bytesPerElement"/> bytes
+		/// in the stream, so a value that needs more bytes than remain after the current
+		/// position cannot describe real data; rejecting it up front keeps a crafted header from
+		/// forcing a multi-gigabyte allocation.
+		/// </summary>
+		void CheckLengthOrThrow(int count, int bytesPerElement)
+		{
+			long remaining = reader.BaseStream.Length - reader.BaseStream.Position;
+			if (count < 0 || (long)count * bytesPerElement > remaining)
+			{
+				throw new BadImageFormatException("Resources file corrupted: declared length exceeds the available data.");
+			}
+		}
+
 		public int ResourceCount => numResources;
 
 		public string GetResourceName(int index)
@@ -242,10 +267,7 @@ namespace ICSharpCode.Decompiler.Util
 				reader.Seek(pos, SeekOrigin.Begin);
 				// Can't use reader.ReadString, since it's using UTF-8!
 				int byteLen = reader.Read7BitEncodedInt();
-				if (byteLen < 0)
-				{
-					throw new BadImageFormatException("Resource name has negative length");
-				}
+				CheckLengthOrThrow(byteLen, bytesPerElement: 1);
 				bytes = new byte[byteLen];
 				// We must read byteLen bytes, or we have a corrupted file.
 				// Use a blocking read in case the stream doesn't give us back
@@ -285,7 +307,7 @@ namespace ICSharpCode.Decompiler.Util
 			return true;
 		}
 
-		object LoadObject(int dataOffset)
+		object? LoadObject(int dataOffset)
 		{
 			try
 			{
@@ -318,7 +340,7 @@ namespace ICSharpCode.Decompiler.Util
 		// from that location.
 		// Anyone who calls LoadObject should make sure they take a lock so 
 		// no one can cause us to do a seek in here.
-		private object LoadObjectV1(int dataOffset)
+		private object? LoadObjectV1(int dataOffset)
 		{
 			Debug.Assert(System.Threading.Monitor.IsEntered(reader));
 			reader.Seek(dataSectionPosition + dataOffset, SeekOrigin.Begin);
@@ -368,11 +390,11 @@ namespace ICSharpCode.Decompiler.Util
 						bits[i] = reader.ReadInt32();
 					return new decimal(bits);
 				default:
-					return new ResourceSerializedObject(FindType(typeIndex), this, reader.BaseStream.Position);
+					return new ResourceSerializedObject(FindType(typeIndex), this, reader.BaseStream.Position, usesSerializationFormat);
 			}
 		}
 
-		private object LoadObjectV2(int dataOffset)
+		private object? LoadObjectV2(int dataOffset)
 		{
 			Debug.Assert(System.Threading.Monitor.IsEntered(reader));
 			reader.Seek(dataSectionPosition + dataOffset, SeekOrigin.Begin);
@@ -437,20 +459,14 @@ namespace ICSharpCode.Decompiler.Util
 				case ResourceTypeCode.ByteArray:
 				{
 					int len = reader.ReadInt32();
-					if (len < 0)
-					{
-						throw new BadImageFormatException("Resource with negative length");
-					}
+					CheckLengthOrThrow(len, bytesPerElement: 1);
 					return reader.ReadBytes(len);
 				}
 
 				case ResourceTypeCode.Stream:
 				{
 					int len = reader.ReadInt32();
-					if (len < 0)
-					{
-						throw new BadImageFormatException("Resource with negative length");
-					}
+					CheckLengthOrThrow(len, bytesPerElement: 1);
 					byte[] bytes = reader.ReadBytes(len);
 					return new MemoryStream(bytes, writable: false);
 				}
@@ -460,23 +476,23 @@ namespace ICSharpCode.Decompiler.Util
 					{
 						throw new BadImageFormatException("Invalid typeCode");
 					}
-					return new ResourceSerializedObject(FindType(typeCode - ResourceTypeCode.StartOfUserTypes), this, reader.BaseStream.Position);
+					return new ResourceSerializedObject(FindType(typeCode - ResourceTypeCode.StartOfUserTypes), this, reader.BaseStream.Position, usesSerializationFormat);
 			}
 		}
 
-		public object GetResourceValue(int index)
+		public object? GetResourceValue(int index)
 		{
 			GetResourceName(index, out int dataOffset);
 			return LoadObject(dataOffset);
 		}
 
-		public IEnumerator<KeyValuePair<string, object>> GetEnumerator()
+		public IEnumerator<KeyValuePair<string, object?>> GetEnumerator()
 		{
 			for (int i = 0; i < numResources; i++)
 			{
 				string name = GetResourceName(i, out int dataOffset);
-				object val = LoadObject(dataOffset);
-				yield return new KeyValuePair<string, object>(name, val);
+				object? val = LoadObject(dataOffset);
+				yield return new KeyValuePair<string, object?>(name, val);
 			}
 		}
 
@@ -487,7 +503,7 @@ namespace ICSharpCode.Decompiler.Util
 
 		long[] GetStartPositions()
 		{
-			long[] positions = LazyInit.VolatileRead(ref startPositions);
+			long[]? positions = LazyInit.VolatileRead(ref startPositions);
 			if (positions != null)
 				return positions;
 			lock (reader)
@@ -508,7 +524,7 @@ namespace ICSharpCode.Decompiler.Util
 			}
 		}
 
-		internal byte[] GetBytesForSerializedObject(long pos)
+		internal byte[] GetBytesForSerializedObject(long pos, bool usesSerializationFormat)
 		{
 			long[] positions = GetStartPositions();
 			int i = Array.BinarySearch(positions, pos);
@@ -534,6 +550,16 @@ namespace ICSharpCode.Decompiler.Util
 				}
 				int len = (int)(endPos - pos);
 				reader.Seek(pos, SeekOrigin.Begin);
+				if (usesSerializationFormat)
+				{
+					int kind = reader.Read7BitEncodedInt();
+					if (!Enum.IsDefined(typeof(SerializationFormat), kind))
+					{
+						throw new BadImageFormatException("Resources file corrupted: unknown serialization format.");
+					}
+					len = reader.Read7BitEncodedInt();
+					CheckLengthOrThrow(len, bytesPerElement: 1);
+				}
 				return reader.ReadBytes(len);
 			}
 		}
@@ -541,15 +567,17 @@ namespace ICSharpCode.Decompiler.Util
 
 	public class ResourceSerializedObject
 	{
-		public string TypeName { get; }
+		public string? TypeName { get; }
 		readonly ResourcesFile file;
 		readonly long position;
+		readonly bool usesSerializationFormat;
 
-		internal ResourceSerializedObject(string typeName, ResourcesFile file, long position)
+		internal ResourceSerializedObject(string? typeName, ResourcesFile file, long position, bool usesSerializationFormat)
 		{
-			this.TypeName = typeName;
+			this.TypeName = usesSerializationFormat ? typeName : null;
 			this.file = file;
 			this.position = position;
+			this.usesSerializationFormat = usesSerializationFormat;
 		}
 
 		/// <summary>
@@ -557,7 +585,7 @@ namespace ICSharpCode.Decompiler.Util
 		/// </summary>
 		public Stream GetStream()
 		{
-			return new MemoryStream(file.GetBytesForSerializedObject(position), writable: false);
+			return new MemoryStream(file.GetBytesForSerializedObject(position, usesSerializationFormat), writable: false);
 		}
 
 		/// <summary>
@@ -565,7 +593,7 @@ namespace ICSharpCode.Decompiler.Util
 		/// </summary>
 		public byte[] GetBytes()
 		{
-			return file.GetBytesForSerializedObject(position);
+			return file.GetBytesForSerializedObject(position, usesSerializationFormat);
 		}
 	}
 }

@@ -1,4 +1,5 @@
-﻿// Copyright (c) 2014 Daniel Grunwald
+#nullable enable
+// Copyright (c) 2014 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -21,7 +22,6 @@ using System.Diagnostics;
 
 using ICSharpCode.Decompiler.CSharp.Syntax;
 using ICSharpCode.Decompiler.TypeSystem;
-using ICSharpCode.Decompiler.Util;
 
 namespace ICSharpCode.Decompiler.IL
 {
@@ -86,7 +86,7 @@ namespace ICSharpCode.Decompiler.IL
 
 		public static string GetToken(this ComparisonKind kind)
 		{
-			return BinaryOperatorExpression.GetOperatorRole(kind.ToBinaryOperatorType()).Token;
+			return BinaryOperatorExpression.GetOperatorToken(kind.ToBinaryOperatorType());
 		}
 	}
 
@@ -130,7 +130,7 @@ namespace ICSharpCode.Decompiler.IL
 			}
 		}
 
-		public readonly ComparisonLiftingKind LiftingKind;
+		public ComparisonLiftingKind LiftingKind;
 
 		/// <summary>
 		/// Gets the stack type of the comparison inputs.
@@ -160,26 +160,46 @@ namespace ICSharpCode.Decompiler.IL
 			this.Sign = sign;
 		}
 
-		public override StackType ResultType => LiftingKind == ComparisonLiftingKind.ThreeValuedLogic ? StackType.O : StackType.I4;
-		public bool IsLifted => LiftingKind != ComparisonLiftingKind.None;
-		public StackType UnderlyingResultType => StackType.I4;
+		public override StackType ResultType => LiftingKind == ComparisonLiftingKind.ThreeValuedLogic ? StackType.VT : StackType.I4;
 
-		internal override void CheckInvariant(ILPhase phase)
+		public override IType InferType(ICompilation compilation)
 		{
-			base.CheckInvariant(phase);
-			if (LiftingKind == ComparisonLiftingKind.None)
+			IType boolType = compilation.FindType(KnownTypeCode.Boolean);
+			if (LiftingKind == ComparisonLiftingKind.ThreeValuedLogic)
 			{
-				Debug.Assert(Left.ResultType == InputType);
-				Debug.Assert(Right.ResultType == InputType);
+				return NullableType.Create(compilation, boolType);
 			}
 			else
 			{
-				Debug.Assert(Left.ResultType == InputType || Left.ResultType == StackType.O);
-				Debug.Assert(Right.ResultType == InputType || Right.ResultType == StackType.O);
+				return boolType;
 			}
 		}
 
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		public bool IsLifted => LiftingKind != ComparisonLiftingKind.None;
+		public StackType UnderlyingResultType => StackType.I4;
+
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
+		{
+			base.CheckInvariant(phase, compilation);
+			if (LiftingKind == ComparisonLiftingKind.None)
+			{
+				// As a special case, we allow comparing a value type with null (but only in the non-lifted Comp).
+				// This is useful for unconstrained generics: these are treated as VT
+				// because they might be value types, but they can also be compared with null
+				// because they might be reference types. (the original IL uses `box` for this,
+				// but we drop the box in the ILAst to avoid a special case in PatternMatchingTransform etc.)
+				// TODO: these are unclean semantics; we should probably drop this special case and adjust the other transforms.
+				Debug.Assert(Left.ResultType == InputType || Left is LdNull);
+				Debug.Assert(Right.ResultType == InputType || Right is LdNull);
+			}
+			else
+			{
+				Debug.Assert(Left.ResultType == InputType || Left.ResultType == StackType.VT);
+				Debug.Assert(Right.ResultType == InputType || Right.ResultType == StackType.VT);
+			}
+		}
+
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			if (options.UseLogicOperationSugar && MatchLogicNot(out var arg))
@@ -191,7 +211,7 @@ namespace ICSharpCode.Decompiler.IL
 			}
 			output.Write(OpCode);
 			output.Write('.');
-			output.Write(InputType.ToString().ToLower());
+			output.Write(InputType.ToString().ToLowerInvariant());
 			switch (Sign)
 			{
 				case Sign.Signed:
@@ -223,7 +243,35 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return new Comp(ComparisonKind.Equality, Sign.None, arg, new LdcI4(0));
 		}
+
+		public static Comp LogicNot(ILInstruction arg, bool isLifted)
+		{
+			var liftingKind = isLifted ? ComparisonLiftingKind.ThreeValuedLogic : ComparisonLiftingKind.None;
+			return new Comp(ComparisonKind.Equality, liftingKind, StackType.I4, Sign.None, arg, new LdcI4(0));
+		}
+
+		internal override bool CanInlineIntoSlot(int childIndex, ILInstruction expressionBeingMoved)
+		{
+			// ExpressionBuilder translates comp.o(a op b) for op not in (==, !=) into
+			// Unsafe.As(ref a) op Unsafe.As(ref b), which requires that a and b are variables
+			// and not expressions. Returning false in those cases prevents inlining.
+			// However if one of the arguments is LdNull, then we don't need the Unsafe.As trickery, and can always inline.
+			if (kind.IsEqualityOrInequality() || this.InputType != StackType.Obj)
+			{
+				// OK, won't need Unsafe.As.
+				return true;
+			}
+			if (expressionBeingMoved is LdLoc || expressionBeingMoved.MatchLdsFld(out _))
+			{
+				// OK, can use variable/field name with Unsafe.As(ref x)
+				return true;
+			}
+			if (Sign != Sign.Signed && (expressionBeingMoved is LdNull || Left is LdNull || Right is LdNull))
+			{
+				// OK, this is the "compare with null" special case that doesn't need Unsafe.As()
+				return true;
+			}
+			return false;
+		}
 	}
 }
-
-

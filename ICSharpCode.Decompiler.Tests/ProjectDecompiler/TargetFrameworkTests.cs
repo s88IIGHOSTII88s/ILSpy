@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2020 Daniel Grunwald
+// Copyright (c) 2020 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -19,10 +19,11 @@
 using System;
 
 using ICSharpCode.Decompiler.CSharp.ProjectDecompiler;
+using ICSharpCode.Decompiler.Metadata;
 
 using NUnit.Framework;
 
-namespace ICSharpCode.Decompiler.Tests
+namespace ICSharpCode.Decompiler.Tests.ProjectDecompiler
 {
 	[TestFixture]
 	public sealed class TargetFrameworkTests
@@ -57,8 +58,8 @@ namespace ICSharpCode.Decompiler.Tests
 			var targetFramework = new TargetFramework(identifier: null, version, profile: null);
 
 			// Assert
-			Assert.AreEqual(version, targetFramework.VersionNumber);
-			Assert.AreEqual(expectedVersion, targetFramework.VersionString);
+			Assert.That(targetFramework.VersionNumber, Is.EqualTo(version));
+			Assert.That(targetFramework.VersionString, Is.EqualTo(expectedVersion));
 		}
 
 		[Test]
@@ -71,8 +72,8 @@ namespace ICSharpCode.Decompiler.Tests
 			var targetFramework = new TargetFramework(identifier, 100, profile: null);
 
 			// Assert
-			Assert.IsTrue(targetFramework.IsPortableClassLibrary);
-			Assert.AreEqual(identifier, targetFramework.Identifier);
+			Assert.That(targetFramework.IsPortableClassLibrary);
+			Assert.That(targetFramework.Identifier, Is.EqualTo(identifier));
 		}
 
 		[Test]
@@ -87,8 +88,8 @@ namespace ICSharpCode.Decompiler.Tests
 			var targetFramework = new TargetFramework(identifier, 100, profile);
 
 			// Assert
-			Assert.AreEqual(identifier, targetFramework.Identifier);
-			Assert.AreEqual(profile, targetFramework.Profile);
+			Assert.That(targetFramework.Identifier, Is.EqualTo(identifier));
+			Assert.That(targetFramework.Profile, Is.EqualTo(profile));
 		}
 
 		[TestCase(null, 350, "net35")]
@@ -117,7 +118,16 @@ namespace ICSharpCode.Decompiler.Tests
 			var targetFramework = new TargetFramework(identifier, version, profile: null);
 
 			// Assert
-			Assert.AreEqual(expectedMoniker, targetFramework.Moniker);
+			Assert.That(targetFramework.Moniker, Is.EqualTo(expectedMoniker));
+		}
+
+		[TestCase(".NETCoreApp, Version=v5.0", TargetFrameworkIdentifier.NET, "5.0.0")]
+		[TestCase(".NETCoreApp, Version=v10.0", TargetFrameworkIdentifier.NET, "10.0.0")]
+		public void VerifyUniversalAssemblyResolverParseTargetFramework(string targetFramework, TargetFrameworkIdentifier identifier, string version)
+		{
+			var (id, v) = UniversalAssemblyResolver.ParseTargetFramework(targetFramework);
+			Assert.That(id, Is.EqualTo(identifier));
+			Assert.That(v.ToString(3), Is.EqualTo(version));
 		}
 	}
 }

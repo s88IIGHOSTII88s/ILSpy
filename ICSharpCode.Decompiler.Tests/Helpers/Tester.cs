@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2015 Daniel Grunwald
+// Copyright (c) 2015 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -17,9 +17,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System;
-using System.CodeDom.Compiler;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection.PortableExecutable;
@@ -30,12 +28,17 @@ using System.Threading.Tasks;
 using System.Xml.Linq;
 using System.Xml.XPath;
 
+using CliWrap;
+using CliWrap.Buffered;
+
 using ICSharpCode.Decompiler.CSharp;
 using ICSharpCode.Decompiler.CSharp.OutputVisitor;
 using ICSharpCode.Decompiler.CSharp.Transforms;
 using ICSharpCode.Decompiler.Disassembler;
+using ICSharpCode.Decompiler.Documentation;
 using ICSharpCode.Decompiler.Metadata;
 using ICSharpCode.Decompiler.TypeSystem;
+using ICSharpCode.ILSpyX.PdbProvider;
 
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -55,14 +58,24 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 		Force32Bit = 0x4,
 		Library = 0x8,
 		UseRoslyn1_3_2 = 0x10,
-		UseMcs = 0x20,
+		UseMcs2_6_4 = 0x20,
 		ReferenceVisualBasic = 0x40,
-		ReferenceCore = 0x80,
+		TargetNet40 = 0x80,
 		GeneratePdb = 0x100,
 		Preview = 0x200,
 		UseRoslyn2_10_0 = 0x400,
-		UseRoslynLatest = 0x800,
-		UseRoslynMask = UseRoslyn1_3_2 | UseRoslyn2_10_0 | UseRoslynLatest
+		UseRoslyn3_11_0 = 0x800,
+		UseRoslynLatest = 0x1000,
+		UseMcs5_23 = 0x2000,
+		UseTestRunner = 0x4000,
+		NullableEnable = 0x8000,
+		ReferenceUnsafe = 0x10000,
+		CheckForOverflowUnderflow = 0x20000,
+		ProcessXmlDoc = 0x40000,
+		UseRoslyn4_14_0 = 0x80000,
+		EnableRuntimeAsync = 0x100000,
+		UseMcsMask = UseMcs2_6_4 | UseMcs5_23,
+		UseRoslynMask = UseRoslyn1_3_2 | UseRoslyn2_10_0 | UseRoslyn3_11_0 | UseRoslyn4_14_0 | UseRoslynLatest
 	}
 
 	[Flags]
@@ -72,86 +85,260 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 		UseDebug = 0x1,
 		Force32Bit = 0x2,
 		Library = 0x4,
-		/// Testing our own disassembler, or working around a bug in ildasm.
+		// Testing our own disassembler, or working around a bug in ildasm.
 		UseOwnDisassembler = 0x8,
-		/// Work around bug in .NET 5 ilasm (https://github.com/dotnet/runtime/issues/32400)
+		// Work around bug in .NET 5 ilasm (https://github.com/dotnet/runtime/issues/32400)
 		UseLegacyAssembler = 0x10,
+		// UseSortByNameFilter, implies UseOwnDisassembler
+		SortedOutput = 0x20,
 	}
 
 	public static partial class Tester
 	{
-		public static readonly string TestCasePath = Path.Combine(
-			Path.GetDirectoryName(typeof(Tester).Assembly.Location),
-			"../../../TestCases");
+		public static readonly string TesterPath;
+		public static readonly string TestCasePath;
 
-		static readonly string PackagesPropsFile = Path.Combine(
-			Path.GetDirectoryName(typeof(Tester).Assembly.Location),
-			"../../../../packages.props");
+		static readonly string testRunnerBasePath;
+		static readonly string packagesPropsFile;
+		static readonly string roslynLatestVersion;
+		static readonly RoslynToolset roslynToolset;
+		static readonly VsWhereToolset vswhereToolset;
+		internal static readonly RefAssembliesToolset RefAssembliesToolset;
 
-		static readonly string RoslynLatestVersion = XDocument.Load(PackagesPropsFile)
-			.XPathSelectElement("//RoslynVersion").Value;
+		// ilasm/ildasm ship as `ilasm[.exe]` inside the Microsoft.NETCore.IL{,D}Asm
+		// per-RID runtime packages, picked up by NuGet's RID graph from the project's
+		// RuntimeIdentifier. The umbrella package drops the binary alongside the test
+		// assembly, but only Windows uses the .exe suffix.
+		static readonly string ExecutableExtension = OperatingSystem.IsWindows() ? ".exe" : "";
 
-		public static string AssembleIL(string sourceFileName, AssemblerOptions options = AssemblerOptions.UseDebug)
+		static string ResolveToolPath(string toolName) =>
+			Path.Combine(TesterPath, toolName + ExecutableExtension);
+
+		static Tester()
+		{
+			TesterPath = Path.GetDirectoryName(typeof(Tester).Assembly.Location);
+			TestCasePath = Path.Combine(TesterPath, "../../../../TestCases");
+#if DEBUG
+			testRunnerBasePath = Path.Combine(TesterPath, $"../../../../../ICSharpCode.Decompiler.TestRunner/bin/Debug/net{CurrentNetCoreVersion.Version}");
+#else
+			testRunnerBasePath = Path.Combine(TesterPath, $"../../../../../ICSharpCode.Decompiler.TestRunner/bin/Release/net{CurrentNetCoreVersion.Version}");
+#endif
+			// To parse: <Project><ItemGroup><PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.8.0-3.final" />
+			packagesPropsFile = Path.Combine(TesterPath, "../../../../../Directory.Packages.props");
+			roslynLatestVersion = ((IEnumerable<object>)(XDocument
+				.Load(packagesPropsFile)
+				.XPathEvaluate("//Project//PropertyGroup//RoslynVersion")))
+				.OfType<XElement>()
+				.Single()
+				.Value;
+
+			roslynToolset = new RoslynToolset();
+			vswhereToolset = new VsWhereToolset();
+			RefAssembliesToolset = new RefAssembliesToolset();
+		}
+
+		internal static async Task Initialize()
+		{
+			await roslynToolset.Fetch("1.3.2", "Microsoft.Net.Compilers", "tools").ConfigureAwait(false);
+			if (OperatingSystem.IsWindows())
+			{
+				await roslynToolset.Fetch("2.10.0", "Microsoft.Net.Compilers", "tools").ConfigureAwait(false);
+			}
+			else
+			{
+				// Microsoft.Net.Compilers only ships .NET Framework executables. The sibling
+				// Microsoft.NETCore.Compilers package contains the dotnet-hosted build of the
+				// same compiler version (tools/bincore/csc.dll), usable on any platform.
+				await roslynToolset.Fetch("2.10.0", "Microsoft.NETCore.Compilers", "tools/bincore").ConfigureAwait(false);
+			}
+			// On non-Windows hosts the net472 compiler binaries cannot be executed; use the
+			// .NET build of each toolset instead. Its tasks folder is named "netcoreapp3.1"
+			// up to Roslyn 3.x and "netcore" from Roslyn 4.x on.
+			await roslynToolset.Fetch("3.11.0", sourcePath: OperatingSystem.IsWindows() ? "tasks/net472" : "tasks/netcoreapp3.1").ConfigureAwait(false);
+			await roslynToolset.Fetch("4.14.0", sourcePath: OperatingSystem.IsWindows() ? "tasks/net472" : "tasks/netcore").ConfigureAwait(false);
+			await roslynToolset.Fetch(roslynLatestVersion, sourcePath: OperatingSystem.IsWindows() ? "tasks/net472" : "tasks/netcore").ConfigureAwait(false);
+
+			await vswhereToolset.Fetch().ConfigureAwait(false);
+			await RefAssembliesToolset.Fetch("5.0.0", sourcePath: "ref/net5.0").ConfigureAwait(false);
+			await RefAssembliesToolset.Fetch("9.0.0", sourcePath: "ref/net9.0").ConfigureAwait(false);
+			await RefAssembliesToolset.Fetch(CurrentNetCoreVersion.RefAsmVersion, sourcePath: $"ref/net{CurrentNetCoreVersion.Version}").ConfigureAwait(false);
+
+#if DEBUG
+			const string testRunnerConfig = "Debug";
+#else
+			const string testRunnerConfig = "Release";
+#endif
+			if (OperatingSystem.IsWindows())
+			{
+				await BuildTestRunner("win-x86", testRunnerConfig).ConfigureAwait(false);
+				await BuildTestRunner("win-x64", testRunnerConfig).ConfigureAwait(false);
+			}
+			else
+			{
+				// Self-contained build for the host platform. The RID must be one of the
+				// RuntimeIdentifiers pinned in ICSharpCode.Decompiler.TestRunner.csproj.
+				await BuildTestRunner(OperatingSystem.IsMacOS() ? "osx-arm64" : "linux-x64", testRunnerConfig).ConfigureAwait(false);
+			}
+		}
+
+		/// <summary>
+		/// True when a Mono runtime is on the PATH. Mono hosts the .NET Framework builds of
+		/// compilers that have no .NET build (Roslyn 1.x csc.exe from Microsoft.Net.Compilers);
+		/// Roslyn 2.x+ configurations use dotnet-hosted builds and do not depend on Mono.
+		/// </summary>
+		public static readonly bool MonoRuntimeAvailable =
+			!OperatingSystem.IsWindows()
+			&& (Environment.GetEnvironmentVariable("PATH") ?? "")
+				.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+				.Any(dir => File.Exists(Path.Combine(dir, "mono")));
+
+		/// <summary>
+		/// Reduces a compiler-configuration matrix to the entries usable on the current platform.
+		/// On Windows every configuration is supported. On other platforms, configurations that
+		/// depend on Windows-only tools or runtimes are removed: the legacy (pre-Roslyn) csc/vbc
+		/// and Force32Bit (requires a 32-bit runtime) always; Roslyn 1.x/2.x (their packages only
+		/// ship .NET Framework binaries) and mcs unless a Mono runtime is available to host them.
+		/// When <paramref name="executesCompiledOutput"/> is set (correctness-style fixtures),
+		/// configurations targeting .NET Framework 4.0 are removed as well, because their output
+		/// executables only run on Windows, and the Mono-hosted compilers are not included either
+		/// (their output would likewise need a Mono host to execute).
+		/// </summary>
+		public static CompilerOptions[] SupportedOnCurrentPlatform(CompilerOptions[] configurations, bool executesCompiledOutput = false)
+		{
+			if (OperatingSystem.IsWindows())
+				return configurations;
+			const CompilerOptions dotnetHostedCompilers = CompilerOptions.UseRoslyn3_11_0 | CompilerOptions.UseRoslyn4_14_0 | CompilerOptions.UseRoslynLatest;
+			CompilerOptions supportedCompilers = dotnetHostedCompilers;
+			if (!executesCompiledOutput)
+			{
+				// The dotnet-hosted Roslyn 2.x build (Microsoft.NETCore.Compilers) can compile
+				// on any platform, but its output targets .NET Core 2.2 or .NET Framework,
+				// which the correctness runners cannot execute here.
+				supportedCompilers |= CompilerOptions.UseRoslyn2_10_0;
+				// Roslyn 1.3.2 has only a .NET Framework build and needs Mono as its host.
+				// The configuration stays in the matrix even without Mono so that a missing
+				// runtime shows up as skipped tests (see WrapCompiler) instead of a silently
+				// smaller matrix. mcs 2.6.4 stays excluded: it needs the Reflection.Emit
+				// COMPILER_ACCESS mode that current Mono runtimes no longer implement.
+				supportedCompilers |= CompilerOptions.UseRoslyn1_3_2;
+			}
+			return configurations.Where(c => (c & supportedCompilers) != 0
+				&& !c.HasFlag(CompilerOptions.Force32Bit)
+				&& !(executesCompiledOutput && c.HasFlag(CompilerOptions.TargetNet40))).ToArray();
+		}
+
+		/// <summary>
+		/// Whether to pass the undocumented /shared switch, which makes the compiler use the
+		/// VBCSCompiler compiler server and so avoids paying compiler startup per invocation.
+		/// The dotnet-hosted Roslyn 2.x build cannot start its compiler server under a current
+		/// 'dotnet' host (the roll-forward in WrapCompiler applies to csc/vbc itself, not to
+		/// the server process the client tries to spawn), so with /shared every invocation
+		/// first waits out the client's full 20-second new-server connection timeout before
+		/// falling back to a sub-second in-process compile. Only the dotnet-hosted Roslyn 3.0+
+		/// builds get the switch on non-Windows platforms; the Mono-hosted 1.x compilers skip
+		/// it too rather than rely on the server protocol working under Mono.
+		/// </summary>
+		static bool UseCompilerServer(string roslynVersion)
+		{
+			return OperatingSystem.IsWindows()
+				|| Version.Parse(RoslynToolset.SanitizeVersion(roslynVersion)).Major > 2;
+		}
+
+		/// <summary>
+		/// Wraps an external compiler invocation. The .NET Framework builds of the Roslyn
+		/// compilers (csc.exe/vbc.exe) are directly executable on Windows and are hosted by
+		/// Mono elsewhere; the .NET builds ship as a .dll that must be launched through the
+		/// 'dotnet' host.
+		/// </summary>
+		static Command WrapCompiler(string compilerPath, string arguments)
+		{
+			// Old compiler builds pin an out-of-support runtime in their runtimeconfig
+			// (e.g. Roslyn 2.x pins Microsoft.NETCore.App 2.0), so allow the host to
+			// roll forward across major versions to whatever runtime is installed.
+			if (compilerPath.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+				return Cli.Wrap("dotnet").WithArguments($"--roll-forward LatestMajor \"{compilerPath}\" {arguments}");
+			if (!OperatingSystem.IsWindows() && compilerPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+			{
+				if (!MonoRuntimeAvailable)
+				{
+					Assert.Ignore($"{Path.GetFileName(compilerPath)} requires a Mono runtime on the PATH to run on this platform.");
+				}
+				return Cli.Wrap("mono").WithArguments($"\"{compilerPath}\" {arguments}");
+			}
+			return Cli.Wrap(compilerPath).WithArguments(arguments);
+		}
+
+		// NuGetAudit is switched off for this build: the implicit restore would otherwise
+		// query every configured feed for vulnerability data, and under the repo's
+		// warnings-as-errors an unreachable feed fails the build (NU1900). The runner is a
+		// test host whose packages are audited by the regular solution restore already.
+		static async Task BuildTestRunner(string runtime, string config)
+		{
+			await Cli.Wrap("dotnet")
+				.WithArguments(new[] { "build", Path.Combine(TesterPath, "../../../../../ICSharpCode.Decompiler.TestRunner/ICSharpCode.Decompiler.TestRunner.csproj"), "-r", runtime, "-c", config, "--self-contained", "-p:NuGetAudit=false" })
+				.ExecuteAsync();
+		}
+
+		public static async Task<string> AssembleIL(string sourceFileName, AssemblerOptions options = AssemblerOptions.UseDebug)
 		{
 			string ilasmPath;
 			if (options.HasFlag(AssemblerOptions.UseLegacyAssembler))
 			{
+				if (!OperatingSystem.IsWindows())
+					Assert.Ignore("UseLegacyAssembler requires the .NET Framework ilasm.exe, which only exists on Windows.");
 				ilasmPath = Path.Combine(Environment.GetEnvironmentVariable("windir"), @"Microsoft.NET\Framework\v4.0.30319\ilasm.exe");
 			}
 			else
 			{
-				ilasmPath = Path.Combine(
-					Path.GetDirectoryName(typeof(Tester).Assembly.Location),
-					"ilasm.exe");
+				ilasmPath = ResolveToolPath("ilasm");
 			}
 			string outputFile = Path.Combine(Path.GetDirectoryName(sourceFileName), Path.GetFileNameWithoutExtension(sourceFileName));
+			// Options use the '-' prefix because on Unix the ilasm option parser treats
+			// '/option' as a file path; the Windows builds accept both prefixes.
 			string otherOptions = " ";
 			if (options.HasFlag(AssemblerOptions.Force32Bit))
 			{
 				outputFile += ".32";
-				otherOptions += "/32BitPreferred ";
+				otherOptions += "-32BitPreferred ";
 			}
 			if (options.HasFlag(AssemblerOptions.Library))
 			{
 				outputFile += ".dll";
-				otherOptions += "/dll ";
+				otherOptions += "-dll ";
 			}
 			else
 			{
 				outputFile += ".exe";
-				otherOptions += "/exe ";
+				otherOptions += "-exe ";
 			}
-
 
 			if (options.HasFlag(AssemblerOptions.UseDebug))
 			{
-				otherOptions += "/debug ";
+				otherOptions += "-debug ";
 			}
 
-			ProcessStartInfo info = new ProcessStartInfo(ilasmPath);
-			info.Arguments = $"/nologo {otherOptions}/output=\"{outputFile}\" \"{sourceFileName}\"";
-			info.RedirectStandardError = true;
-			info.RedirectStandardOutput = true;
-			info.UseShellExecute = false;
+			var command = Cli.Wrap(ilasmPath)
+				.WithArguments($"-quiet {otherOptions}-output=\"{outputFile}\" \"{sourceFileName}\"")
+				.WithValidation(CommandResultValidation.None);
 
-			Process process = Process.Start(info);
+			var result = await command.ExecuteBufferedAsync().ConfigureAwait(false);
 
-			var outputTask = process.StandardOutput.ReadToEndAsync();
-			var errorTask = process.StandardError.ReadToEndAsync();
-
-			Task.WaitAll(outputTask, errorTask);
-			process.WaitForExit();
-
-			Console.WriteLine("output: " + outputTask.Result);
-			Console.WriteLine("errors: " + errorTask.Result);
-			Assert.AreEqual(0, process.ExitCode, "ilasm failed");
+			if (!string.IsNullOrWhiteSpace(result.StandardOutput))
+			{
+				Console.WriteLine("output:" + Environment.NewLine + result.StandardOutput);
+			}
+			if (!string.IsNullOrWhiteSpace(result.StandardError))
+			{
+				Console.WriteLine("errors:" + Environment.NewLine + result.StandardError);
+			}
+			Assert.That(result.ExitCode, Is.EqualTo(0), "ilasm failed");
 
 			return outputFile;
 		}
 
-		public static string Disassemble(string sourceFileName, string outputFile, AssemblerOptions asmOptions)
+		public static async Task<string> Disassemble(string sourceFileName, string outputFile, AssemblerOptions asmOptions)
 		{
-			if (asmOptions.HasFlag(AssemblerOptions.UseOwnDisassembler))
+			if (asmOptions.HasFlag(AssemblerOptions.UseOwnDisassembler) || asmOptions.HasFlag(AssemblerOptions.SortedOutput))
 			{
 				using (var peFileStream = new FileStream(sourceFileName, FileMode.Open, FileAccess.Read))
 				using (var peFile = new PEFile(sourceFileName, peFileStream))
@@ -160,7 +347,11 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 					var metadata = peFile.Metadata;
 					var output = new PlainTextOutput(writer);
 					ReflectionDisassembler rd = new ReflectionDisassembler(output, CancellationToken.None);
-					rd.AssemblyResolver = new UniversalAssemblyResolver(sourceFileName, true, null);
+					if (asmOptions.HasFlag(AssemblerOptions.SortedOutput))
+					{
+						rd.EntityProcessor = new SortByNameProcessor();
+					}
+					rd.AssemblyResolver = new UniversalAssemblyResolver(sourceFileName, throwOnError: true, null);
 					rd.DetectControlStructure = false;
 					rd.WriteAssemblyReferences(metadata);
 					if (metadata.IsAssembly)
@@ -175,24 +366,24 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 				return outputFile;
 			}
 
-			string ildasmPath = SdkUtility.GetSdkPath("ildasm.exe");
+			string ildasmPath = ResolveToolPath("ildasm");
 
-			ProcessStartInfo info = new ProcessStartInfo(ildasmPath);
-			info.Arguments = $"/nobar /utf8 /out=\"{outputFile}\" \"{sourceFileName}\"";
-			info.RedirectStandardError = true;
-			info.RedirectStandardOutput = true;
-			info.UseShellExecute = false;
+			// '-' option prefix: see AssembleIL.
+			var command = Cli.Wrap(ildasmPath)
+				.WithArguments($"-utf8 -out=\"{outputFile}\" \"{sourceFileName}\"")
+				.WithValidation(CommandResultValidation.None);
 
-			Process process = Process.Start(info);
+			var result = await command.ExecuteBufferedAsync().ConfigureAwait(false);
 
-			var outputTask = process.StandardOutput.ReadToEndAsync();
-			var errorTask = process.StandardError.ReadToEndAsync();
-
-			Task.WaitAll(outputTask, errorTask);
-			process.WaitForExit();
-
-			Console.WriteLine("output: " + outputTask.Result);
-			Console.WriteLine("errors: " + errorTask.Result);
+			if (!string.IsNullOrWhiteSpace(result.StandardOutput))
+			{
+				Console.WriteLine("output:" + Environment.NewLine + result.StandardOutput);
+			}
+			if (!string.IsNullOrWhiteSpace(result.StandardError))
+			{
+				Console.WriteLine("errors:" + Environment.NewLine + result.StandardError);
+			}
+			Assert.That(result.ExitCode, Is.EqualTo(0), "ildasm failed");
 
 			// Unlike the .imagebase directive (which is a fixed value when compiling with /deterministic),
 			// the image base comment still varies... ildasm putting a random number here?
@@ -217,72 +408,126 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 			return Regex.Replace(il, @"'<PrivateImplementationDetails>\{[0-9A-F-]+\}'", "'<PrivateImplementationDetails>'");
 		}
 
-		static readonly RoslynToolset roslynToolset = new RoslynToolset();
+		static readonly string[] defaultReferences = new[] {
+			"System.dll",
+			"System.Core.dll",
+			"System.Runtime.dll",
+			"System.Xml.dll",
+			"Microsoft.CSharp.dll"
+		};
 
-		static readonly string coreRefAsmPath = new DotNetCorePathFinder(TargetFrameworkIdentifier.NETCoreApp,
-			new Version(3, 1), "Microsoft.NETCore.App")
-				.GetReferenceAssemblyPath(".NETCoreApp, Version = v3.1");
-
-		static readonly string refAsmPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
-			@"Reference Assemblies\Microsoft\Framework\.NETFramework\v4.7.2");
-		static readonly string thisAsmPath = Path.GetDirectoryName(typeof(Tester).Assembly.Location);
-
-		static readonly Lazy<IEnumerable<string>> defaultReferences = new Lazy<IEnumerable<string>>(delegate {
-			return new[]
+		static readonly string[] core220DefaultReferences = new[]
 			{
+				"netstandard.dll",
+				"mscorlib.dll",
 				"System.dll",
+				"System.Collections.dll",
+				"System.Console.dll",
 				"System.Core.dll",
+				"System.Linq.dll",
+				"System.Linq.Expressions.dll",
+				"System.Linq.Queryable.dll",
+				"System.IO.FileSystem.Watcher.dll",
+				"System.Memory.dll",
+				"System.Private.CoreLib.dll",
+				"System.Private.Xml.dll",
+				"System.Threading.dll",
+				"System.Threading.Thread.dll",
+				"System.Runtime.dll",
+				"System.Runtime.Extensions.dll",
+				"System.Runtime.InteropServices.dll",
 				"System.Xml.dll",
-				"Microsoft.CSharp.dll"
+				"System.Xml.ReaderWriter.dll",
+				"System.ValueTuple.dll",
+				"System.Collections.NonGeneric.dll",
+				"Microsoft.CSharp.dll",
+				"Microsoft.VisualBasic.dll",
 			};
-		});
 
-		static readonly Lazy<IEnumerable<string>> roslynDefaultReferences = new Lazy<IEnumerable<string>>(delegate {
-			return new[]
+		static readonly string[] coreDefaultReferences = new[]
 			{
-				Path.Combine(refAsmPath, "Facades\\netstandard.dll"),
-				Path.Combine(refAsmPath, "mscorlib.dll"),
-				Path.Combine(refAsmPath, "System.dll"),
-				Path.Combine(refAsmPath, "System.Core.dll"),
-				Path.Combine(refAsmPath, @"Facades\System.Runtime.dll"),
-				Path.Combine(refAsmPath, "System.Xml.dll"),
-				Path.Combine(refAsmPath, "Microsoft.CSharp.dll"),
-				typeof(ValueTuple).Assembly.Location,
-				typeof(ValueTask).Assembly.Location,
-				typeof(Span<>).Assembly.Location,
+				"netstandard.dll",
+				"mscorlib.dll",
+				"System.dll",
+				"System.Collections.dll",
+				"System.Console.dll",
+				"System.Core.dll",
+				"System.Linq.dll",
+				"System.Linq.Expressions.dll",
+				"System.Linq.Queryable.dll",
+				"System.IO.FileSystem.Watcher.dll",
+				"System.Memory.dll",
+				"System.ObjectModel.dll",
+				"System.Threading.dll",
+				"System.Threading.Thread.dll",
+				"System.Runtime.dll",
+				"System.Runtime.InteropServices.dll",
+				"System.Xml.dll",
+				"System.Xml.ReaderWriter.dll",
+				"System.ValueTuple.dll",
+				"Microsoft.CSharp.dll",
+				"Microsoft.VisualBasic.dll",
 			};
-		});
 
-		static readonly Lazy<IEnumerable<string>> coreDefaultReferences = new Lazy<IEnumerable<string>>(GetDefaultReferences);
+		public static IReadOnlyList<string> CoreDefaultReferences => coreDefaultReferences;
 
-		const string targetFrameworkAttributeSnippet = @"
+		static readonly Dictionary<string, Lazy<string>> targetFrameworkAttributeSnippetFiles = new() {
+			{ CurrentNetCoreVersion.AppVersion, new Lazy<string>(() => GetTargetFrameworkAttributeSnippetFile(CurrentNetCoreVersion.AppVersion)) },
+			{ ".NETCoreApp,Version=v9.0", new Lazy<string>(() => GetTargetFrameworkAttributeSnippetFile(".NETCoreApp,Version=v9.0")) },
+			{ ".NETCoreApp,Version=v5.0", new Lazy<string>(() => GetTargetFrameworkAttributeSnippetFile(".NETCoreApp,Version=v5.0")) },
+			{ ".NETCoreApp,Version=v2.2", new Lazy<string>(() => GetTargetFrameworkAttributeSnippetFile(".NETCoreApp,Version=v2.2")) },
+		};
 
-[assembly: System.Runtime.Versioning.TargetFramework("".NETCoreApp, Version = v3.1"", FrameworkDisplayName = """")]
-
-";
-
-		static readonly Lazy<string> targetFrameworkAttributeSnippetFile = new Lazy<string>(GetTargetFrameworkAttributeSnippetFile);
-
-		static string GetTargetFrameworkAttributeSnippetFile()
+		static string GetTargetFrameworkAttributeSnippetFile(string targetFrameworkMoniker)
 		{
+			// Note: this leaks a temporary file, we're not attempting to delete it, because it is only one.
 			var tempFile = Path.GetTempFileName();
-			File.WriteAllText(tempFile, targetFrameworkAttributeSnippet);
+			File.WriteAllText(tempFile, $@"
+
+[assembly: System.Runtime.Versioning.TargetFramework(""{targetFrameworkMoniker}"")]
+
+");
 			return tempFile;
 		}
 
-		static IEnumerable<string> GetDefaultReferences()
-		{
-			foreach (var reference in Directory.EnumerateFiles(coreRefAsmPath, "*.dll"))
-			{
-				yield return reference;
-			}
-		}
+		const string nonEmbeddedAttributesSnippet = @"
+using System;
 
-		static readonly Lazy<IEnumerable<string>> visualBasic = new Lazy<IEnumerable<string>>(delegate {
-			return new[] {
-				Path.Combine(refAsmPath, "Microsoft.VisualBasic.dll")
-			};
-		});
+#if !NET60
+namespace System.Runtime.CompilerServices
+{
+	[AttributeUsage(AttributeTargets.All, AllowMultiple = true, Inherited = false)]
+	internal sealed class CompilerFeatureRequiredAttribute : Attribute
+	{
+		public CompilerFeatureRequiredAttribute(string featureName)
+		{
+		}
+	}
+
+	internal class IsExternalInit
+	{
+	}
+#endif
+#if !NET70
+	[AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Property | AttributeTargets.Field, AllowMultiple = false, Inherited = false)]
+	internal sealed class RequiredMemberAttribute : Attribute
+	{
+	}
+#endif
+#if !NET60
+}
+#endif
+";
+
+		static readonly Lazy<string> nonEmbeddedAttributesSnippetFile = new Lazy<string>(GetNonEmbeddedAttributesSnippetFile);
+
+		static string GetNonEmbeddedAttributesSnippetFile()
+		{
+			// Note: this leaks a temporary file, we're not attempting to delete it, because it is only one.
+			var tempFile = Path.GetTempFileName();
+			File.WriteAllText(tempFile, nonEmbeddedAttributesSnippet);
+			return tempFile;
+		}
 
 		public static List<string> GetPreprocessorSymbols(CompilerOptions flags)
 		{
@@ -295,112 +540,219 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 			{
 				preprocessorSymbols.Add("OPT");
 			}
-			if (flags.HasFlag(CompilerOptions.ReferenceCore))
+			if (flags.HasFlag(CompilerOptions.TargetNet40))
 			{
-				preprocessorSymbols.Add("NETCORE");
+				preprocessorSymbols.Add("NET40");
 			}
 			if ((flags & CompilerOptions.UseRoslynMask) != 0)
 			{
+				if (!flags.HasFlag(CompilerOptions.TargetNet40))
+				{
+					preprocessorSymbols.Add("NETCORE");
+				}
 				preprocessorSymbols.Add("ROSLYN");
 				preprocessorSymbols.Add("CS60");
 				preprocessorSymbols.Add("VB11");
 				preprocessorSymbols.Add("VB14");
 				if (flags.HasFlag(CompilerOptions.UseRoslyn2_10_0)
+					|| flags.HasFlag(CompilerOptions.UseRoslyn3_11_0)
+					|| flags.HasFlag(CompilerOptions.UseRoslyn4_14_0)
 					|| flags.HasFlag(CompilerOptions.UseRoslynLatest))
 				{
+					preprocessorSymbols.Add("ROSLYN2");
 					preprocessorSymbols.Add("CS70");
 					preprocessorSymbols.Add("CS71");
 					preprocessorSymbols.Add("CS72");
+					preprocessorSymbols.Add("CS73");
 					preprocessorSymbols.Add("VB15");
+				}
+				if (flags.HasFlag(CompilerOptions.UseRoslyn3_11_0)
+					|| flags.HasFlag(CompilerOptions.UseRoslyn4_14_0)
+					|| flags.HasFlag(CompilerOptions.UseRoslynLatest))
+				{
+					if (!flags.HasFlag(CompilerOptions.TargetNet40))
+					{
+						preprocessorSymbols.Add("NET50");
+					}
+					preprocessorSymbols.Add("ROSLYN3");
+					preprocessorSymbols.Add("CS80");
+					preprocessorSymbols.Add("CS90");
+					preprocessorSymbols.Add("VB16");
+				}
+				if (flags.HasFlag(CompilerOptions.UseRoslyn4_14_0)
+					|| flags.HasFlag(CompilerOptions.UseRoslynLatest))
+				{
+					if (!flags.HasFlag(CompilerOptions.TargetNet40))
+					{
+						preprocessorSymbols.Add("NET60");
+						preprocessorSymbols.Add("NET70");
+						preprocessorSymbols.Add("NET80");
+						preprocessorSymbols.Add("NET90");
+					}
+					preprocessorSymbols.Add("ROSLYN4");
+					preprocessorSymbols.Add("CS100");
+					preprocessorSymbols.Add("CS110");
+					preprocessorSymbols.Add("CS120");
+					preprocessorSymbols.Add("CS130");
 				}
 				if (flags.HasFlag(CompilerOptions.UseRoslynLatest))
 				{
-					preprocessorSymbols.Add("CS73");
-					preprocessorSymbols.Add("CS80");
-					preprocessorSymbols.Add("VB16");
-					if (flags.HasFlag(CompilerOptions.Preview))
+					if (!flags.HasFlag(CompilerOptions.TargetNet40))
 					{
-						preprocessorSymbols.Add("CS90");
+						preprocessorSymbols.Add("NET100");
+						preprocessorSymbols.Add("NET110");
 					}
+					preprocessorSymbols.Add("ROSLYN5");
+					preprocessorSymbols.Add("CS140");
+					preprocessorSymbols.Add("CS150");
 				}
 			}
-			else if (flags.HasFlag(CompilerOptions.UseMcs))
+			else if ((flags & CompilerOptions.UseMcsMask) != 0)
 			{
 				preprocessorSymbols.Add("MCS");
+				if (flags.HasFlag(CompilerOptions.UseMcs2_6_4))
+				{
+					preprocessorSymbols.Add("MCS2");
+				}
+				if (flags.HasFlag(CompilerOptions.UseMcs5_23))
+				{
+					preprocessorSymbols.Add("MCS5");
+				}
 			}
 			else
 			{
 				preprocessorSymbols.Add("LEGACY_CSC");
 				preprocessorSymbols.Add("LEGACY_VBC");
 			}
+			if (flags.HasFlag(CompilerOptions.EnableRuntimeAsync))
+			{
+				preprocessorSymbols.Add("RUNTIMEASYNC");
+			}
 			return preprocessorSymbols;
 		}
 
-		public static CompilerResults CompileCSharp(string sourceFileName, CompilerOptions flags = CompilerOptions.UseDebug, string outputFileName = null)
+		public static async Task<CompilerResults> CompileCSharp(string sourceFileName, CompilerOptions flags = CompilerOptions.UseDebug, string outputFileName = null)
 		{
 			List<string> sourceFileNames = new List<string> { sourceFileName };
 			foreach (Match match in Regex.Matches(File.ReadAllText(sourceFileName), @"#include ""([\w\d./]+)"""))
 			{
 				sourceFileNames.Add(Path.GetFullPath(Path.Combine(Path.GetDirectoryName(sourceFileName), match.Groups[1].Value)));
 			}
-			if (flags.HasFlag(CompilerOptions.ReferenceCore))
+
+			List<string> dependencyAssemblies = new List<string>();
+			string sourceText = File.ReadAllText(sourceFileName);
+			foreach (Match match in Regex.Matches(sourceText, @"//\s*#dependency\s+([\w\d./\\]+)"))
 			{
-				sourceFileNames.Add(targetFrameworkAttributeSnippetFile.Value);
+				string depSourcePath = Path.GetFullPath(Path.Combine(
+					Path.GetDirectoryName(sourceFileName), match.Groups[1].Value));
+				var depResults = await CompileCSharp(depSourcePath, flags | CompilerOptions.Library).ConfigureAwait(false);
+				dependencyAssemblies.Add(Path.GetFullPath(depResults.PathToAssembly));
+			}
+
+			bool targetNet40 = (flags & CompilerOptions.TargetNet40) != 0;
+			bool useRoslyn = (flags & CompilerOptions.UseRoslynMask) != 0;
+
+			if (targetNet40)
+			{
+				sourceFileNames.Add(nonEmbeddedAttributesSnippetFile.Value);
 			}
 
 			var preprocessorSymbols = GetPreprocessorSymbols(flags);
 
-			if (!flags.HasFlag(CompilerOptions.UseMcs))
+			if ((flags & CompilerOptions.UseMcsMask) == 0)
 			{
-				CompilerResults results = new CompilerResults(new TempFileCollection());
-				results.PathToAssembly = outputFileName ?? Path.GetTempFileName();
+				CompilerResults results = new CompilerResults();
+				results.PathToAssembly = outputFileName;
 
-				var (roslynVersion, languageVersion) = (flags & CompilerOptions.UseRoslynMask) switch
-				{
-					0 => ("legacy", "5"),
-					CompilerOptions.UseRoslyn1_3_2 => ("1.3.2", "6"),
-					CompilerOptions.UseRoslyn2_10_0 => ("2.10.0", "latest"),
-					_ => (RoslynLatestVersion, flags.HasFlag(CompilerOptions.Preview) ? "preview" : "latest")
+				var (roslynVersion, languageVersion, targetFramework) = (flags & CompilerOptions.UseRoslynMask) switch {
+					0 => ("legacy", "5", null),
+					CompilerOptions.UseRoslyn1_3_2 => ("1.3.2", "6", null),
+					CompilerOptions.UseRoslyn2_10_0 => ("2.10.0", "latest", targetNet40 ? null : ".NETCoreApp,Version=v2.2"),
+					CompilerOptions.UseRoslyn3_11_0 => ("3.11.0", "latest", targetNet40 ? null : ".NETCoreApp,Version=v5.0"),
+					CompilerOptions.UseRoslyn4_14_0 => ("4.14.0", "latest", targetNet40 ? null : ".NETCoreApp,Version=v9.0"),
+					_ => (roslynLatestVersion, flags.HasFlag(CompilerOptions.Preview) ? "preview" : "latest", targetNet40 ? null : CurrentNetCoreVersion.AppVersion)
 				};
 
 				var cscPath = roslynToolset.GetCSharpCompiler(roslynVersion);
 
+				string libPath, refAsmPath;
 				IEnumerable<string> references;
-				if ((flags & CompilerOptions.UseRoslynMask) != 0)
+				if (useRoslyn && targetFramework != null)
 				{
-					if (flags.HasFlag(CompilerOptions.ReferenceCore))
+					refAsmPath = RefAssembliesToolset.GetPath(targetFramework);
+					if (targetFramework == ".NETCoreApp,Version=v2.2")
 					{
-						references = coreDefaultReferences.Value.Select(r => "-r:\"" + r + "\"");
+						references = core220DefaultReferences;
+						if (flags.HasFlag(CompilerOptions.ReferenceVisualBasic))
+						{
+							references = references.Append("Microsoft.VisualBasic.dll");
+						}
 					}
 					else
 					{
-						references = roslynDefaultReferences.Value.Select(r => "-r:\"" + r + "\"");
+						references = coreDefaultReferences;
+						if (flags.HasFlag(CompilerOptions.ReferenceVisualBasic))
+						{
+							references = references.Append("Microsoft.VisualBasic.dll");
+							references = references.Append("Microsoft.VisualBasic.Core.dll");
+						}
 					}
+					libPath = "\"" + refAsmPath + "\"";
+					sourceFileNames.Add(targetFrameworkAttributeSnippetFiles[targetFramework].Value);
 				}
 				else
 				{
-					references = defaultReferences.Value.Select(r => "-r:\"" + r + "\"");
+					refAsmPath = RefAssembliesToolset.GetPath("legacy");
+					libPath = "\"" + refAsmPath + "\"";
+					references = defaultReferences;
+					if (!OperatingSystem.IsWindows())
+					{
+						// The .NET Framework csc.exe implicitly references the mscorlib of its
+						// runtime directory; the dotnet-hosted compiler has no implicit
+						// references, so the target framework's mscorlib must be passed explicitly.
+						references = references.Prepend("mscorlib.dll");
+					}
+					if (flags.HasFlag(CompilerOptions.ReferenceVisualBasic))
+					{
+						references = references.Append("Microsoft.VisualBasic.dll");
+					}
 				}
-				if (flags.HasFlag(CompilerOptions.ReferenceVisualBasic))
+				if (useRoslyn && !targetNet40 && flags.HasFlag(CompilerOptions.ReferenceUnsafe))
 				{
-					if ((flags & CompilerOptions.UseRoslynMask) != 0)
-					{
-						references = references.Concat(visualBasic.Value.Select(r => "-r:\"" + r + "\""));
-					}
-					else
-					{
-						references = references.Concat(new[] { "-r:\"Microsoft.VisualBasic.dll\"" });
-					}
+					references = references.Append("System.Runtime.CompilerServices.Unsafe.dll");
 				}
-				string otherOptions = $"-noconfig " +
+
+				references = references.Select(r => "-r:\"" + Path.Combine(refAsmPath, r) + "\"");
+
+				foreach (var dependency in dependencyAssemblies)
+				{
+					references = references.Append($"-r:\"{dependency}\"");
+				}
+
+				string otherOptions = $"-nologo -noconfig " +
 					$"-langversion:{languageVersion} " +
 					$"-unsafe -o{(flags.HasFlag(CompilerOptions.Optimize) ? "+ " : "- ")}";
 
-				// note: the /shared switch is undocumented. It allows us to use the VBCSCompiler.exe compiler
-				// server to speed up testing
+				HashSet<string> noWarn = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
 				if (roslynVersion != "legacy")
 				{
-					otherOptions += "/shared ";
+					if (UseCompilerServer(roslynVersion))
+					{
+						otherOptions += "/shared ";
+					}
+					var version = Version.Parse(RoslynToolset.SanitizeVersion(roslynVersion));
+					if (!targetNet40 && version.Major > 2)
+					{
+						if (flags.HasFlag(CompilerOptions.NullableEnable))
+							otherOptions += "/nullable+ ";
+						else
+							otherOptions += "/nullable- ";
+					}
+					if (!targetNet40 && roslynVersion == roslynLatestVersion && flags.HasFlag(CompilerOptions.EnableRuntimeAsync))
+					{
+						otherOptions += "/features:runtime-async=on ";
+					}
 				}
 
 				if (flags.HasFlag(CompilerOptions.Library))
@@ -414,7 +766,17 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 
 				if (flags.HasFlag(CompilerOptions.GeneratePdb))
 				{
-					otherOptions += "-debug:full ";
+					// The Windows PDB writer needs the native DiaSymReader, so only portable
+					// PDBs work on other platforms. Roslyn 2.x+ falls back to portable on its
+					// own; Roslyn 1.x needs the explicit request.
+					if (!OperatingSystem.IsWindows() && (flags & CompilerOptions.UseRoslynMask) != 0)
+					{
+						otherOptions += "-debug:portable ";
+					}
+					else
+					{
+						otherOptions += "-debug:full ";
+					}
 				}
 				else
 				{
@@ -429,43 +791,69 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 				{
 					otherOptions += "-platform:anycpu ";
 				}
+
+				if (flags.HasFlag(CompilerOptions.ProcessXmlDoc))
+				{
+					otherOptions += $"-doc:\"{Path.ChangeExtension(results.PathToAssembly, ".xml")}\" ";
+					noWarn.Add("CS1591"); // Missing XML comment for publicly visible type or member 'Type_or_Member'
+				}
+
+				if (flags.HasFlag(CompilerOptions.CheckForOverflowUnderflow))
+				{
+					otherOptions += "-checked+ ";
+				}
+				else
+				{
+					otherOptions += "-checked- ";
+				}
+
 				if (preprocessorSymbols.Count > 0)
 				{
 					otherOptions += " \"-d:" + string.Join(";", preprocessorSymbols) + "\" ";
 				}
 
-				ProcessStartInfo info = new ProcessStartInfo(cscPath);
-				info.Arguments = $"{otherOptions}{string.Join(" ", references)} -out:\"{Path.GetFullPath(results.PathToAssembly)}\" {string.Join(" ", sourceFileNames.Select(fn => '"' + Path.GetFullPath(fn) + '"'))}";
-				info.RedirectStandardError = true;
-				info.RedirectStandardOutput = true;
-				info.UseShellExecute = false;
+				if (noWarn.Count > 0)
+				{
+					otherOptions += " -nowarn:" + string.Join(",", noWarn);
+				}
 
-				Console.WriteLine($"\"{info.FileName}\" {info.Arguments}");
+				var command = WrapCompiler(cscPath, $"{otherOptions} -lib:{libPath} {string.Join(" ", references)} -out:\"{Path.GetFullPath(results.PathToAssembly)}\" {string.Join(" ", sourceFileNames.Select(fn => '"' + Path.GetFullPath(fn) + '"'))}")
+					.WithValidation(CommandResultValidation.None);
+				//Console.WriteLine($"\"{command.TargetFilePath}\" {command.Arguments}");
 
-				Process process = Process.Start(info);
+				var result = await command.ExecuteBufferedAsync().ConfigureAwait(false);
+				if (!string.IsNullOrWhiteSpace(result.StandardOutput))
+				{
+					Console.WriteLine("output:" + Environment.NewLine + result.StandardOutput);
+				}
+				if (!string.IsNullOrWhiteSpace(result.StandardError))
+				{
+					Console.WriteLine("errors:" + Environment.NewLine + result.StandardError);
+				}
 
-				var outputTask = process.StandardOutput.ReadToEndAsync();
-				var errorTask = process.StandardError.ReadToEndAsync();
+				Assert.That(result.ExitCode, Is.EqualTo(0), "csc failed");
 
-				Task.WaitAll(outputTask, errorTask);
-				process.WaitForExit();
-
-				Console.WriteLine("output: " + outputTask.Result);
-				Console.WriteLine("errors: " + errorTask.Result);
-				Assert.AreEqual(0, process.ExitCode, "csc failed");
 				return results;
 			}
 			else
 			{
-				CompilerResults results = new CompilerResults(new TempFileCollection());
-				results.PathToAssembly = outputFileName ?? Path.GetTempFileName();
-				string testBasePath = RoundtripAssembly.TestDir;
+				CompilerResults results = new CompilerResults();
+				results.PathToAssembly = outputFileName;
+				string testBasePath = Roundtrip.RoundtripAssembly.TestDir;
 				if (!Directory.Exists(testBasePath))
 				{
 					Assert.Ignore($"Compilation with mcs ignored: test directory '{testBasePath}' needs to be checked out separately." + Environment.NewLine +
 			  $"git clone https://github.com/icsharpcode/ILSpy-tests \"{testBasePath}\"");
 				}
-				string mcsPath = Path.Combine(testBasePath, @"mcs\2.6.4\bin\gmcs.bat");
+				// On Windows the submodule's bat launchers run the bundled Windows-native Mono;
+				// elsewhere the bundled compilers (managed .NET Framework assemblies) are hosted
+				// by the system Mono runtime via WrapCompiler.
+				string mcsPath = (flags & CompilerOptions.UseMcsMask, OperatingSystem.IsWindows()) switch {
+					(CompilerOptions.UseMcs5_23, true) => Path.Combine(testBasePath, @"mcs\5.23\bin\mcs.bat"),
+					(CompilerOptions.UseMcs5_23, false) => Path.Combine(testBasePath, "mcs", "5.23", "lib", "mono", "4.5", "mcs.exe"),
+					(_, true) => Path.Combine(testBasePath, @"mcs\2.6.4\bin\gmcs.bat"),
+					(_, false) => Path.Combine(testBasePath, "mcs", "2.6.4", "lib", "mono", "2.0", "gmcs.exe")
+				};
 				string otherOptions = " -unsafe -o" + (flags.HasFlag(CompilerOptions.Optimize) ? "+ " : "- ");
 
 				if (flags.HasFlag(CompilerOptions.Library))
@@ -495,25 +883,22 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 					otherOptions += " \"-d:" + string.Join(";", preprocessorSymbols) + "\" ";
 				}
 
-				ProcessStartInfo info = new ProcessStartInfo(mcsPath);
-				info.Arguments = $"{otherOptions}-out:\"{Path.GetFullPath(results.PathToAssembly)}\" {string.Join(" ", sourceFileNames.Select(fn => '"' + Path.GetFullPath(fn) + '"'))}";
-				info.RedirectStandardError = true;
-				info.RedirectStandardOutput = true;
-				info.UseShellExecute = false;
+				var command = WrapCompiler(mcsPath, $"{otherOptions}-out:\"{Path.GetFullPath(results.PathToAssembly)}\" {string.Join(" ", sourceFileNames.Select(fn => '"' + Path.GetFullPath(fn) + '"'))}")
+					.WithValidation(CommandResultValidation.None);
+				//Console.WriteLine($"\"{command.TargetFilePath}\" {command.Arguments}");
 
-				Console.WriteLine($"\"{info.FileName}\" {info.Arguments}");
+				var result = await command.ExecuteBufferedAsync().ConfigureAwait(false);
 
-				Process process = Process.Start(info);
+				if (!string.IsNullOrWhiteSpace(result.StandardOutput))
+				{
+					Console.WriteLine("output:" + Environment.NewLine + result.StandardOutput);
+				}
+				if (!string.IsNullOrWhiteSpace(result.StandardError))
+				{
+					Console.WriteLine("errors:" + Environment.NewLine + result.StandardError);
+				}
+				Assert.That(result.ExitCode, Is.EqualTo(0), "mcs failed");
 
-				var outputTask = process.StandardOutput.ReadToEndAsync();
-				var errorTask = process.StandardError.ReadToEndAsync();
-
-				Task.WaitAll(outputTask, errorTask);
-				process.WaitForExit();
-
-				Console.WriteLine("output: " + outputTask.Result);
-				Console.WriteLine("errors: " + errorTask.Result);
-				Assert.AreEqual(0, process.ExitCode, "mcs failed");
 				return results;
 			}
 		}
@@ -522,18 +907,23 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 		{
 			if ((cscOptions & CompilerOptions.UseRoslynMask) != 0)
 			{
-				var langVersion = (cscOptions & CompilerOptions.UseRoslynMask) switch
-				{
+				var langVersion = (cscOptions & CompilerOptions.UseRoslynMask) switch {
 					CompilerOptions.UseRoslyn1_3_2 => CSharp.LanguageVersion.CSharp6,
 					CompilerOptions.UseRoslyn2_10_0 => CSharp.LanguageVersion.CSharp7_3,
-					_ => cscOptions.HasFlag(CompilerOptions.Preview) ? CSharp.LanguageVersion.Latest : CSharp.LanguageVersion.CSharp8_0,
+					CompilerOptions.UseRoslyn3_11_0 => CSharp.LanguageVersion.CSharp9_0,
+					CompilerOptions.UseRoslyn4_14_0 => CSharp.LanguageVersion.CSharp13_0,
+					_ => cscOptions.HasFlag(CompilerOptions.Preview) ? CSharp.LanguageVersion.Latest : CSharp.LanguageVersion.CSharp14_0,
 				};
-				return new DecompilerSettings(langVersion);
+				DecompilerSettings settings = new(langVersion) {
+					// Never use file-scoped namespaces
+					FileScopedNamespaces = false
+				};
+				return settings;
 			}
 			else
 			{
 				var settings = new DecompilerSettings(CSharp.LanguageVersion.CSharp5);
-				if (cscOptions.HasFlag(CompilerOptions.UseMcs))
+				if ((cscOptions & CompilerOptions.UseMcsMask) != 0)
 				{
 					// we don't recompile with mcs but with roslyn, so we can use ref locals
 					settings.UseRefLocalsForAccurateOrderOfEvaluation = true;
@@ -542,9 +932,16 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 			}
 		}
 
-		public static void CompileCSharpWithPdb(string assemblyName, Dictionary<string, string> sourceFiles)
+		public static void CompileCSharpWithPdb(string assemblyName, Dictionary<string, string> sourceFiles,
+			CompilerOptions compilerOptions = CompilerOptions.None)
 		{
 			var parseOptions = new CSharpParseOptions(languageVersion: Microsoft.CodeAnalysis.CSharp.LanguageVersion.Latest);
+			if (compilerOptions.HasFlag(CompilerOptions.EnableRuntimeAsync))
+			{
+				// Mirror the out-of-process csc '/features:runtime-async=on' flag so the compiler lowers
+				// async methods to the .NET 11 runtime-async form (MethodImplAsync bit, no state machine).
+				parseOptions = parseOptions.WithFeatures(new[] { new KeyValuePair<string, string>("runtime-async", "on") });
+			}
 
 			List<EmbeddedText> embeddedTexts = new List<EmbeddedText>();
 			List<SyntaxTree> syntaxTrees = new List<SyntaxTree>();
@@ -557,9 +954,11 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 			}
 
 			var compilation = CSharpCompilation.Create(Path.GetFileNameWithoutExtension(assemblyName),
-				syntaxTrees, roslynDefaultReferences.Value.Select(r => MetadataReference.CreateFromFile(r)),
+				syntaxTrees, coreDefaultReferences.Select(r => MetadataReference.CreateFromFile(Path.Combine(RefAssembliesToolset.GetPath(CurrentNetCoreVersion.AppVersion), r))),
 				new CSharpCompilationOptions(
-					OutputKind.DynamicallyLinkedLibrary,
+					compilerOptions.HasFlag(CompilerOptions.Library)
+						? OutputKind.DynamicallyLinkedLibrary
+						: OutputKind.ConsoleApplication,
 					platform: Platform.AnyCpu,
 					optimizationLevel: OptimizationLevel.Release,
 					allowUnsafe: true,
@@ -590,48 +989,73 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 				suffix += ".32";
 			if ((cscOptions & CompilerOptions.UseDebug) != 0)
 				suffix += ".dbg";
+			if ((cscOptions & CompilerOptions.TargetNet40) != 0)
+				suffix += ".net40";
 			if ((cscOptions & CompilerOptions.UseRoslyn1_3_2) != 0)
 				suffix += ".roslyn1";
 			if ((cscOptions & CompilerOptions.UseRoslyn2_10_0) != 0)
 				suffix += ".roslyn2";
+			if ((cscOptions & CompilerOptions.UseRoslyn3_11_0) != 0)
+				suffix += ".roslyn3";
+			if ((cscOptions & CompilerOptions.UseRoslyn4_14_0) != 0)
+				suffix += ".roslyn4";
 			if ((cscOptions & CompilerOptions.UseRoslynLatest) != 0)
 				suffix += ".roslyn";
-			if ((cscOptions & CompilerOptions.UseMcs) != 0)
-				suffix += ".mcs";
+			if ((cscOptions & CompilerOptions.UseMcs2_6_4) != 0)
+				suffix += ".mcs2";
+			if ((cscOptions & CompilerOptions.UseMcs5_23) != 0)
+				suffix += ".mcs5";
+			if ((cscOptions & CompilerOptions.EnableRuntimeAsync) != 0)
+				suffix += ".runtimeasync";
 			return suffix;
 		}
 
-		public static int Run(string assemblyFileName, out string output, out string error)
+		public static async Task<(int ExitCode, string Output, string Error)> Run(string assemblyFileName)
 		{
-			ProcessStartInfo info = new ProcessStartInfo(assemblyFileName);
-			info.RedirectStandardError = true;
-			info.RedirectStandardOutput = true;
-			info.UseShellExecute = false;
+			var command = Cli.Wrap(assemblyFileName)
+				.WithValidation(CommandResultValidation.None);
 
-			Process process = Process.Start(info);
+			var result = await command.ExecuteBufferedAsync().ConfigureAwait(false);
 
-			var outputTask = process.StandardOutput.ReadToEndAsync();
-			var errorTask = process.StandardError.ReadToEndAsync();
-
-			Task.WaitAll(outputTask, errorTask);
-			process.WaitForExit();
-
-			output = outputTask.Result;
-			error = errorTask.Result;
-
-			return process.ExitCode;
+			return (result.ExitCode, result.StandardOutput, result.StandardError);
 		}
 
-		public static string DecompileCSharp(string assemblyFileName, DecompilerSettings settings = null)
+		public static async Task<(int ExitCode, string Output, string Error)> RunWithTestRunner(string assemblyFileName, bool force32Bit)
+		{
+			string runnerRid;
+			if (OperatingSystem.IsWindows())
+			{
+				runnerRid = force32Bit ? "win-x86" : "win-x64";
+			}
+			else
+			{
+				// Safety net: 32-bit runs need a 32-bit runtime, which only exists on Windows.
+				// Configurations using Force32Bit are not enumerated on non-Windows platforms.
+				if (force32Bit)
+					Assert.Ignore("Force32Bit requires a 32-bit .NET runtime, which is only available on Windows.");
+				runnerRid = OperatingSystem.IsMacOS() ? "osx-arm64" : "linux-x64";
+			}
+			string testRunner = Path.Combine(testRunnerBasePath, runnerRid, "ICSharpCode.Decompiler.TestRunner" + ExecutableExtension);
+			var command = Cli.Wrap(testRunner)
+				.WithArguments(assemblyFileName)
+				.WithValidation(CommandResultValidation.None);
+
+			var result = await command.ExecuteBufferedAsync().ConfigureAwait(false);
+
+			return (result.ExitCode, result.StandardOutput, result.StandardError);
+		}
+
+		public static Task<string> DecompileCSharp(string assemblyFileName, DecompilerSettings settings = null)
 		{
 			if (settings == null)
 				settings = new DecompilerSettings();
 			using (var file = new FileStream(assemblyFileName, FileMode.Open, FileAccess.Read))
 			{
 				var module = new PEFile(assemblyFileName, file, PEStreamOptions.PrefetchEntireImage);
+				string targetFramework = module.Metadata.DetectTargetFrameworkId();
 				var resolver = new UniversalAssemblyResolver(assemblyFileName, false,
-					module.Reader.DetectTargetFrameworkId(), null, PEStreamOptions.PrefetchMetadata);
-				resolver.AddSearchDirectory(Path.GetDirectoryName(typeof(Span<>).Assembly.Location));
+					targetFramework, null, PEStreamOptions.PrefetchMetadata);
+				resolver.AddSearchDirectory(RefAssembliesToolset.GetPath(targetFramework));
 				var typeSystem = new DecompilerTypeSystem(module, resolver, settings);
 				CSharpDecompiler decompiler = new CSharpDecompiler(typeSystem, settings);
 				decompiler.AstTransforms.Insert(0, new RemoveEmbeddedAttributes());
@@ -640,7 +1064,10 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 				decompiler.AstTransforms.Add(new EscapeInvalidIdentifiers());
 				var pdbFileName = Path.ChangeExtension(assemblyFileName, ".pdb");
 				if (File.Exists(pdbFileName))
-					decompiler.DebugInfoProvider = PdbProvider.DebugInfoUtils.FromFile(module, pdbFileName);
+					decompiler.DebugInfoProvider = DebugInfoUtils.FromFile(module, pdbFileName);
+				var xmlDocFileName = Path.ChangeExtension(assemblyFileName, ".xml");
+				if (File.Exists(xmlDocFileName))
+					decompiler.DocumentationProvider = new XmlDocumentationProvider(xmlDocFileName);
 				var syntaxTree = decompiler.DecompileWholeModuleAsSingleFile(sortTypes: true);
 
 				StringWriter output = new StringWriter();
@@ -651,7 +1078,7 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 				string fileName = Path.GetTempFileName();
 				File.WriteAllText(fileName, output.ToString());
 
-				return fileName;
+				return Task.FromResult(fileName);
 			}
 		}
 
@@ -666,14 +1093,24 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 			return formattingPolicy;
 		}
 
-		public static void RunAndCompareOutput(string testFileName, string outputFile, string decompiledOutputFile, string decompiledCodeFile = null)
+		public static async Task RunAndCompareOutput(string testFileName, string outputFile, string decompiledOutputFile, string decompiledCodeFile = null, bool useTestRunner = false, bool force32Bit = false)
 		{
 			string output1, output2, error1, error2;
-			int result1 = Tester.Run(outputFile, out output1, out error1);
-			int result2 = Tester.Run(decompiledOutputFile, out output2, out error2);
+			int result1, result2;
 
-			Assert.AreEqual(0, result1, "Exit code != 0; did the test case crash?" + Environment.NewLine + error1);
-			Assert.AreEqual(0, result2, "Exit code != 0; did the decompiled code crash?" + Environment.NewLine + error2);
+			if (useTestRunner)
+			{
+				(result1, output1, error1) = await RunWithTestRunner(outputFile, force32Bit).ConfigureAwait(false);
+				(result2, output2, error2) = await RunWithTestRunner(decompiledOutputFile, force32Bit).ConfigureAwait(false);
+			}
+			else
+			{
+				(result1, output1, error1) = await Run(outputFile).ConfigureAwait(false);
+				(result2, output2, error2) = await Run(decompiledOutputFile).ConfigureAwait(false);
+			}
+
+			Assert.That(result1, Is.EqualTo(0), "Exit code != 0; did the test case crash?" + Environment.NewLine + error1);
+			Assert.That(result2, Is.EqualTo(0), "Exit code != 0; did the decompiled code crash?" + Environment.NewLine + error2);
 
 			if (output1 != output2 || error1 != error2)
 			{
@@ -728,48 +1165,116 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 			}
 		}
 
-		internal static void RepeatOnIOError(Action action, int numTries = 5)
+		/// <summary>
+		/// Retries an IO operation that a virus scanner, the indexer or a compiler that has only
+		/// just exited can still hold a handle on, backing off between attempts. Every caller is
+		/// deleting a temp file, so a failure is reported and swallowed: the file is left behind,
+		/// which costs nothing, where throwing out of a fixture teardown reports an error for a
+		/// run that otherwise passed.
+		/// </summary>
+		internal static void RepeatOnIOError(Action action, int numTries = 8)
 		{
-			for (int i = 0; i < numTries - 1; i++)
+			Exception lastError = null;
+			int delay = 10;
+			for (int i = 0; i < numTries; i++)
 			{
 				try
 				{
 					action();
 					return;
 				}
-				catch (IOException)
+				catch (IOException ex)
 				{
+					lastError = ex;
 				}
-				catch (UnauthorizedAccessException)
+				catch (UnauthorizedAccessException ex)
 				{
 					// potential virus scanner problem
+					lastError = ex;
 				}
-				Thread.Sleep(10);
+				Thread.Sleep(delay);
+				delay = Math.Min(delay * 2, 500);
 			}
-			// If the last try still fails, don't catch the exception
-			action();
+			TestContext.Out.WriteLine($"Cleanup could not delete a temp file after {numTries} tries, leaving it behind: {lastError?.Message}");
 		}
 
-		public static void SignAssembly(string assemblyPath, string keyFilePath)
+		public static async Task SignAssembly(string assemblyPath, string keyFilePath)
 		{
+			if (!OperatingSystem.IsWindows())
+				Assert.Ignore("SignAssembly uses sn.exe from the Windows .NET Framework SDK; not available on this platform.");
 			string snPath = SdkUtility.GetSdkPath("sn.exe");
 
-			ProcessStartInfo info = new ProcessStartInfo(snPath);
-			info.Arguments = $"-R \"{assemblyPath}\" \"{keyFilePath}\"";
-			info.RedirectStandardError = true;
-			info.RedirectStandardOutput = true;
-			info.UseShellExecute = false;
+			var command = Cli.Wrap(snPath)
+				.WithArguments($"-R \"{assemblyPath}\" \"{keyFilePath}\"")
+				.WithValidation(CommandResultValidation.None);
 
-			Process process = Process.Start(info);
+			var result = await command.ExecuteBufferedAsync().ConfigureAwait(false);
+			Assert.That(result.ExitCode, Is.EqualTo(0), "sn failed");
 
-			var outputTask = process.StandardOutput.ReadToEndAsync();
-			var errorTask = process.StandardError.ReadToEndAsync();
+			if (!string.IsNullOrWhiteSpace(result.StandardOutput))
+			{
+				Console.WriteLine("output:" + Environment.NewLine + result.StandardOutput);
+			}
+			if (!string.IsNullOrWhiteSpace(result.StandardError))
+			{
+				Console.WriteLine("errors:" + Environment.NewLine + result.StandardError);
+			}
+		}
 
-			Task.WaitAll(outputTask, errorTask);
-			process.WaitForExit();
+		public static async Task<string> FindMSBuild()
+		{
+			if (!OperatingSystem.IsWindows())
+				Assert.Ignore("FindMSBuild uses vswhere.exe to locate Visual Studio's MSBuild; not available on this platform.");
+			string path = vswhereToolset.GetVsWhere();
 
-			Console.WriteLine("output: " + outputTask.Result);
-			Console.WriteLine("errors: " + errorTask.Result);
+			var result = await Cli.Wrap(path)
+				.WithArguments(@"-latest -requires Microsoft.Component.MSBuild -find MSBuild\**\Bin\MSBuild.exe")
+				.WithValidation(CommandResultValidation.None)
+				.ExecuteBufferedAsync().ConfigureAwait(false);
+			if (result.ExitCode != 0)
+				throw new InvalidOperationException("Could not find MSBuild");
+			return result.StandardOutput.TrimEnd();
+		}
+	}
+
+	public class CompilerResults
+	{
+		readonly HashSet<string> tempFiles = new(Decompiler.Util.Platform.FileNameComparer);
+		string pathToAssembly;
+
+		public string PathToAssembly {
+			get {
+				if (pathToAssembly == null)
+				{
+					pathToAssembly = TestsAssemblyOutput.GetTempFileName();
+					tempFiles.Add(pathToAssembly);
+				}
+				return pathToAssembly;
+			}
+			set {
+				if (pathToAssembly != null)
+				{
+					throw new InvalidOperationException("PathToAssembly can only be set once");
+				}
+				pathToAssembly = value;
+			}
+		}
+
+		public void DeleteTempFiles()
+		{
+			foreach (var file in tempFiles)
+			{
+				Tester.RepeatOnIOError(() => File.Delete(file));
+			}
+		}
+
+		public void AddTempFile(string file)
+		{
+			if (!Path.IsPathFullyQualified(file))
+			{
+				throw new InvalidOperationException("file must be a fully qualified path");
+			}
+			tempFiles.Add(file);
 		}
 	}
 }

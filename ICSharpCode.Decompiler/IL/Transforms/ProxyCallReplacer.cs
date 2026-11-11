@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2017 AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) 2017 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -54,7 +54,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			var genericContext = new GenericContext(inst.Method);
 			// partially copied from CSharpDecompiler
 			var ilReader = context.CreateILReader();
-			var body = context.PEFile.Reader.GetMethodBody(methodDef.RelativeVirtualAddress);
+			var body = context.PEFile.GetMethodBody(methodDef.RelativeVirtualAddress);
 			var proxyFunction = ilReader.ReadIL(handle, body, genericContext, ILFunctionKind.TopLevelFunction, context.CancellationToken);
 			var transformContext = new ILTransformContext(context, proxyFunction);
 			proxyFunction.RunTransforms(CSharp.CSharpDecompiler.EarlyILTransforms(), transformContext);
@@ -115,6 +115,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			newInst.AddILRange(inst);
 			newInst.Arguments.ReplaceList(inst.Arguments);
 			inst.ReplaceWith(newInst);
+			context.EndStep(newInst);
 		}
 
 		static bool IsDefinedInCurrentOrOuterClass(IMethod method, ITypeDefinition declaringTypeDefinition)

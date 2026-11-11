@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2017 Daniel Grunwald
+// Copyright (c) 2017 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -16,7 +16,6 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -60,7 +59,9 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			var lifted = Lift(ifInst, ifInst.Condition, ifInst.TrueInst, ifInst.FalseInst);
 			if (lifted != null)
 			{
+				context.Step("NullableLiftingTransform", ifInst);
 				ifInst.ReplaceWith(lifted);
+				context.EndStep(lifted);
 				return true;
 			}
 			return false;
@@ -80,10 +81,39 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			var lifted = Lift(bni, bni.Left, bni.Right, new LdcI4(0));
 			if (lifted != null)
 			{
+				context.Step("NullableLiftingTransform", bni);
 				bni.ReplaceWith(lifted);
+				context.EndStep(lifted);
 				return true;
 			}
 			return false;
+		}
+
+		/// <summary>
+		/// VS2022.10 / Roslyn 4.10.0 adds an optimization that turns
+		/// a == 42 into a.GetValueOrDefault() == 42 without any HasValue check.
+		/// </summary>
+		public void Run(Comp comp)
+		{
+			if (!comp.IsLifted && comp.Kind.IsEqualityOrInequality())
+			{
+				var left = comp.Left;
+				var right = comp.Right;
+				if (MatchGetValueOrDefault(left, out ILInstruction arg)
+					&& right.MatchLdcI(out var value) && value != 0)
+				{
+					context.Step("comp(a.GetValueOrDefault() == const) -> comp.lifted(a == const)", comp);
+					comp.LiftingKind = ComparisonLiftingKind.CSharp;
+					comp.Left = new LdObj(arg, ((Call)left).Method.DeclaringType);
+				}
+				else if (MatchGetValueOrDefault(right, out arg)
+					&& left.MatchLdcI(out value) && value != 0)
+				{
+					context.Step("comp(const == a.GetValueOrDefault()) -> comp.lifted(const == a)", comp);
+					comp.LiftingKind = ComparisonLiftingKind.CSharp;
+					comp.Right = new LdObj(arg, ((Call)right).Method.DeclaringType);
+				}
+			}
 		}
 
 		public bool RunStatements(Block block, int pos)
@@ -110,8 +140,10 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			var lifted = Lift(ifInst, ifInst.Condition, thenLeave.Value, elseLeave.Value);
 			if (lifted != null)
 			{
+				context.Step("NullableLiftingTransform", ifInst);
 				thenLeave.Value = lifted;
 				ifInst.ReplaceWith(thenLeave);
+				context.EndStep(thenLeave);
 				block.Instructions.Remove(elseLeave);
 				return true;
 			}
@@ -136,6 +168,11 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				return AnalyzeCondition(bitand.Left) && AnalyzeCondition(bitand.Right);
 			}
 			return false;
+		}
+
+		bool AnalyzeNegatedCondition(ILInstruction condition)
+		{
+			return condition.MatchLogicNot(out var arg) && AnalyzeCondition(arg);
 		}
 		#endregion
 
@@ -194,14 +231,14 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 						return LiftCSharpEqualityComparison(comp, ComparisonKind.Inequality, trueInst)
 							?? LiftCSharpUserEqualityComparison(comp, ComparisonKind.Inequality, trueInst);
 					}
-					else if (IsGenericNewPattern(comp.Left, comp.Right, trueInst, falseInst))
+					else if (!comp.IsLifted && IsGenericNewPattern(comp.Left, comp.Right, trueInst, falseInst))
 					{
 						// (default(T) == null) ? Activator.CreateInstance<T>() : default(T)
 						// => Activator.CreateInstance<T>()
 						return trueInst;
 					}
 				}
-				else
+				else if (!comp.IsLifted)
 				{
 					// Not (in)equality, but one of < <= > >=.
 					// Returns false unless all HasValue bits are true.
@@ -211,19 +248,36 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 						// => comp.lifted[C#](lhs, rhs)
 						return LiftCSharpComparison(comp, comp.Kind);
 					}
-					else if (trueInst.MatchLdcI4(0) && AnalyzeCondition(falseInst))
+					if (trueInst.MatchLdcI4(0) && AnalyzeCondition(falseInst))
 					{
 						// comp(lhs, rhs) ? false : (v1 != null && ... && vn != null)
 						return LiftCSharpComparison(comp, comp.Kind.Negate());
+					}
+					if (falseInst.MatchLdcI4(1) && AnalyzeNegatedCondition(trueInst))
+					{
+						// comp(lhs, rhs) ? !(v1 != null && ... && vn != null) : true
+						// => !comp.lifted[C#](lhs, rhs)
+						ILInstruction result = LiftCSharpComparison(comp, comp.Kind);
+						if (result == null)
+							return result;
+						return Comp.LogicNot(result);
+					}
+					if (trueInst.MatchLdcI4(1) && AnalyzeNegatedCondition(falseInst))
+					{
+						// comp(lhs, rhs) ? true : !(v1 != null && ... && vn != null)
+						ILInstruction result = LiftCSharpComparison(comp, comp.Kind.Negate());
+						if (result == null)
+							return result;
+						return Comp.LogicNot(result);
 					}
 				}
 			}
 			ILVariable v;
 			// Handle equality comparisons with bool?:
-			if (MatchGetValueOrDefault(condition, out v)
-				&& NullableType.GetUnderlyingType(v.Type).IsKnownType(KnownTypeCode.Boolean))
+			if (MatchGetValueOrDefault(condition, out v))
 			{
-				if (MatchHasValueCall(trueInst, v) && falseInst.MatchLdcI4(0))
+				bool isBoolean = NullableType.GetUnderlyingType(v.Type).IsKnownType(KnownTypeCode.Boolean);
+				if (isBoolean && MatchHasValueCall(trueInst, v) && falseInst.MatchLdcI4(0))
 				{
 					// v.GetValueOrDefault() ? v.HasValue : false
 					// ==> v == true
@@ -238,6 +292,9 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				{
 					// v.GetValueOrDefault() ? false : v.HasValue
 					// ==> v == false
+					// Also works with int?:
+					//   v.GetValueOrDefault() != 0 ? false : v.HasValue
+					//   ==> v == 0
 					context.Step("NullableLiftingTransform: v == false", ifInst);
 					return new Comp(ComparisonKind.Equality, ComparisonLiftingKind.CSharp,
 						StackType.I4, Sign.None,
@@ -245,7 +302,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 						trueInst // LdcI4(0)
 					).WithILRange(ifInst);
 				}
-				else if (MatchNegatedHasValueCall(trueInst, v) && falseInst.MatchLdcI4(1))
+				else if (isBoolean && MatchNegatedHasValueCall(trueInst, v) && falseInst.MatchLdcI4(1))
 				{
 					// v.GetValueOrDefault() ? !v.HasValue : true
 					// ==> v != true
@@ -260,6 +317,9 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				{
 					// v.GetValueOrDefault() ? true : !v.HasValue
 					// ==> v != false
+					// Also works with int?:
+					//   v.GetValueOrDefault() != 0 ? true : !v.HasValue
+					//   ==> v != 0
 					context.Step("NullableLiftingTransform: v != false", ifInst);
 					return new Comp(ComparisonKind.Inequality, ComparisonLiftingKind.CSharp,
 						StackType.I4, Sign.None,
@@ -353,11 +413,12 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 		{
 			result = default(CompOrDecimal);
 			result.Instruction = inst;
-			if (inst is Comp comp && !comp.IsLifted)
+			if (inst is Comp comp)
 			{
 				result.Kind = comp.Kind;
 				result.Left = comp.Left;
 				result.Right = comp.Right;
+				result.IsLifted = comp.IsLifted;
 				return true;
 			}
 			else if (inst is Call call && call.Method.IsOperator && call.Arguments.Count == 2 && !call.IsLifted)
@@ -401,6 +462,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			public ComparisonKind Kind;
 			public ILInstruction Left;
 			public ILInstruction Right;
+			public bool IsLifted;
 
 			public IType LeftExpectedType {
 				get {
@@ -480,6 +542,8 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			// The HasValue comparison must be the same operator as the Value comparison.
 			if (hasValueTest is Comp hasValueComp)
 			{
+				if (valueComp.IsLifted || hasValueComp.IsLifted)
+					return null;
 				// Comparing two nullables: HasValue comparison must be the same operator as the Value comparison
 				if ((hasValueTestNegated ? hasValueComp.Kind.Negate() : hasValueComp.Kind) != newComparisonKind)
 					return null;
@@ -528,10 +592,28 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 		/// </summary>
 		ILInstruction LiftCSharpComparison(CompOrDecimal comp, ComparisonKind newComparisonKind)
 		{
+			if (comp.IsLifted)
+			{
+				// Happens when legacy csc generates 'num.GetValueOrDefault() == const && num.HasValue',
+				// checking HasValue is redundant here, modern Roslyn versions optimize it and our
+				// NullableLifting transform on Comp will already lift the lhs of the logic.and.
+				// Treat this case as if the transform had not undone the optimization yet.
+				if (nullableVars.Count != 1)
+				{
+					return null;
+				}
+
+				if (comp.Left.MatchLdLoc(nullableVars[0]) || comp.Right.MatchLdLoc(nullableVars[0]))
+				{
+					return comp.MakeLifted(newComparisonKind, comp.Left.Clone(), comp.Right.Clone());
+				}
+
+				return null;
+			}
 			var (left, right, bits) = DoLiftBinary(comp.Left, comp.Right, comp.LeftExpectedType, comp.RightExpectedType);
 			// due to the restrictions on side effects, we only allow instructions that are pure after lifting.
 			// (we can't check this before lifting due to the calls to GetValueOrDefault())
-			if (left != null && right != null && SemanticHelper.IsPure(left.Flags) && SemanticHelper.IsPure(right.Flags))
+			if (left != null && right != null && IsPure(left) && IsPure(right))
 			{
 				if (!bits.All(0, nullableVars.Count))
 				{
@@ -544,7 +626,18 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			return null;
 		}
 
-		Call LiftCSharpUserEqualityComparison(CompOrDecimal hasValueComp, ComparisonKind newComparisonKind, ILInstruction nestedIfInst)
+		static bool IsPure(ILInstruction inst)
+		{
+			if (MatchNullableCtor(inst, out _, out var arg))
+			{
+				// call to nullable ctor has Flags.SideEffect, but know it's harmless
+				// (in fact it's likely a call that lifting just introduced)
+				inst = arg;
+			}
+			return SemanticHelper.IsPure(inst.Flags);
+		}
+
+		ILInstruction LiftCSharpUserEqualityComparison(CompOrDecimal hasValueComp, ComparisonKind newComparisonKind, ILInstruction nestedIfInst)
 		{
 			// User-defined equality operator:
 			//   if (comp(call get_HasValue(ldloca nullable1) == call get_HasValue(ldloca nullable2)))
@@ -563,7 +656,8 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			//         call op_Inequality(call GetValueOrDefault(ldloca nullable1), call GetValueOrDefault(ldloca nullable2))
 			//      else
 			//         ldc.i4 0
-
+			if (hasValueComp.IsLifted)
+				return null;
 			if (!MatchHasValueCall(hasValueComp.Left, out ILVariable nullable1))
 				return null;
 			if (!MatchHasValueCall(hasValueComp.Right, out ILVariable nullable2))
@@ -576,11 +670,18 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				return null;
 			if (!falseInst.MatchLdcI4(newComparisonKind == ComparisonKind.Equality ? 1 : 0))
 				return null;
+			bool trueInstNegated = false;
+			while (trueInst.MatchLogicNot(out var arg))
+			{
+				trueInstNegated = !trueInstNegated;
+				trueInst = arg;
+			}
 			if (!(trueInst is Call call))
 				return null;
 			if (!(call.Method.IsOperator && call.Arguments.Count == 2))
 				return null;
-			if (call.Method.Name != (newComparisonKind == ComparisonKind.Equality ? "op_Equality" : "op_Inequality"))
+			bool expectEqualityOperator = (newComparisonKind == ComparisonKind.Equality) ^ trueInstNegated;
+			if (call.Method.Name != (expectEqualityOperator ? "op_Equality" : "op_Inequality"))
 				return null;
 			var liftedOperator = CSharp.Resolver.CSharpOperators.LiftUserDefinedOperator(call.Method);
 			if (liftedOperator == null)
@@ -594,13 +695,66 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			)
 			{
 				context.Step("NullableLiftingTransform: C# user-defined (in)equality comparison", nestedIfInst);
-				return new Call(liftedOperator) {
+				ILInstruction replacement = new Call(liftedOperator) {
 					Arguments = { left, right },
 					ConstrainedTo = call.ConstrainedTo,
 					ILStackWasEmpty = call.ILStackWasEmpty,
 					IsTail = call.IsTail,
 				}.WithILRange(call);
+				if (trueInstNegated)
+				{
+					replacement = Comp.LogicNot(replacement);
+				}
+				return replacement;
 			}
+			return null;
+		}
+
+		ILInstruction LiftCSharpUserComparison(ILInstruction trueInst, ILInstruction falseInst)
+		{
+			// (v1 != null && ... && vn != null) ? trueInst : falseInst
+			bool trueInstNegated = false;
+			while (trueInst.MatchLogicNot(out var arg))
+			{
+				trueInstNegated = !trueInstNegated;
+				trueInst = arg;
+			}
+			if (trueInst is Call call && !call.IsLifted
+			  && CSharp.Resolver.CSharpOperators.IsComparisonOperator(call.Method)
+			  && falseInst.MatchLdcI4((call.Method.Name == "op_Inequality") ^ trueInstNegated ? 1 : 0))
+			{
+				// (v1 != null && ... && vn != null) ? call op_LessThan(lhs, rhs) : ldc.i4(0)
+				var liftedOperator = CSharp.Resolver.CSharpOperators.LiftUserDefinedOperator(call.Method);
+				if ((call.Method.Name == "op_Equality" || call.Method.Name == "op_Inequality") && nullableVars.Count != 1)
+				{
+					// Equality is special (returns true if both sides are null), only handle it
+					// in the normal code path if we're dealing with only a single nullable var
+					// (comparing nullable with non-nullable).
+					return null;
+				}
+				if (liftedOperator == null)
+				{
+					return null;
+				}
+				context.Step("Lift user-defined comparison operator", trueInst);
+				var (left, right, bits) = DoLiftBinary(call.Arguments[0], call.Arguments[1],
+					call.Method.Parameters[0].Type, call.Method.Parameters[1].Type);
+				if (left != null && right != null && bits.All(0, nullableVars.Count))
+				{
+					ILInstruction result = new Call(liftedOperator) {
+						Arguments = { left, right },
+						ConstrainedTo = call.ConstrainedTo,
+						ILStackWasEmpty = call.ILStackWasEmpty,
+						IsTail = call.IsTail
+					}.WithILRange(call);
+					if (trueInstNegated)
+					{
+						result = Comp.LogicNot(result);
+					}
+					return result;
+				}
+			}
+
 			return null;
 		}
 		#endregion
@@ -630,46 +784,18 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			if (!MatchNullableCtor(trueInst, out var utype, out var exprToLift))
 			{
 				isNullCoalescingWithNonNullableFallback = true;
-				utype = context.TypeSystem.FindType(trueInst.ResultType.ToKnownTypeCode());
+				utype = trueInst.InferType(context.TypeSystem);
 				exprToLift = trueInst;
 				if (nullableVars.Count == 1 && exprToLift.MatchLdLoc(nullableVars[0]))
 				{
 					// v.HasValue ? ldloc v : fallback
 					// => v ?? fallback
 					context.Step("v.HasValue ? v : fallback => v ?? fallback", trueInst);
-					return new NullCoalescingInstruction(NullCoalescingKind.Nullable, trueInst, falseInst) {
-						UnderlyingResultType = NullableType.GetUnderlyingType(nullableVars[0].Type).GetStackType()
-					};
+					return new NullCoalescingInstruction(nullableVars[0].Type, NullCoalescingKind.Nullable, trueInst, falseInst);
 				}
-				else if (trueInst is Call call && !call.IsLifted
-				  && CSharp.Resolver.CSharpOperators.IsComparisonOperator(call.Method)
-				  && falseInst.MatchLdcI4(call.Method.Name == "op_Inequality" ? 1 : 0))
-				{
-					// (v1 != null && ... && vn != null) ? call op_LessThan(lhs, rhs) : ldc.i4(0)
-					var liftedOperator = CSharp.Resolver.CSharpOperators.LiftUserDefinedOperator(call.Method);
-					if ((call.Method.Name == "op_Equality" || call.Method.Name == "op_Inequality") && nullableVars.Count != 1)
-					{
-						// Equality is special (returns true if both sides are null), only handle it
-						// in the normal code path if we're dealing with only a single nullable var
-						// (comparing nullable with non-nullable).
-						liftedOperator = null;
-					}
-					if (liftedOperator != null)
-					{
-						context.Step("Lift user-defined comparison operator", trueInst);
-						var (left, right, bits) = DoLiftBinary(call.Arguments[0], call.Arguments[1],
-							call.Method.Parameters[0].Type, call.Method.Parameters[1].Type);
-						if (left != null && right != null && bits.All(0, nullableVars.Count))
-						{
-							return new Call(liftedOperator) {
-								Arguments = { left, right },
-								ConstrainedTo = call.ConstrainedTo,
-								ILStackWasEmpty = call.ILStackWasEmpty,
-								IsTail = call.IsTail
-							}.WithILRange(call);
-						}
-					}
-				}
+				ILInstruction result = LiftCSharpUserComparison(trueInst, falseInst);
+				if (result != null)
+					return result;
 			}
 			ILInstruction lifted;
 			if (nullableVars.Count == 1 && MatchGetValueOrDefault(exprToLift, nullableVars[0]))
@@ -714,17 +840,13 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			}
 			if (isNullCoalescingWithNonNullableFallback)
 			{
-				lifted = new NullCoalescingInstruction(NullCoalescingKind.NullableWithValueFallback, lifted, falseInst) {
-					UnderlyingResultType = exprToLift.ResultType
-				};
+				lifted = new NullCoalescingInstruction(utype, NullCoalescingKind.NullableWithValueFallback, lifted, falseInst);
 			}
 			else if (!MatchNull(falseInst, utype))
 			{
 				// Normal lifting, but the falseInst isn't `default(utype?)`
 				// => use the `??` operator to provide the fallback value.
-				lifted = new NullCoalescingInstruction(NullCoalescingKind.Nullable, lifted, falseInst) {
-					UnderlyingResultType = exprToLift.ResultType
-				};
+				lifted = new NullCoalescingInstruction(NullableType.Create(context.TypeSystem, utype), NullCoalescingKind.Nullable, lifted, falseInst);
 			}
 			return lifted;
 		}
@@ -988,6 +1110,24 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			if (call.Method.DeclaringTypeDefinition?.KnownTypeCode != KnownTypeCode.NullableOfT)
 				return false;
 			arg = call.Arguments[0];
+			return true;
+		}
+
+		/// <summary>
+		/// Matches 'call nullableValue.GetValueOrDefault(fallback)'
+		/// </summary>
+		internal static bool MatchGetValueOrDefault(ILInstruction inst, out ILInstruction nullableValue, out ILInstruction fallback)
+		{
+			nullableValue = null;
+			fallback = null;
+			if (!(inst is Call call))
+				return false;
+			if (call.Method.Name != "GetValueOrDefault" || call.Arguments.Count != 2)
+				return false;
+			if (call.Method.DeclaringTypeDefinition?.KnownTypeCode != KnownTypeCode.NullableOfT)
+				return false;
+			nullableValue = call.Arguments[0];
+			fallback = call.Arguments[1];
 			return true;
 		}
 

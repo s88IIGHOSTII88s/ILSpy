@@ -1,9 +1,26 @@
-﻿using System;
-using System.Collections.Generic;
+// Copyright (c) 2018 Daniel Grunwald
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy of this
+// software and associated documentation files (the "Software"), to deal in the Software
+// without restriction, including without limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
+// to whom the Software is furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all copies or
+// substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
+// FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
 using System.Diagnostics;
 using System.Linq;
-using System.Text;
+using System.Reflection;
 
+using ICSharpCode.Decompiler.CSharp;
 using ICSharpCode.Decompiler.TypeSystem;
 
 namespace ICSharpCode.Decompiler.IL.Transforms
@@ -13,13 +30,38 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 
 	public class NamedArgumentTransform : IStatementTransform
 	{
+		/// <summary>Whether CallBuilder can name every argument. Reordering and then failing to
+		/// name would emit the arguments positionally, in the order the reordering put them.</summary>
+		static bool CanWriteArgumentNames(IMethod method, bool isSetter)
+		{
+			var namedParameters = CallBuilder.GetNamedParameters(method);
+			if (namedParameters.Count < method.Parameters.Count - (isSetter ? 1 : 0))
+				return false;
+			return namedParameters.All(p => AssignVariableNames.IsValidName(p.Name));
+		}
+
 		internal static FindResult CanIntroduceNamedArgument(CallInstruction call, ILInstruction child, ILVariable v, ILInstruction expressionBeingMoved)
 		{
 			Debug.Assert(child.Parent == call);
 			if (call.IsInstanceCall && child.ChildIndex == 0)
 				return FindResult.Stop; // cannot use named arg to move expressionBeingMoved before this pointer
-			if (call.Method.IsOperator || call.Method.IsAccessor)
-				return FindResult.Stop; // cannot use named arg for operators or accessors
+			if (call.Method.IsOperator)
+				return FindResult.Stop; // cannot use named arg for operators
+			if (call.Method.IsAccessor)
+			{
+				// Only an indexer access has an argument list that can carry names.
+				if (call.Method.AccessorOwner!.SymbolKind != SymbolKind.Indexer)
+					return FindResult.Stop;
+				// A name replaces the call with a block: a call-inline-assign block is matched by
+				// the call it holds, and a compound assignment requires a call in its target.
+				if (call.Parent is Block { Kind: BlockKind.CallInlineAssign })
+					return FindResult.Stop;
+				if (call.Parent is CompoundAssignmentInstruction { TargetKind: CompoundTargetKind.Property } compoundAssignment
+					&& compoundAssignment.Target == call)
+				{
+					return FindResult.Stop;
+				}
+			}
 			if (call.Method is VarArgInstanceMethod)
 				return FindResult.Stop; // CallBuilder doesn't support named args when using varargs
 			if (call.Method.IsConstructor)
@@ -28,9 +70,12 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				if (type.Kind == TypeKind.Delegate || type.IsAnonymousType())
 					return FindResult.Stop;
 			}
-			if (call.Method.Parameters.Any(p => string.IsNullOrEmpty(p.Name)))
-				return FindResult.Stop; // cannot use named arguments
-			for (int i = child.ChildIndex; i < call.Arguments.Count; i++)
+			// A setter's last argument is the assigned value, written as the right-hand side.
+			bool isSetter = call.Method.AccessorKind == MethodSemanticsAttributes.Setter;
+			if (!CanWriteArgumentNames(call.Method, isSetter))
+				return FindResult.Stop;
+			int nameableArgumentCount = call.Arguments.Count - (isSetter ? 1 : 0);
+			for (int i = child.ChildIndex; i < nameableArgumentCount; i++)
 			{
 				var r = ILInlining.FindLoadInNext(call.Arguments[i], v, expressionBeingMoved, InliningOptions.None);
 				if (r.Type == FindResultType.Found)
@@ -72,11 +117,14 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					}
 				}
 			}
-			foreach (var arg in call.Arguments)
+			// A setter's last argument is the assigned value, written as the right-hand side.
+			int nameableArgumentCount = call.Arguments.Count
+				- (call.Method.AccessorKind == MethodSemanticsAttributes.Setter ? 1 : 0);
+			for (int i = 0; i < nameableArgumentCount; i++)
 			{
-				if (arg.MatchLdLoc(v))
+				if (call.Arguments[i].MatchLdLoc(v))
 				{
-					return FindResult.NamedArgument(arg, arg);
+					return FindResult.NamedArgument(call.Arguments[i], call.Arguments[i]);
 				}
 			}
 			return FindResult.Stop;
@@ -90,7 +138,8 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 		{
 			var call = (CallInstruction)arg.Parent;
 			Debug.Assert(context.Function == call.Ancestors.OfType<ILFunction>().First());
-			var v = context.Function.RegisterVariable(VariableKind.NamedArgument, arg.ResultType);
+			var type = arg.InferType(context.TypeSystem);
+			var v = context.Function.RegisterVariable(VariableKind.NamedArgument, type);
 			context.Step($"Introduce named argument '{v.Name}'", arg);
 			if (!(call.Parent is Block namedArgBlock) || namedArgBlock.Kind != BlockKind.CallWithNamedArgs)
 			{
@@ -100,8 +149,8 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				namedArgBlock.FinalInstruction = call;
 				if (call.IsInstanceCall)
 				{
-					IType thisVarType = call.Method.DeclaringType;
-					if (CallInstruction.ExpectedTypeForThisPointer(thisVarType) == StackType.Ref)
+					IType thisVarType = call.ConstrainedTo ?? call.Method.DeclaringType;
+					if (CallInstruction.ExpectedTypeForThisPointer(call.Method.DeclaringType, call.ConstrainedTo) == StackType.Ref)
 					{
 						thisVarType = new ByReferenceType(thisVarType);
 					}
@@ -112,8 +161,10 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			}
 			int argIndex = arg.ChildIndex;
 			Debug.Assert(call.Arguments[argIndex] == arg);
-			namedArgBlock.Instructions.Insert(call.IsInstanceCall ? 1 : 0, new StLoc(v, arg));
+			var newInst = new StLoc(v, arg);
+			namedArgBlock.Instructions.Insert(call.IsInstanceCall ? 1 : 0, newInst);
 			call.Arguments[argIndex] = new LdLoc(v);
+			context.EndStep(newInst);
 		}
 
 		public void Run(Block block, int pos, StatementTransformContext context)

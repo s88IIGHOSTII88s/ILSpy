@@ -1,4 +1,4 @@
-﻿#pragma warning disable format
+#pragma warning disable format
 // Copyright (c) 2018 Siegfried Pammer
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
@@ -24,6 +24,17 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 {
 	internal class CS73_StackAllocInitializers
 	{
+#if CS120
+		[StructLayout(LayoutKind.Sequential, Size = 5)]
+		private struct StructWithSize5(byte a, byte b, byte c, byte d, byte e)
+		{
+			public byte a = a;
+			public byte b = b;
+			public byte c = c;
+			public byte d = d;
+			public byte e = e;
+		}
+#else
 		[StructLayout(LayoutKind.Sequential, Size = 5)]
 		private struct StructWithSize5
 		{
@@ -42,6 +53,34 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 				this.e = e;
 			}
 		}
+#endif
+
+#if CS80
+		private class NestedContext1
+		{
+			public NestedContext1(object result)
+			{
+			}
+
+			public NestedContext1()
+				: this(UseNested(GetInt(), stackalloc int[2] {
+					GetInt(),
+					GetInt()
+				}))
+			{
+			}
+		}
+		
+		public static object UseNested(object a, Span<int> span)
+		{
+			return null;
+		}
+
+		public static int GetInt()
+		{
+			return 42;
+		}
+#endif
 
 		public unsafe string SimpleStackAllocStruct1()
 		{
@@ -173,11 +212,39 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			return UsePointer((byte*)ptr);
 		}
 
+		// Mixed constant/non-constant floating-point initializers go through the constant data
+		// blob; reading a 'float'/'double' element as the integer of the same width produced the
+		// raw bit pattern as the literal (e.g. 1f decoded as 1.0653532E+09f).
+		public unsafe string SimpleStackAllocSingle(float a)
+		{
+			float* ptr = stackalloc float[4] { 1f, 2f, 3f, a };
+			Console.WriteLine(*ptr);
+			return UsePointer((byte*)ptr);
+		}
+
+		public unsafe string SimpleStackAllocDouble(double a)
+		{
+			double* ptr = stackalloc double[4] { 1.0, 2.0, 3.0, a };
+			Console.WriteLine(*ptr);
+			return UsePointer((byte*)ptr);
+		}
+
 		public unsafe string SimpleStackAllocInt32NonConstant(int a, int b, int c)
 		{
 			int* ptr = stackalloc int[6] { 0, 1, 0, a, b, c };
 			Console.WriteLine(*ptr);
 			return UsePointer((byte*)ptr);
+		}
+
+		// The buffer is only passed to a static call, never dereferenced as a typed pointer, so
+		// some compilers keep it on the stack as a native int rather than in an int* local.
+		// Combined with the constant allocation size being folded to a byte count, that previously
+		// made the decompiler lose the element type and throw "given Block is invalid!".
+		public unsafe string Issue3799(int pid)
+		{
+			int* ptr = stackalloc int[4] { 1, 14, 1, pid };
+			long num = 0L;
+			return UseTwoPointers(ptr, &num);
 		}
 
 		public unsafe string NotAnInitializer(int a, int b, int c)
@@ -190,30 +257,55 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			return UsePointer((byte*)ptr);
 		}
 
+		// A pointer-typed stackalloc passed to a call must stay a local: inlining it into the
+		// argument would retype it as Span<T>, which does not convert to the pointer parameter.
+		public unsafe void StackAllocPassedToPointerCall(int v)
+		{
+			int* ptr = stackalloc int[3] { 1, 2, v };
+			UseIntPointer(ptr);
+		}
+
+		public unsafe static void UseIntPointer(int* ptr)
+		{
+		}
+
+		// A buffer that is only partially written through a reinterpreting cast is not an
+		// initializer: the fourth int is never assigned, so it must stay a sequence of stores
+		// rather than be reconstructed as 'stackalloc int[4] { 1, v, 3 }' (too few elements).
+		public unsafe string PartialReinterpret(int v)
+		{
+			byte* ptr = stackalloc byte[16];
+			*(int*)ptr = 1;
+			((int*)ptr)[1] = v;
+			((int*)ptr)[2] = 3;
+			long num = 0L;
+			return UseBytePointer(ptr, &num);
+		}
+
+		public unsafe static string UseBytePointer(byte* ptr, long* length)
+		{
+			return ((int*)ptr)->ToString();
+		}
+
 		public unsafe string NegativeOffsets(int a, int b, int c)
 		{
-#if OPT
-			byte* intPtr = stackalloc byte[12];
-			*(int*)intPtr = 1;
-			*(int*)(intPtr - 4) = 2;
-			*(int*)(intPtr - 8) = 3;
-			int* ptr = (int*)intPtr;
-			Console.WriteLine(*ptr);
-			return UsePointer((byte*)ptr);
-#else
 			byte* ptr = stackalloc byte[12];
 			*(int*)ptr = 1;
-			*(int*)(ptr - 4) = 2;
-			*(int*)(ptr - 8) = 3;
+			*((int*)ptr - 1) = 2;
+			*((int*)ptr - 2) = 3;
 			int* ptr2 = (int*)ptr;
 			Console.WriteLine(*ptr2);
 			return UsePointer((byte*)ptr2);
-#endif
 		}
 
 		public unsafe string UsePointer(byte* ptr)
 		{
 			return ptr->ToString();
+		}
+
+		public unsafe static string UseTwoPointers(int* ptr, long* length)
+		{
+			return ((byte*)ptr)->ToString();
 		}
 
 		public string GetSpan()
@@ -240,6 +332,12 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			return UseSpan(span);
 		}
 
+		public string GetSpan5()
+		{
+			Span<char> span = stackalloc char[4] { '1', '2', '3', '4' };
+			return UseSpan(span);
+		}
+
 		public void Issue2103a()
 		{
 			Span<byte> span = stackalloc byte[3] { 1, 2, 3 };
@@ -262,12 +360,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			Console.WriteLine((stackalloc byte[3])[1]);
 		}
 
-		public string UseSpan(Span<int> span)
-		{
-			throw new NotImplementedException();
-		}
-
-		public string UseSpan(Span<decimal> span)
+		public string UseSpan<T>(Span<T> span)
 		{
 			throw new NotImplementedException();
 		}

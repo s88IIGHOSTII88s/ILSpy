@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2016 Daniel Grunwald
+// Copyright (c) 2016 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -118,6 +118,9 @@ namespace ICSharpCode.Decompiler.TypeSystem
 		}
 
 		IEnumerable<IAttribute> IEntity.GetAttributes() => baseMethod.GetAttributes();
+		bool IEntity.HasAttribute(KnownAttribute attribute) => baseMethod.HasAttribute(attribute);
+		IAttribute IEntity.GetAttribute(KnownAttribute attribute) => baseMethod.GetAttribute(attribute);
+
 		IEnumerable<IAttribute> IMethod.GetReturnTypeAttributes() => baseMethod.GetReturnTypeAttributes();
 		bool IMethod.ReturnTypeIsRefReadOnly => baseMethod.ReturnTypeIsRefReadOnly;
 		bool IMethod.ThisIsRefReadOnly => baseMethod.ThisIsRefReadOnly;

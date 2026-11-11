@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 {
@@ -45,6 +45,12 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			}
 		}
 
+		public class Issue3827Node
+		{
+			public Issue3827Node next;
+
+			public int value;
+		}
 
 		public delegate ref T RefFunc<T>();
 		public delegate ref readonly T ReadOnlyRefFunc<T>();
@@ -95,6 +101,13 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 					return 1;
 				}
 				readonly set {
+				}
+			}
+
+			public readonly int ReadOnlyPropertyWithOnlyGetter {
+				get {
+					Console.WriteLine("No inlining");
+					return 1;
 				}
 			}
 
@@ -153,6 +166,42 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 
 		private static int DefaultInt = 0;
 
+		public void Issue4312(bool flagA, bool flagB, out string value)
+		{
+			string text;
+			if (flagA)
+			{
+				text = "A";
+			}
+			else
+			{
+				text = (flagB ? "B" : "C");
+			}
+			value = text;
+		}
+
+		public static Issue3827Node RefLocalUsedAfterForLoop(Issue3827Node[] buckets, int hash, Issue3827Node newNode)
+		{
+			// The ref local is used after the loop, so its declaration is hoisted in front of the loop.
+			// The loop is kept as a while-loop (rather than converted to a headless for-loop) so the
+			// ref-assignment stays on the declaration -- a ref local cannot be declared without an initializer.
+			ref Issue3827Node reference = ref buckets[hash & 3];
+			while (reference != null)
+			{
+				if (reference.value == hash)
+				{
+					reference = newNode;
+					break;
+				}
+				reference = ref reference.next;
+			}
+			if (reference == null)
+			{
+				reference = newNode;
+			}
+			return reference;
+		}
+
 		public static ref T GetRef<T>()
 		{
 			throw new NotImplementedException();
@@ -175,11 +224,11 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			GetRef<ReadOnlyStruct>().Method();
 
 			// call on a copy, not the original ref:
-			NormalStruct @ref = GetRef<NormalStruct>();
-			@ref.Method();
+			NormalStruct normalStruct = GetRef<NormalStruct>();
+			normalStruct.Method();
 
-			ReadOnlyStruct ref2 = GetRef<ReadOnlyStruct>();
-			ref2.Method();
+			ReadOnlyStruct readOnlyStruct = GetRef<ReadOnlyStruct>();
+			readOnlyStruct.Method();
 		}
 
 		public void CallOnReadOnlyRefReturn()
@@ -247,6 +296,19 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			return ref DefaultInt;
 		}
 
+		public static ref int SwitchRefReturn(int index)
+		{
+			switch (index)
+			{
+				case 0:
+					return ref numbers[0];
+				case 1:
+					return ref numbers[1];
+				default:
+					throw new InvalidOperationException();
+			}
+		}
+
 		public static ref int LastOrDefault()
 		{
 			if (numbers.Length != 0)
@@ -286,13 +348,20 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 
 		public void RefReassignment(ref NormalStruct s)
 		{
-			ref NormalStruct @ref = ref GetRef<NormalStruct>();
-			RefReassignment(ref @ref);
+			ref NormalStruct reference = ref GetRef<NormalStruct>();
+			RefReassignment(ref reference);
 			if (s.GetHashCode() == 0)
 			{
-				@ref = ref GetRef<NormalStruct>();
+				reference = ref GetRef<NormalStruct>();
 			}
-			RefReassignment(ref @ref.GetHashCode() == 4 ? ref @ref : ref s);
+			RefReassignment(ref reference.GetHashCode() == 4 ? ref reference : ref s);
+		}
+
+		public static void ConditionalRefAssignment(bool c, ref int a, ref int b)
+		{
+			(c ? ref a : ref b) = 3;
+			(c ? ref a : ref b) += 10;
+			(c ? ref b : ref a)++;
 		}
 
 		public static void Main(string[] args)
@@ -313,5 +382,29 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			LastOrDefault() = 10000;
 			Console.WriteLine(ElementAtOrDefault(-5));
 		}
+
+		public void CallWithTemplatedInParameterOnSelf()
+		{
+			M2<RefLocalsAndReturns>(this);
+		}
+
+#if CS120
+		public ref readonly int M(in int x)
+		{
+			return ref x;
+		}
+
+		public ref readonly int M2(ref readonly int x)
+		{
+			return ref x;
+		}
+
+		public void Test()
+		{
+			int x = 32;
+			M(in x);
+			M2(in x);
+		}
+#endif
 	}
 }

@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2017 Siegfried Pammer
+// Copyright (c) 2017 Siegfried Pammer
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -16,9 +16,6 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-using System;
-using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
 
 using ICSharpCode.Decompiler.TypeSystem;
@@ -65,14 +62,72 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 						// if (comp(isinst exceptionType(ldloc exceptionVar) != ldnull)) br whenConditionBlock
 						// br falseBlock
 						context.Step($"Detected catch-when for {catchBlock.Variable.Name}", instructions[0]);
-						instructions[0].ReplaceWith(new Branch(whenConditionBlock));
+						var branch = new Branch(whenConditionBlock);
+						instructions[0].ReplaceWith(branch);
 						instructions.RemoveAt(1);
+						context.EndStep(branch);
 						container.SortBlocks(deleteUnreachableBlocks: true);
 					}
 
 					PropagateExceptionVariable(context, catchBlock);
 				}
+				else if (catchBlock.Filter is BlockContainer filterContainer
+					&& MatchVBOnErrorCatchFilter(context, catchBlock.Variable, filterContainer, out exceptionType, out var typeTest)
+					&& exceptionType.GetStackType() == catchBlock.Variable.StackType)
+				{
+					context.Step($"Detected catch-when for {catchBlock.Variable.Name} (bit.and)", typeTest);
+					catchBlock.Variable.Type = exceptionType;
+					var condition = typeTest.Right;
+					typeTest.ReplaceWith(condition);
+					context.EndStep(condition);
+
+					PropagateExceptionVariable(context, catchBlock);
+				}
 			}
+		}
+
+		/// <summary>
+		/// BlockContainer {
+		/// 	Block entryPoint (incoming: 1) {
+		/// 		leave container(bit.and(bit.and(comp(isinst System.Exception(ldloc exceptionVar) > ldnull), comp.unsigned(ldloc activeHandler > ldc.i4 0)), logic.not(ldloc resumeTarget)))
+		/// 	}
+		/// }
+		/// Only emitted for On Error Resume Next/GoTo.
+		/// </summary>
+		bool MatchVBOnErrorCatchFilter(ILTransformContext context, ILVariable exceptionVar, BlockContainer container, out IType exceptionType, out BinaryNumericInstruction typeTest)
+		{
+			exceptionType = null;
+			typeTest = null;
+			var entryPoint = container.EntryPoint;
+			if (entryPoint == null || entryPoint.IncomingEdgeCount != 1 || entryPoint.Instructions.Count != 1)
+				return false;
+			if (!entryPoint.Instructions[0].MatchLeave(container, out var condition))
+				return false;
+			if (condition is not BinaryNumericInstruction { Operator: BinaryNumericOperator.BitAnd, Left: BinaryNumericInstruction { Operator: BinaryNumericOperator.BitAnd } bitAnd } outer)
+				return false;
+			if (!outer.Right.MatchCompUnsignedZero(ComparisonKind.Equality, out var resumeTarget) || !resumeTarget.MatchLdLoc(out _))
+				return false;
+			if (!bitAnd.Right.MatchCompUnsignedZero(ComparisonKind.Inequality, out var activeHandler) || !activeHandler.MatchLdLoc(out _))
+				return false;
+			if (bitAnd.Left is not Comp comp)
+				return false;
+			EarlyExpressionTransforms.FixComparisonKindLdNull(comp, context);
+			if (!MatchIsInstNotNull(comp, exceptionVar, out _, out exceptionType) || !exceptionType.IsKnownType(KnownTypeCode.Exception))
+				return false;
+			typeTest = bitAnd;
+			return true;
+		}
+
+		/// <summary>
+		/// comp(isinst exceptionType(ldloc exceptionVar) != ldnull)
+		/// </summary>
+		static bool MatchIsInstNotNull(ILInstruction condition, ILVariable exceptionVar, out ILInstruction exceptionSlot, out IType exceptionType)
+		{
+			exceptionSlot = null;
+			exceptionType = null;
+			return condition.MatchCompNotEqualsNull(out var arg)
+				&& arg.MatchIsInst(out exceptionSlot, out exceptionType)
+				&& exceptionSlot.MatchLdLoc(exceptionVar);
 		}
 
 		/// <summary>
@@ -107,7 +162,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 
 				// We are only interested in store "statements" copying the exception variable
 				// without modifying it.
-				var statement = LocalFunctionDecompiler.GetStatement(load);
+				var statement = Block.GetContainingStatement(load);
 				if (!(statement is StLoc stloc))
 				{
 					i++;
@@ -196,18 +251,11 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				// br falseBlock
 				if (!entryPoint.Instructions[0].MatchIfInstruction(out var condition, out var branch))
 					return false;
-				if (!condition.MatchCompNotEquals(out var left, out var right))
+				if (!MatchIsInstNotNull(condition, exceptionVar, out exceptionSlot, out exceptionType))
 					return false;
 				if (!entryPoint.Instructions[1].MatchBranch(out var falseBlock) || !MatchFalseBlock(container, falseBlock, out var returnVar, out var exitBlock))
 					return false;
-				if (!left.MatchIsInst(out exceptionSlot, out exceptionType))
-					return false;
-				if (!exceptionSlot.MatchLdLoc(exceptionVar))
-					return false;
-				if (right.MatchLdNull())
-				{
-					return branch.MatchBranch(out whenConditionBlock);
-				}
+				return branch.MatchBranch(out whenConditionBlock);
 			}
 			return false;
 		}

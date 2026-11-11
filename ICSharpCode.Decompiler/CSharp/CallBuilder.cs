@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2014 Daniel Grunwald
+// Copyright (c) 2014 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -20,160 +20,188 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Text;
 
 using ICSharpCode.Decompiler.CSharp.Resolver;
 using ICSharpCode.Decompiler.CSharp.Syntax;
+using ICSharpCode.Decompiler.CSharp.Transforms;
 using ICSharpCode.Decompiler.IL;
+using ICSharpCode.Decompiler.IL.Transforms;
 using ICSharpCode.Decompiler.Semantics;
 using ICSharpCode.Decompiler.TypeSystem;
 using ICSharpCode.Decompiler.TypeSystem.Implementation;
 using ICSharpCode.Decompiler.Util;
 
+#nullable enable
+
 namespace ICSharpCode.Decompiler.CSharp
 {
-	struct CallBuilder
+	internal struct ExpectedTargetDetails
 	{
-		struct ExpectedTargetDetails
+		public OpCode CallOpCode;
+		public bool NeedsBoxingConversion;
+	}
+
+	internal struct ArgumentList
+	{
+		public TranslatedExpression[] Arguments;
+		public IParameter[] ExpectedParameters;
+		public string[] ParameterNames;
+		public string[]? ArgumentNames;
+		public int FirstOptionalArgumentIndex;
+		public BitSet IsPrimitiveValue;
+		public IReadOnlyList<int>? ArgumentToParameterMap;
+
+		public bool AddNamesToPrimitiveValues;
+		public bool UseImplicitlyTypedOut;
+		public bool IsExpandedForm;
+		public int Length => Arguments.Length;
+
+		public int GetActualArgumentCount()
 		{
-			public OpCode CallOpCode;
-			public bool NeedsBoxingConversion;
+			if (FirstOptionalArgumentIndex < 0)
+				return Arguments.Length;
+			Debug.Assert(FirstOptionalArgumentIndex <= Arguments.Length);
+			return FirstOptionalArgumentIndex;
 		}
 
-		struct ArgumentList
+		/// <summary>
+		/// The name to write each argument with, indexed like <see cref="Arguments"/>; null where
+		/// every argument is written positionally.
+		/// </summary>
+		public string[]? GetArgumentNames()
 		{
-			public TranslatedExpression[] Arguments;
-			public IParameter[] ExpectedParameters;
-			public string[] ParameterNames;
-			public string[] ArgumentNames;
-			public int FirstOptionalArgumentIndex;
-			public BitSet IsPrimitiveValue;
-			public IReadOnlyList<int> ArgumentToParameterMap;
-
-			public bool AddNamesToPrimitiveValues;
-			public bool UseImplicitlyTypedOut;
-			public bool IsExpandedForm;
-			public int Length => Arguments.Length;
-
-			private int GetActualArgumentCount()
+			string[]? argumentNames = ArgumentNames;
+			if (AddNamesToPrimitiveValues && IsPrimitiveValue.Any() && !IsExpandedForm
+					&& !ParameterNames.Any(string.IsNullOrEmpty))
 			{
-				if (FirstOptionalArgumentIndex < 0)
-					return Arguments.Length;
-				return FirstOptionalArgumentIndex;
-			}
-
-			public IList<ResolveResult> GetArgumentResolveResults(int skipCount = 0)
-			{
-				var expectedParameters = ExpectedParameters;
-				var useImplicitlyTypedOut = UseImplicitlyTypedOut;
-
-				return Arguments
-					.SelectWithIndex(GetResolveResult)
-					.Skip(skipCount)
-					.Take(GetActualArgumentCount())
-					.ToArray();
-
-				ResolveResult GetResolveResult(int index, TranslatedExpression expression)
+				if (argumentNames == null)
 				{
-					var param = expectedParameters[index];
-					if (useImplicitlyTypedOut && param.IsOut)
-						return OutVarResolveResult.Instance;
-					return expression.ResolveResult;
-				}
-			}
-
-			public IList<ResolveResult> GetArgumentResolveResultsDirect(int skipCount = 0)
-			{
-				return Arguments
-					.Skip(skipCount)
-					.Take(GetActualArgumentCount())
-					.Select(a => a.ResolveResult)
-					.ToArray();
-			}
-
-			public IEnumerable<Expression> GetArgumentExpressions(int skipCount = 0)
-			{
-				if (AddNamesToPrimitiveValues && IsPrimitiveValue.Any() && !IsExpandedForm
-					&& !ParameterNames.Any(p => string.IsNullOrEmpty(p)))
-				{
-					Debug.Assert(skipCount == 0);
-					if (ArgumentNames == null)
-					{
-						ArgumentNames = new string[Arguments.Length];
-					}
-
-					for (int i = 0; i < Arguments.Length; i++)
-					{
-						if (IsPrimitiveValue[i] && ArgumentNames[i] == null)
-						{
-							ArgumentNames[i] = ParameterNames[i];
-						}
-					}
-				}
-				int argumentCount = GetActualArgumentCount();
-				var useImplicitlyTypedOut = UseImplicitlyTypedOut;
-				if (ArgumentNames == null)
-				{
-					return Arguments.Skip(skipCount).Take(argumentCount).Select(arg => AddAnnotations(arg.Expression));
-				}
-				else
-				{
-					Debug.Assert(skipCount == 0);
-					return Arguments.Take(argumentCount).Zip(ArgumentNames.Take(argumentCount),
-						(arg, name) => {
-							if (name == null)
-								return AddAnnotations(arg.Expression);
-							else
-								return new NamedArgumentExpression(name, AddAnnotations(arg.Expression));
-						});
+					argumentNames = new string[Arguments.Length];
 				}
 
-				Expression AddAnnotations(Expression expression)
-				{
-					if (!useImplicitlyTypedOut)
-						return expression;
-					if (expression.GetResolveResult() is ByReferenceResolveResult brrr
-						&& brrr.IsOut)
-					{
-						expression.AddAnnotation(UseImplicitlyTypedOutAnnotation.Instance);
-					}
-					return expression;
-				}
-			}
-
-			public bool CanInferAnonymousTypePropertyNamesFromArguments()
-			{
 				for (int i = 0; i < Arguments.Length; i++)
 				{
-					string inferredName;
-					switch (Arguments[i].Expression)
+					if (IsPrimitiveValue[i] && argumentNames[i] == null)
 					{
-						case IdentifierExpression identifier:
-							inferredName = identifier.Identifier;
-							break;
-						case MemberReferenceExpression member:
-							inferredName = member.MemberName;
-							break;
-						default:
-							inferredName = null;
-							break;
-					}
-
-					if (inferredName != ExpectedParameters[i].Name)
-					{
-						return false;
+						argumentNames[i] = ParameterNames[i];
 					}
 				}
-				return true;
 			}
 
-			[Conditional("DEBUG")]
-			public void CheckNoNamedOrOptionalArguments()
+			// The names cover the full parameter list and have to stop where the arguments do.
+			int argumentCount = GetActualArgumentCount();
+			if (argumentNames != null && argumentNames.Length > argumentCount)
 			{
-				Debug.Assert(ArgumentToParameterMap == null && ArgumentNames == null && FirstOptionalArgumentIndex < 0);
+				var writtenNames = new string[argumentCount];
+				Array.Copy(argumentNames, writtenNames, argumentCount);
+				argumentNames = writtenNames;
+			}
+
+			return argumentNames;
+		}
+
+		public IList<ResolveResult> GetArgumentResolveResults(int skipCount = 0)
+		{
+			var expectedParameters = ExpectedParameters;
+			var useImplicitlyTypedOut = UseImplicitlyTypedOut;
+
+			return Arguments
+				.SelectWithIndex(GetResolveResult)
+				.Take(GetActualArgumentCount())
+				.Skip(skipCount)
+				.ToArray();
+
+			ResolveResult GetResolveResult(int index, TranslatedExpression expression)
+			{
+				var param = expectedParameters[index];
+				if (useImplicitlyTypedOut && param.ReferenceKind == ReferenceKind.Out && expression.Type is ByReferenceType brt)
+					return new OutVarResolveResult(brt.ElementType);
+				return expression.ResolveResult;
 			}
 		}
+
+		public IList<ResolveResult> GetArgumentResolveResultsDirect(int skipCount = 0)
+		{
+			return Arguments
+				.Take(GetActualArgumentCount())
+				.Skip(skipCount)
+				.Select(a => a.ResolveResult)
+				.ToArray();
+		}
+
+		public IEnumerable<Expression> GetArgumentExpressions(int skipCount = 0)
+		{
+			var argumentNames = GetArgumentNames();
+			int argumentCount = GetActualArgumentCount();
+			var useImplicitlyTypedOut = UseImplicitlyTypedOut;
+			if (argumentNames == null)
+			{
+				return Arguments.Take(argumentCount).Skip(skipCount).Select(arg => AddAnnotations(arg.Expression));
+			}
+			else
+			{
+				// Zip stops at the shorter sequence, so names that ran short would silently drop
+				// the arguments past their end instead of leaving them unnamed.
+				Debug.Assert(argumentNames.Length == argumentCount);
+				return Arguments.Take(argumentCount).Skip(skipCount).Zip(argumentNames.Skip(skipCount),
+					(arg, name) => {
+						if (name == null)
+							return AddAnnotations(arg.Expression);
+						else
+							return new NamedArgumentExpression(name, AddAnnotations(arg.Expression));
+					});
+			}
+
+			Expression AddAnnotations(Expression expression)
+			{
+				if (!useImplicitlyTypedOut)
+					return expression;
+				if (expression.GetResolveResult() is ByReferenceResolveResult { ReferenceKind: ReferenceKind.Out } brrr)
+				{
+					expression.AddAnnotation(UseImplicitlyTypedOutAnnotation.Instance);
+				}
+				return expression;
+			}
+		}
+
+		public bool CanInferAnonymousTypePropertyNamesFromArguments()
+		{
+			for (int i = 0; i < Arguments.Length; i++)
+			{
+				string? inferredName;
+				switch (Arguments[i].Expression)
+				{
+					case IdentifierExpression identifier:
+						inferredName = identifier.Identifier;
+						break;
+					case MemberReferenceExpression member:
+						inferredName = member.MemberName;
+						break;
+					default:
+						inferredName = null;
+						break;
+				}
+
+				if (inferredName != ExpectedParameters[i].Name)
+				{
+					return false;
+				}
+			}
+			return true;
+		}
+
+		[Conditional("DEBUG")]
+		public void CheckNoNamedOrOptionalArguments()
+		{
+			Debug.Assert(ArgumentToParameterMap == null && ArgumentNames == null && FirstOptionalArgumentIndex < 0);
+		}
+	}
+
+	struct CallBuilder
+	{
 
 		readonly DecompilerSettings settings;
 		readonly ExpressionBuilder expressionBuilder;
@@ -188,7 +216,7 @@ namespace ICSharpCode.Decompiler.CSharp
 			this.typeSystem = typeSystem;
 		}
 
-		public TranslatedExpression Build(CallInstruction inst)
+		public TranslatedExpression Build(CallInstruction inst, IType? typeHint = null)
 		{
 			if (inst is NewObj newobj && IL.Transforms.DelegateConstruction.MatchDelegateConstruction(newobj, out _, out _, out _))
 			{
@@ -197,31 +225,171 @@ namespace ICSharpCode.Decompiler.CSharp
 			if (settings.TupleTypes && TupleTransform.MatchTupleConstruction(inst as NewObj, out var tupleElements) && tupleElements.Length >= 2)
 			{
 				var elementTypes = TupleType.GetTupleElementTypes(inst.Method.DeclaringType);
-				Debug.Assert(!elementTypes.IsDefault, "MatchTupleConstruction should not success unless we got a valid tuple type.");
+				var elementNames = typeHint is TupleType tt ? tt.ElementNames : default;
+				Debug.Assert(!elementTypes.IsDefault, "MatchTupleConstruction should not succeed unless we got a valid tuple type.");
 				Debug.Assert(elementTypes.Length == tupleElements.Length);
 				var tuple = new TupleExpression();
 				var elementRRs = new List<ResolveResult>();
-				foreach (var (element, elementType) in tupleElements.Zip(elementTypes))
+				foreach (var (index, element, elementType) in tupleElements.ZipWithIndex(elementTypes))
 				{
 					var translatedElement = expressionBuilder.Translate(element, elementType)
 						.ConvertTo(elementType, expressionBuilder, allowImplicitConversion: true);
-					tuple.Elements.Add(translatedElement.Expression);
+					if (elementNames.IsDefaultOrEmpty || elementNames.ElementAtOrDefault(index) is not string { Length: > 0 } name)
+					{
+						tuple.Elements.Add(translatedElement.Expression);
+					}
+					else
+					{
+						tuple.Elements.Add(new NamedArgumentExpression(name, translatedElement.Expression));
+					}
 					elementRRs.Add(translatedElement.ResolveResult);
 				}
 				return tuple.WithRR(new TupleResolveResult(
 					expressionBuilder.compilation,
 					elementRRs.ToImmutableArray(),
+					elementNames,
 					valueTupleAssembly: inst.Method.DeclaringType.GetDefinition()?.ParentModule
 				)).WithILInstruction(inst);
 			}
-			return Build(inst.OpCode, inst.Method, inst.Arguments, constrainedTo: inst.ConstrainedTo)
+			if (settings.StringConcat && IsSpanBasedStringConcat(inst, out var operands))
+			{
+				return BuildStringConcat(inst.Method, operands).WithILInstruction(inst);
+			}
+			var result = Build(inst.OpCode, inst.Method, inst.Arguments, constrainedTo: inst.ConstrainedTo)
 				.WithILInstruction(inst);
+			if (inst.IsTail)
+			{
+				// Surface the IL 'tail.' prefix as an inline marker, e.g. '/*tail.*/Callee(x)'.
+				// F# emits tail calls pervasively, and the prefix is otherwise dropped entirely.
+				result.Expression.AddLeadingTrivia(new Comment("tail.", CommentType.MultiLine));
+			}
+			return result;
+		}
+
+		private ExpressionWithResolveResult BuildStringConcat(IMethod method, List<(ILInstruction Instruction, KnownTypeCode TypeCode)> operands)
+		{
+			IType type = typeSystem.FindType(operands[0].TypeCode);
+			ExpressionWithResolveResult result = expressionBuilder.Translate(operands[0].Instruction, type).ConvertTo(type, expressionBuilder);
+			var rr = new MemberResolveResult(null, method);
+
+			for (int i = 1; i < operands.Count; i++)
+			{
+				type = typeSystem.FindType(operands[i].TypeCode);
+				var expr = expressionBuilder.Translate(operands[i].Instruction, type).ConvertTo(type, expressionBuilder);
+				result = new BinaryOperatorExpression(result.Expression, BinaryOperatorType.Add, expr).WithRR(rr);
+			}
+
+			return result;
+		}
+
+		static bool IsSpanBasedStringConcat(CallInstruction call, [NotNullWhen(true)] out List<(ILInstruction, KnownTypeCode)>? operands)
+		{
+			operands = null;
+
+			if (!IsSpanBasedStringConcat(call.Method))
+			{
+				return false;
+			}
+
+			int? firstStringArgumentIndex = null;
+			operands = new();
+
+			foreach (var arg in call.Arguments)
+			{
+				if (arg is Call opImplicit && IsStringToReadOnlySpanCharImplicitConversion(opImplicit.Method))
+				{
+					firstStringArgumentIndex ??= arg.ChildIndex;
+					operands.Add((opImplicit.Arguments.Single(), KnownTypeCode.String));
+				}
+				else if (arg is NewObj { Arguments: [AddressOf addressOf] } newObj && ILInlining.IsReadOnlySpanCharCtor(newObj.Method))
+				{
+					operands.Add((addressOf.Value, KnownTypeCode.Char));
+				}
+				else
+				{
+					return false;
+				}
+			}
+
+			return call.Arguments.Count >= 2 && firstStringArgumentIndex <= 1;
+		}
+
+		internal static bool IsSpanBasedStringConcat(IMethod method)
+		{
+			if (method is not { Name: "Concat", IsStatic: true })
+			{
+				return false;
+			}
+			if (!method.DeclaringType.IsKnownType(KnownTypeCode.String))
+			{
+				return false;
+			}
+
+			foreach (var p in method.Parameters)
+			{
+				if (!p.Type.IsKnownType(KnownTypeCode.ReadOnlySpanOfT))
+					return false;
+				if (!p.Type.TypeArguments[0].IsKnownType(KnownTypeCode.Char))
+					return false;
+			}
+
+			return true;
+		}
+
+		internal static bool IsStringToReadOnlySpanCharImplicitConversion(IMethod method)
+		{
+			return method.IsOperator
+				&& method.Name == "op_Implicit"
+				&& method.Parameters.Count == 1
+				&& method.ReturnType.IsKnownType(KnownTypeCode.ReadOnlySpanOfT)
+				&& method.ReturnType.TypeArguments[0].IsKnownType(KnownTypeCode.Char)
+				&& method.Parameters[0].Type.IsKnownType(KnownTypeCode.String);
+		}
+
+		/// <summary>
+		/// Matches MemoryExtensions.AsSpan(string), the helper the C# 14 compiler emits for the
+		/// implicit span conversion from string to ReadOnlySpan&lt;char&gt;.
+		/// </summary>
+		internal static bool IsStringToReadOnlySpanCharAsSpan(IMethod method)
+		{
+			return method is { IsStatic: true, Name: "AsSpan", Parameters.Count: 1, TypeArguments.Count: 0 }
+				&& method.DeclaringType.FullName == "System.MemoryExtensions"
+				&& method.ReturnType.IsKnownType(KnownTypeCode.ReadOnlySpanOfT)
+				&& method.ReturnType.TypeArguments[0].IsKnownType(KnownTypeCode.Char)
+				&& method.Parameters[0].Type.IsKnownType(KnownTypeCode.String);
+		}
+
+		/// <summary>
+		/// Matches ReadOnlySpan&lt;To&gt;.CastUp&lt;From&gt;(ReadOnlySpan&lt;From&gt;), the helper the
+		/// C# 14 compiler emits for the covariant implicit span conversion.
+		/// </summary>
+		internal static bool IsReadOnlySpanCastUp(IMethod method)
+		{
+			return method is { IsStatic: true, Name: "CastUp", Parameters.Count: 1, TypeArguments.Count: 1 }
+				&& method.DeclaringType.IsKnownType(KnownTypeCode.ReadOnlySpanOfT)
+				&& method.Parameters[0].Type.IsKnownType(KnownTypeCode.ReadOnlySpanOfT);
+		}
+
+		// Gets whether a call to `method` is equivalent to an implicit span conversion.
+		static bool IsEquivalentToSpanConversion(IMethod method)
+		{
+			if (method.DeclaringType.IsKnownType(KnownTypeCode.SpanOfT)
+				|| method.DeclaringType.IsKnownType(KnownTypeCode.ReadOnlySpanOfT))
+			{
+				if (method.IsOperator
+					&& method.Name == "op_Implicit")
+				{
+					return true;
+				}
+			}
+			return IsStringToReadOnlySpanCharAsSpan(method)
+				|| IsReadOnlySpanCastUp(method);
 		}
 
 		public ExpressionWithResolveResult Build(OpCode callOpCode, IMethod method,
 			IReadOnlyList<ILInstruction> callArguments,
-			IReadOnlyList<int> argumentToParameterMap = null,
-			IType constrainedTo = null)
+			IReadOnlyList<int>? argumentToParameterMap = null,
+			IType? constrainedTo = null)
 		{
 			if (method.IsExplicitInterfaceImplementation && callOpCode == OpCode.Call)
 			{
@@ -239,7 +407,7 @@ namespace ICSharpCode.Decompiler.CSharp
 			var expectedTargetDetails = new ExpectedTargetDetails {
 				CallOpCode = callOpCode
 			};
-			ILFunction localFunction = null;
+			ILFunction? localFunction = null;
 			if (method.IsLocalFunction)
 			{
 				localFunction = expressionBuilder.ResolveLocalFunction(method);
@@ -252,7 +420,7 @@ namespace ICSharpCode.Decompiler.CSharp
 			}
 			else if (localFunction != null)
 			{
-				var ide = new IdentifierExpression(localFunction.Name);
+				var ide = new IdentifierExpression(localFunction.Name!);
 				if (method.TypeArguments.Count > 0)
 				{
 					ide.TypeArguments.AddRange(method.TypeArguments.Select(expressionBuilder.ConvertType));
@@ -263,11 +431,18 @@ namespace ICSharpCode.Decompiler.CSharp
 			}
 			else
 			{
+				var thisArg = callArguments.FirstOrDefault();
+				if (thisArg is LdObjIfRef ldObjIfRef)
+				{
+					Debug.Assert(constrainedTo != null);
+					thisArg = ldObjIfRef.Target;
+				}
 				target = expressionBuilder.TranslateTarget(
-					callArguments.FirstOrDefault(),
+					thisArg,
 					nonVirtualInvocation: callOpCode == OpCode.Call || method.IsConstructor,
 					memberStatic: method.IsStatic,
-					memberDeclaringType: constrainedTo ?? method.DeclaringType);
+					memberDeclaringType: method.DeclaringType,
+					constrainedTo: constrainedTo);
 				if (constrainedTo == null
 					&& target.Expression is CastExpression cast
 					&& target.ResolveResult is ConversionResolveResult conversion
@@ -335,66 +510,21 @@ namespace ICSharpCode.Decompiler.CSharp
 						argumentList.GetArgumentResolveResults(), isExpandedForm: argumentList.IsExpandedForm, isDelegateInvocation: true));
 			}
 
-			if (settings.StringInterpolation && IsInterpolatedStringCreation(method, argumentList) &&
-				TryGetStringInterpolationTokens(argumentList, out string format, out var tokens))
+			if (settings.StringInterpolation && IsInterpolatedStringCreation(method, argumentList))
 			{
-				var arguments = argumentList.Arguments;
-				var content = new List<InterpolatedStringContent>();
-
-				bool unpackSingleElementArray = !argumentList.IsExpandedForm && argumentList.Length == 2
-					&& argumentList.Arguments[1].Expression is ArrayCreateExpression ace
-					&& ace.Initializer?.Elements.Count == 1;
-
-				void UnpackSingleElementArray(ref TranslatedExpression argument)
-				{
-					if (!unpackSingleElementArray)
-						return;
-					var arrayCreation = (ArrayCreateExpression)argumentList.Arguments[1].Expression;
-					var arrayCreationRR = (ArrayCreateResolveResult)argumentList.Arguments[1].ResolveResult;
-					var element = arrayCreation.Initializer.Elements.First().Detach();
-					argument = new TranslatedExpression(element, arrayCreationRR.InitializerElements.First());
-				}
-
-				if (tokens.Count > 0)
-				{
-					foreach (var (kind, index, text) in tokens)
-					{
-						TranslatedExpression argument;
-						switch (kind)
-						{
-							case TokenKind.String:
-								content.Add(new InterpolatedStringText(text));
-								break;
-							case TokenKind.Argument:
-								argument = arguments[index + 1];
-								UnpackSingleElementArray(ref argument);
-								content.Add(new Interpolation(argument));
-								break;
-							case TokenKind.ArgumentWithFormat:
-								argument = arguments[index + 1];
-								UnpackSingleElementArray(ref argument);
-								content.Add(new Interpolation(argument, text));
-								break;
-						}
-					}
-					var formattableStringType = expressionBuilder.compilation.FindType(KnownTypeCode.FormattableString);
-					var isrr = new InterpolatedStringResolveResult(expressionBuilder.compilation.FindType(KnownTypeCode.String),
-						format, argumentList.GetArgumentResolveResults(1).ToArray());
-					var expr = new InterpolatedStringExpression();
-					expr.Content.AddRange(content);
-					if (method.Name == "Format")
-						return expr.WithRR(isrr);
-					return new CastExpression(expressionBuilder.ConvertType(formattableStringType),
-						expr.WithRR(isrr))
-						.WithRR(new ConversionResolveResult(formattableStringType, isrr, Conversion.ImplicitInterpolatedStringConversion));
-				}
+				var result = HandleStringInterpolation(method, argumentList);
+				if (result.Expression != null)
+					return result;
 			}
 
-			int allowedParamCount = (method.ReturnType.IsKnownType(KnownTypeCode.Void) ? 1 : 0);
-			if (method.IsAccessor && (method.AccessorOwner.SymbolKind == SymbolKind.Indexer || argumentList.ExpectedParameters.Length == allowedParamCount))
+			if (IsWrittenAsMemberAccess(method))
 			{
-				argumentList.CheckNoNamedOrOptionalArguments();
-				return HandleAccessorCall(expectedTargetDetails, method, target, argumentList.Arguments.ToList(), argumentList.ArgumentNames);
+				// Only an indexer access has an argument list to carry names or leave arguments out of.
+				if (method.AccessorOwner!.SymbolKind != SymbolKind.Indexer)
+				{
+					argumentList.CheckNoNamedOrOptionalArguments();
+				}
+				return HandleAccessorCall(expectedTargetDetails, method, target, argumentList);
 			}
 
 			if (IsDelegateEqualityComparison(method, argumentList.Arguments))
@@ -411,14 +541,82 @@ namespace ICSharpCode.Decompiler.CSharp
 				return HandleImplicitConversion(method, argumentList.Arguments[0]);
 			}
 
+			if (settings.FirstClassSpanTypes && argumentList.Length == 1
+				&& (IsStringToReadOnlySpanCharAsSpan(method) || IsReadOnlySpanCastUp(method)))
+			{
+				// The C# 14 compiler emits these helpers for implicit span conversions; fold the
+				// call back into the conversion. Only safe when the conversion actually applies
+				// to this argument type - otherwise keep the call (e.g. AsSpan on a null literal).
+				var spanConv = CSharpConversions.Get(expressionBuilder.compilation)
+					.ImplicitConversion(argumentList.Arguments[0].Type, method.ReturnType);
+				if (spanConv.IsImplicitSpanConversion)
+				{
+					argumentList.CheckNoNamedOrOptionalArguments();
+					return HandleImplicitConversion(method, argumentList.Arguments[0]);
+				}
+			}
+
+			if (settings.InlineArrays
+				&& method is { DeclaringType.FullName: "<PrivateImplementationDetails>", Name: "InlineArrayAsSpan" or "InlineArrayAsReadOnlySpan" }
+				&& argumentList.Length == 2)
+			{
+				argumentList.CheckNoNamedOrOptionalArguments();
+				var arrayType = method.TypeArguments[0];
+				var arrayLength = arrayType.GetInlineArrayLength();
+				var arrayElementType = arrayType.GetInlineArrayElementType();
+				var argument = argumentList.Arguments[0];
+				var spanLengthExpr = argumentList.Arguments[1];
+				var targetType = method.ReturnType;
+				var spanType = typeSystem.FindType(KnownTypeCode.SpanOfT);
+				if (argument.Expression is DirectionExpression { FieldDirection: FieldDirection.In or FieldDirection.Ref, Expression: var lvalueExpr })
+				{
+					// `(TargetType)(in arg)` is invalid syntax.
+					// Also, `f(in arg)` is invalid when there's an implicit conversion involved.
+					argument = argument.UnwrapChild(lvalueExpr);
+				}
+				if (spanLengthExpr.ResolveResult.ConstantValue is int spanLength && spanLength <= arrayLength)
+				{
+					if (spanLength < arrayLength)
+					{
+						argument = new IndexerExpression(argument.Expression, new BinaryOperatorExpression {
+							Operator = BinaryOperatorType.Range,
+							Right = spanLengthExpr.Expression
+						}).WithRR(new ResolveResult(new ParameterizedType(spanType, arrayElementType))).WithoutILInstruction();
+						if (targetType.IsKnownType(KnownTypeCode.SpanOfT))
+						{
+							return argument;
+						}
+					}
+					return new CastExpression(expressionBuilder.ConvertType(targetType), argument.Expression)
+					.WithRR(new ConversionResolveResult(targetType, argument.ResolveResult, Conversion.InlineArrayConversion));
+				}
+			}
+
+			if (settings.LiftNullables && method.Name == "GetValueOrDefault"
+				&& method.DeclaringType.IsKnownType(KnownTypeCode.NullableOfT)
+				&& method.DeclaringType.TypeArguments[0].IsKnownType(KnownTypeCode.Boolean)
+				&& argumentList.Length == 0
+				&& !IntroduceQueryExpressions.IsNullConditional(target))
+			{
+				argumentList.CheckNoNamedOrOptionalArguments();
+				return new BinaryOperatorExpression(
+					target.Expression,
+					BinaryOperatorType.Equality,
+					new PrimitiveExpression(true))
+					.WithRR(new CSharpInvocationResolveResult(target.ResolveResult, method,
+						argumentList.GetArgumentResolveResults(), isExpandedForm: argumentList.IsExpandedForm));
+			}
+
 			var transform = GetRequiredTransformationsForCall(expectedTargetDetails, method, ref target,
-				ref argumentList, CallTransformation.All, out IParameterizedMember foundMethod);
+				ref argumentList, ReferenceTransformation.All, out IParameterizedMember? foundMethod);
+			// GetRequiredTransformationsForCall always assigns foundMethod (the resolved overload or 'method').
+			Debug.Assert(foundMethod != null);
 
 			// Note: after this, 'method' and 'foundMethod' may differ,
 			// but as far as allowed by IsAppropriateCallTarget().
 
 			// Need to update list of parameter names, because foundMethod is different and thus might use different names.
-			if (!method.Equals(foundMethod) && argumentList.ParameterNames.Length >= foundMethod.Parameters.Count)
+			if (!method.Equals(foundMethod) && argumentList.ParameterNames.Length >= foundMethod!.Parameters.Count)
 			{
 				for (int i = 0; i < foundMethod.Parameters.Count; i++)
 				{
@@ -429,11 +627,25 @@ namespace ICSharpCode.Decompiler.CSharp
 			Expression targetExpr;
 			string methodName = method.Name;
 			AstNodeCollection<AstType> typeArgumentList;
-			if ((transform & CallTransformation.NoOptionalArgumentAllowed) != 0)
+			if ((transform & ReferenceTransformation.NoNamedArgsForPrettiness) != 0)
+			{
+				argumentList.AddNamesToPrimitiveValues = false;
+			}
+			if ((transform & ReferenceTransformation.NoOptionalArgumentAllowed) != 0)
 			{
 				argumentList.FirstOptionalArgumentIndex = -1;
 			}
-			if ((transform & CallTransformation.RequireTarget) != 0)
+
+			if (TryUseExtensionMethodSyntax(foundMethod, transform, argumentList, out var extensionTarget,
+				out var extensionTargetResolveResult))
+			{
+				return new InvocationExpression(extensionTarget, argumentList.GetArgumentExpressions(skipCount: 1))
+					.WithRR(new CSharpInvocationResolveResult(extensionTargetResolveResult, foundMethod,
+						argumentList.GetArgumentResolveResultsDirect(skipCount: 1),
+						isExtensionMethodInvocation: true, isExpandedForm: argumentList.IsExpandedForm));
+			}
+
+			if ((transform & ReferenceTransformation.RequireTarget) != 0)
 			{
 				targetExpr = new MemberReferenceExpression(target.Expression, methodName);
 				typeArgumentList = ((MemberReferenceExpression)targetExpr).TypeArguments;
@@ -448,6 +660,10 @@ namespace ICSharpCode.Decompiler.CSharp
 					targetExpr = new MemberReferenceExpression(castExpression, methodName);
 					typeArgumentList = ((MemberReferenceExpression)targetExpr).TypeArguments;
 				}
+				if (constrainedTo != null && targetExpr is MemberReferenceExpression { Target: CastExpression cast })
+				{
+					cast.AddTrailingTrivia(new Comment("cast due to constrained. prefix", CommentType.MultiLine));
+				}
 			}
 			else
 			{
@@ -455,11 +671,80 @@ namespace ICSharpCode.Decompiler.CSharp
 				typeArgumentList = ((IdentifierExpression)targetExpr).TypeArguments;
 			}
 
-			if ((transform & CallTransformation.RequireTypeArguments) != 0 && (!settings.AnonymousTypes || !method.TypeArguments.Any(a => a.ContainsAnonymousType())))
+			if ((transform & ReferenceTransformation.RequireTypeArguments) != 0 && (!settings.AnonymousTypes || !method.TypeArguments.Any(a => a.ContainsAnonymousType())))
 				typeArgumentList.AddRange(method.TypeArguments.Select(expressionBuilder.ConvertType));
 			return new InvocationExpression(targetExpr, argumentList.GetArgumentExpressions())
 				.WithRR(new CSharpInvocationResolveResult(target.ResolveResult, foundMethod,
 					argumentList.GetArgumentResolveResultsDirect(), isExpandedForm: argumentList.IsExpandedForm));
+		}
+
+		private ExpressionWithResolveResult HandleStringInterpolation(IMethod method, ArgumentList argumentList)
+		{
+			if (!TryGetStringInterpolationTokens(argumentList, out string? format, out var tokens))
+				return default;
+
+			var arguments = argumentList.Arguments;
+			var content = new List<InterpolatedStringContent>();
+
+			bool unpackSingleElementArray = !argumentList.IsExpandedForm && argumentList.Length == 2
+				&& argumentList.Arguments[1].Expression is ArrayCreateExpression ace
+				&& ace.Initializer?.Elements.Count == 1;
+
+			void UnpackSingleElementArray(ref TranslatedExpression argument)
+			{
+				if (!unpackSingleElementArray)
+					return;
+				var arrayCreation = (ArrayCreateExpression)argumentList.Arguments[1].Expression;
+				var arrayCreationRR = (ArrayCreateResolveResult)argumentList.Arguments[1].ResolveResult;
+				var element = arrayCreation.Initializer!.Elements.First().Detach();
+				argument = new TranslatedExpression(element, arrayCreationRR.InitializerElements.First());
+			}
+
+			if (tokens.Count == 0)
+			{
+				return default;
+			}
+
+			foreach (var (kind, index, alignment, text) in tokens)
+			{
+				TranslatedExpression argument;
+				switch (kind)
+				{
+					case TokenKind.String:
+						content.Add(new InterpolatedStringText(text!));
+						break;
+					case TokenKind.Argument:
+						argument = arguments[index + 1];
+						UnpackSingleElementArray(ref argument);
+						content.Add(new Interpolation(argument));
+						break;
+					case TokenKind.ArgumentWithFormat:
+						argument = arguments[index + 1];
+						UnpackSingleElementArray(ref argument);
+						content.Add(new Interpolation(argument, suffix: text));
+						break;
+					case TokenKind.ArgumentWithAlignment:
+						argument = arguments[index + 1];
+						UnpackSingleElementArray(ref argument);
+						content.Add(new Interpolation(argument, alignment));
+						break;
+					case TokenKind.ArgumentWithAlignmentAndFormat:
+						argument = arguments[index + 1];
+						UnpackSingleElementArray(ref argument);
+						content.Add(new Interpolation(argument, alignment, text));
+						break;
+				}
+			}
+			var formattableStringType = expressionBuilder.compilation.FindType(KnownTypeCode.FormattableString);
+			var isrr = new InterpolatedStringResolveResult(expressionBuilder.compilation.FindType(KnownTypeCode.String),
+				format, argumentList.GetArgumentResolveResults(1).ToArray());
+			var expr = new InterpolatedStringExpression();
+			expr.Content.AddRange(content);
+			if (method.Name == "Format")
+				return expr.WithRR(isrr);
+			return new CastExpression(expressionBuilder.ConvertType(formattableStringType),
+				expr.WithRR(isrr))
+				.WithRR(new ConversionResolveResult(formattableStringType, isrr, Conversion.ImplicitInterpolatedStringConversion));
 		}
 
 		/// <summary>
@@ -497,9 +782,14 @@ namespace ICSharpCode.Decompiler.CSharp
 			argumentList.ArgumentNames = null;
 			argumentList.AddNamesToPrimitiveValues = false;
 			argumentList.UseImplicitlyTypedOut = false;
+			// Collection initializer syntax has nowhere to put a target or type arguments, so
+			// casting the arguments is the only way left to pin the Add method down.
 			var transform = GetRequiredTransformationsForCall(expectedTargetDetails, method, ref unused,
-				ref argumentList, CallTransformation.None, out _);
-			Debug.Assert(transform == CallTransformation.None || transform == CallTransformation.NoOptionalArgumentAllowed);
+				ref argumentList,
+				ReferenceTransformation.CastArguments | ReferenceTransformation.NoOptionalArgumentAllowed
+					| ReferenceTransformation.NoNamedArgsForPrettiness,
+				out _);
+			Debug.Assert((transform & ~(ReferenceTransformation.NoOptionalArgumentAllowed | ReferenceTransformation.NoNamedArgsForPrettiness)) == 0);
 
 			// Calls with only one argument do not need an array initializer expression to wrap them.
 			// Any special cases are handled by the caller (i.e., ExpressionBuilder.TranslateObjectAndCollectionInitializer)
@@ -518,7 +808,7 @@ namespace ICSharpCode.Decompiler.CSharp
 				skipCount = 0;
 			}
 
-			if ((transform & CallTransformation.NoOptionalArgumentAllowed) != 0)
+			if ((transform & ReferenceTransformation.NoOptionalArgumentAllowed) != 0)
 				argumentList.FirstOptionalArgumentIndex = -1;
 
 			return new ArrayInitializerExpression(argumentList.GetArgumentExpressions(skipCount))
@@ -527,8 +817,10 @@ namespace ICSharpCode.Decompiler.CSharp
 		}
 
 		public ExpressionWithResolveResult BuildDictionaryInitializerExpression(OpCode callOpCode, IMethod method,
-			InitializedObjectResolveResult target, IReadOnlyList<ILInstruction> indices, ILInstruction value = null)
+			InitializedObjectResolveResult target, IReadOnlyList<ILInstruction> indices, ILInstruction? value = null)
 		{
+			if (method is null)
+				throw new ArgumentNullException(nameof(method));
 			ExpectedTargetDetails expectedTargetDetails = new ExpectedTargetDetails { CallOpCode = callOpCode };
 
 			var callArguments = new List<ILInstruction>();
@@ -536,14 +828,16 @@ namespace ICSharpCode.Decompiler.CSharp
 			callArguments.AddRange(indices);
 			callArguments.Add(value ?? new Nop());
 
-			var argumentList = BuildArgumentList(expectedTargetDetails, target, method, 1, callArguments, null);
+			// An index initializer is an assignment whatever the accessor looks like, even for a
+			// parameterized property, which has no access syntax of its own.
+			var argumentList = BuildArgumentList(expectedTargetDetails, target, method, 1, callArguments, null,
+				writtenAsAssignment: true);
 			var unused = new IdentifierExpression("initializedObject").WithRR(target).WithoutILInstruction();
 
-			var assignment = HandleAccessorCall(expectedTargetDetails, method, unused,
-				argumentList.Arguments.ToList(), argumentList.ArgumentNames);
+			var assignment = HandleAccessorCall(expectedTargetDetails, method, unused, argumentList);
 
-			if (((AssignmentExpression)assignment).Left is IndexerExpression indexer && !indexer.Target.IsNull)
-				indexer.Target.ReplaceWith(n => null);
+			if (((AssignmentExpression)assignment).Left is IndexerExpression indexer && indexer.Target is not null)
+				indexer.Target.Remove();
 
 			if (value != null)
 				return assignment;
@@ -566,7 +860,7 @@ namespace ICSharpCode.Decompiler.CSharp
 			);
 		}
 
-		private bool TryGetStringInterpolationTokens(ArgumentList argumentList, out string format, out List<(TokenKind, int, string)> tokens)
+		private bool TryGetStringInterpolationTokens(ArgumentList argumentList, [NotNullWhen(true)] out string? format, [NotNullWhen(true)] out List<(TokenKind Kind, int Index, int Alignment, string? Format)>? tokens)
 		{
 			tokens = null;
 			format = null;
@@ -577,33 +871,56 @@ namespace ICSharpCode.Decompiler.CSharp
 				return false;
 			if (!arguments.Skip(1).All(a => !a.Expression.DescendantsAndSelf.OfType<PrimitiveExpression>().Any(p => p.Value is string)))
 				return false;
-			tokens = new List<(TokenKind, int, string)>();
+			tokens = new List<(TokenKind Kind, int Index, int Alignment, string? Format)>();
 			int i = 0;
-			format = (string)crr.ConstantValue;
+			format = (string)crr.ConstantValue!;
 			foreach (var (kind, data) in TokenizeFormatString(format))
 			{
 				int index;
+				string[] arg;
 				switch (kind)
 				{
 					case TokenKind.Error:
 						return false;
 					case TokenKind.String:
-						tokens.Add((kind, -1, data));
+						tokens.Add((kind, -1, 0, data));
 						break;
 					case TokenKind.Argument:
 						if (!int.TryParse(data, out index) || index != i)
 							return false;
 						i++;
-						tokens.Add((kind, index, null));
+						tokens.Add((kind, index, 0, null));
 						break;
 					case TokenKind.ArgumentWithFormat:
-						string[] arg = data.Split(new[] { ':' }, 2);
+						arg = data!.Split(new[] { ':' }, 2);
 						if (arg.Length != 2 || arg[1].Length == 0)
 							return false;
 						if (!int.TryParse(arg[0], out index) || index != i)
 							return false;
 						i++;
-						tokens.Add((kind, index, arg[1]));
+						tokens.Add((kind, index, 0, arg[1]));
+						break;
+					case TokenKind.ArgumentWithAlignment:
+						arg = data!.Split(new[] { ',' }, 2);
+						if (arg.Length != 2 || arg[1].Length == 0)
+							return false;
+						if (!int.TryParse(arg[0], out index) || index != i)
+							return false;
+						if (!int.TryParse(arg[1], out int alignment))
+							return false;
+						i++;
+						tokens.Add((kind, index, alignment, null));
+						break;
+					case TokenKind.ArgumentWithAlignmentAndFormat:
+						arg = data!.Split(new[] { ',', ':' }, 3);
+						if (arg.Length != 3 || arg[1].Length == 0 || arg[2].Length == 0)
+							return false;
+						if (!int.TryParse(arg[0], out index) || index != i)
+							return false;
+						if (!int.TryParse(arg[1], out alignment))
+							return false;
+						i++;
+						tokens.Add((kind, index, alignment, arg[2]));
 						break;
 					default:
 						return false;
@@ -617,10 +934,12 @@ namespace ICSharpCode.Decompiler.CSharp
 			Error,
 			String,
 			Argument,
-			ArgumentWithFormat
+			ArgumentWithFormat,
+			ArgumentWithAlignment,
+			ArgumentWithAlignmentAndFormat,
 		}
 
-		private IEnumerable<(TokenKind, string)> TokenizeFormatString(string value)
+		private IEnumerable<(TokenKind, string?)> TokenizeFormatString(string value)
 		{
 			int pos = -1;
 
@@ -670,9 +989,14 @@ namespace ICSharpCode.Decompiler.CSharp
 							sb.Clear();
 							kind = TokenKind.String;
 						}
+						else if (Peek() == '}')
+						{
+							sb.Append("}}");
+							Next();
+						}
 						else
 						{
-							sb.Append((char)next);
+							yield return (TokenKind.Error, null);
 						}
 						break;
 					case ':':
@@ -680,7 +1004,18 @@ namespace ICSharpCode.Decompiler.CSharp
 						{
 							kind = TokenKind.ArgumentWithFormat;
 						}
+						else if (kind == TokenKind.ArgumentWithAlignment)
+						{
+							kind = TokenKind.ArgumentWithAlignmentAndFormat;
+						}
 						sb.Append(':');
+						break;
+					case ',':
+						if (kind == TokenKind.Argument)
+						{
+							kind = TokenKind.ArgumentWithAlignment;
+						}
+						sb.Append(',');
 						break;
 					default:
 						sb.Append((char)next);
@@ -696,14 +1031,15 @@ namespace ICSharpCode.Decompiler.CSharp
 			}
 		}
 
-		private ArgumentList BuildArgumentList(ExpectedTargetDetails expectedTargetDetails, ResolveResult target, IMethod method,
-			int firstParamIndex, IReadOnlyList<ILInstruction> callArguments, IReadOnlyList<int> argumentToParameterMap)
+		private ArgumentList BuildArgumentList(ExpectedTargetDetails expectedTargetDetails, ResolveResult? target, IMethod method,
+			int firstParamIndex, IReadOnlyList<ILInstruction> callArguments, IReadOnlyList<int>? argumentToParameterMap,
+			bool writtenAsAssignment = false)
 		{
 			ArgumentList list = new ArgumentList();
 
 			// Translate arguments to the expected parameter types
 			var arguments = new List<TranslatedExpression>(method.Parameters.Count);
-			string[] argumentNames = null;
+			string[]? argumentNames = null;
 			Debug.Assert(callArguments.Count == firstParamIndex + method.Parameters.Count);
 			var expectedParameters = new List<IParameter>(method.Parameters.Count); // parameters, but in argument order
 			bool isExpandedForm = false;
@@ -716,6 +1052,11 @@ namespace ICSharpCode.Decompiler.CSharp
 			// >= 0 - the index of the first argument that can be removed, because it is optional
 			// and is the default value of the parameter. 
 			int firstOptionalArgumentIndex = expressionBuilder.settings.OptionalArguments ? -2 : -1;
+			// Only an accessor written as an access or an index initializer takes its assigned
+			// value out of the argument list; one written as a call passes it like any other.
+			bool isSetter = method.ReturnType.IsKnownType(KnownTypeCode.Void)
+				&& (writtenAsAssignment || IsWrittenAsMemberAccess(method));
+			IReadOnlyList<IParameter> namedParameters = GetNamedParameters(method);
 			for (int i = firstParamIndex; i < callArguments.Count; i++)
 			{
 				IParameter parameter;
@@ -727,10 +1068,13 @@ namespace ICSharpCode.Decompiler.CSharp
 						// assign names to that argument and all following arguments:
 						argumentNames = new string[method.Parameters.Count];
 					}
-					parameter = method.Parameters[argumentToParameterMap[i]];
-					if (argumentNames != null)
+					int parameterIndex = argumentToParameterMap[i];
+					parameter = method.Parameters[parameterIndex];
+					// The assigned value is past the end of the indexer's parameters.
+					if (argumentNames != null && parameterIndex < namedParameters.Count
+						&& AssignVariableNames.IsValidName(namedParameters[parameterIndex].Name))
 					{
-						argumentNames[arguments.Count] = parameter.Name;
+						argumentNames[arguments.Count] = namedParameters[parameterIndex].Name;
 					}
 				}
 				else
@@ -742,16 +1086,24 @@ namespace ICSharpCode.Decompiler.CSharp
 				{
 					isPrimitiveValue.Set(arguments.Count);
 				}
-				if (IsOptionalArgument(parameter, arg))
+				// The assigned value of a setter is not part of the argument list, so it does not
+				// end the run of optional arguments either.
+				if (!(isSetter && i + 1 == callArguments.Count))
 				{
-					if (firstOptionalArgumentIndex == -2)
-						firstOptionalArgumentIndex = i - firstParamIndex;
+					if (IsOptionalArgument(parameter, arg))
+					{
+						if (firstOptionalArgumentIndex == -2)
+							firstOptionalArgumentIndex = i - firstParamIndex;
+					}
+					else if (firstOptionalArgumentIndex != -1)
+					{
+						firstOptionalArgumentIndex = -2;
+					}
 				}
-				else
-				{
-					firstOptionalArgumentIndex = -2;
-				}
-				if (parameter.IsParams && i + 1 == callArguments.Count && argumentToParameterMap == null)
+				// An assignment has no argument list to spread a parameter array over, and C#
+				// cannot declare a property whose value is one.
+				if (expressionBuilder.settings.ExpandParamsArguments && parameter.IsParams && !isSetter
+					&& i + 1 == callArguments.Count && argumentToParameterMap == null)
 				{
 					// Parameter is marked params
 					// If the argument is an array creation, inline all elements into the call and add missing default values.
@@ -777,10 +1129,28 @@ namespace ICSharpCode.Decompiler.CSharp
 				}
 
 				arg = arg.ConvertTo(parameterType, expressionBuilder, allowImplicitConversion: arg.Type.Kind != TypeKind.Dynamic);
+				if (method.IsOperator)
+				{
+					// Operator calls do not survive as calls: ReplaceMethodCallsWithOperators turns
+					// them into operator or cast syntax, where the operand determines which operator
+					// is resolved, so it must keep its explicit type. Unlike the null literal, which
+					// still narrows the candidate set, the default literal converts to every type:
+					// C# rejects it as the operand of any binary operator except == and != (CS8310).
+					arg = arg.RestoreDefaultLiteralType(expressionBuilder);
+				}
 
 				if (parameter.ReferenceKind != ReferenceKind.None)
 				{
-					arg = ExpressionBuilder.ChangeDirectionExpressionTo(arg, parameter.ReferenceKind);
+					arg = ExpressionBuilder.ChangeDirectionExpressionTo(arg, parameter.ReferenceKind, callArguments[i] is AddressOf);
+					// An rvalue bound to an 'in' parameter loses its DirectionExpression above and
+					// is an ordinary value expression: give a span conversion the same chance to
+					// become implicit that by-value arguments get from the ConvertTo call above.
+					if (arg.Expression is not DirectionExpression
+						&& parameter.Type.SkipModifiers() is ByReferenceType brt
+						&& arg.ResolveResult is ConversionResolveResult { Conversion.IsImplicitSpanConversion: true })
+					{
+						arg = arg.ConvertTo(brt.ElementType, expressionBuilder, allowImplicitConversion: true);
+					}
 				}
 
 				arguments.Add(arg);
@@ -807,29 +1177,17 @@ namespace ICSharpCode.Decompiler.CSharp
 			return p.Type.IsKnownType(KnownTypeCode.Boolean);
 		}
 
-		private bool TransformParamsArgument(ExpectedTargetDetails expectedTargetDetails, ResolveResult targetResolveResult,
-			IMethod method, IParameter parameter, TranslatedExpression arg, ref List<IParameter> expectedParameters,
+		private bool TransformParamsArgument(ExpectedTargetDetails expectedTargetDetails, ResolveResult? targetResolveResult,
+			IMethod method, IParameter parameter, TranslatedExpression paramsArgument, ref List<IParameter> expectedParameters,
 			ref List<TranslatedExpression> arguments)
 		{
-			if (CheckArgument(out int length, out IType elementType))
+			var expressionBuilder = this.expressionBuilder;
+			if (ExtractArguments(out var expandedParameters, out var expandedArguments))
 			{
-				var expandedParameters = new List<IParameter>(expectedParameters);
-				var expandedArguments = new List<TranslatedExpression>(arguments);
-				if (length > 0)
-				{
-					var arrayElements = ((ArrayCreateExpression)arg.Expression).Initializer.Elements.ToArray();
-					for (int j = 0; j < length; j++)
-					{
-						expandedParameters.Add(new DefaultParameter(elementType, parameter.Name + j));
-						if (j < arrayElements.Length)
-							expandedArguments.Add(new TranslatedExpression(arrayElements[j]));
-						else
-							expandedArguments.Add(expressionBuilder.GetDefaultValueExpression(elementType).WithoutILInstruction());
-					}
-				}
-				if (IsUnambiguousCall(expectedTargetDetails, method, targetResolveResult, Empty<IType>.Array,
-					expandedArguments.SelectArray(a => a.ResolveResult), argumentNames: null,
-					firstOptionalArgumentIndex: -1, out _,
+				expandedParameters.InsertRange(0, expectedParameters);
+				expandedArguments.InsertRange(0, arguments);
+				if (Disambiguator.IsUnambiguousCall(expressionBuilder, expectedTargetDetails, method, targetResolveResult, Empty<IType>.Array,
+					expandedArguments.SelectArray(a => a.ResolveResult), argumentNames: null, out _,
 					out var bestCandidateIsExpandedForm) == OverloadResolutionErrors.None && bestCandidateIsExpandedForm)
 				{
 					expectedParameters = expandedParameters;
@@ -839,36 +1197,82 @@ namespace ICSharpCode.Decompiler.CSharp
 			}
 			return false;
 
-			bool CheckArgument(out int len, out IType t)
+			bool ExtractArguments([NotNullWhen(true)] out List<IParameter>? parameters, [NotNullWhen(true)] out List<TranslatedExpression>? arguments)
 			{
-				len = 0;
-				t = null;
-				if (arg.ResolveResult is CSharpInvocationResolveResult csirr &&
-					csirr.Arguments.Count == 0 && csirr.Member is IMethod emptyMethod &&
-					emptyMethod.IsStatic &&
-					"System.Array.Empty" == emptyMethod.FullName &&
-					emptyMethod.TypeArguments.Count == 1)
+				parameters = null;
+				arguments = null;
+				// Every expanded argument binds to the element type of the params collection, so
+				// that is the type the parameters standing in for them carry. The argument itself
+				// may be an array of a more derived element type, because the collection is
+				// covariant in it. Unpack it the same way overload resolution does, and give up
+				// where overload resolution would give up on the expanded form as well.
+				IType paramsElementType;
+				if (parameter.Type is ArrayType { Dimensions: 1 } paramsArray)
+					paramsElementType = paramsArray.ElementType;
+				else if (parameter.Type.IsKnownType(KnownTypeCode.ReadOnlySpanOfT)
+					|| parameter.Type.IsKnownType(KnownTypeCode.SpanOfT)
+					|| parameter.Type.IsArrayInterfaceType())
+					paramsElementType = parameter.Type.TypeArguments[0];
+				else
+					return false;
+				switch (paramsArgument.ResolveResult)
 				{
-					t = emptyMethod.TypeArguments[0];
-					return true;
+					case CSharpInvocationResolveResult { Member: IMethod method, Arguments: var args }:
+						// match System.Array.Empty<T>()
+						if (args is [] && method is { IsStatic: true, FullName: "System.Array.Empty", TypeArguments: [_] })
+						{
+							arguments = new();
+							parameters = new();
+							return true;
+						}
+						// match System.ReadOnlySpan<T>..ctor(ref readonly T)
+						if (paramsArgument.Expression is ObjectCreateExpression oce
+							&& method is {
+								IsConstructor: true,
+								Parameters: [{ ReferenceKind: ReferenceKind.RefReadOnly, Type: ByReferenceType { ElementType: var paramType } }],
+								DeclaringType: { TypeArguments: [var type2] } declaringType
+							}
+							&& declaringType.IsKnownType(KnownTypeCode.ReadOnlySpanOfT)
+							&& paramType.Equals(type2))
+						{
+							arguments = new() { new TranslatedExpression(oce.Arguments.Single()) };
+							parameters = new() { new DefaultParameter(paramsElementType, string.Empty) };
+							return true;
+						}
+						return false;
+					case ArrayCreateResolveResult { SizeArguments: [{ ConstantValue: int arrayLength }] }:
+						arguments = new(((ArrayCreateExpression)paramsArgument.Expression).Initializer?.Elements.Select(e => new TranslatedExpression(e)) ?? []);
+						parameters = new List<IParameter>(arrayLength);
+						for (int i = 0; i < arrayLength; i++)
+						{
+							parameters.Add(new DefaultParameter(paramsElementType, string.Empty));
+							if (arguments.Count <= i)
+								arguments.Add(new TranslatedExpression(expressionBuilder.GetDefaultValueExpression(paramsElementType).WithoutILInstruction()));
+						}
+						return true;
+					case ConversionResolveResult { Conversion.IsImplicitSpanConversion: true, Input: ArrayCreateResolveResult { SizeArguments: [{ ConstantValue: int arrayLength }] } }:
+						var expr = paramsArgument.Expression is CastExpression cast ? cast.Expression : paramsArgument.Expression;
+						arguments = new(((ArrayCreateExpression)expr).Initializer?.Elements.Select(e => new TranslatedExpression(e)) ?? []);
+						parameters = new List<IParameter>(arrayLength);
+						for (int i = 0; i < arrayLength; i++)
+						{
+							parameters.Add(new DefaultParameter(paramsElementType, string.Empty));
+							if (arguments.Count <= i)
+								arguments.Add(new TranslatedExpression(expressionBuilder.GetDefaultValueExpression(paramsElementType).WithoutILInstruction()));
+						}
+						return true;
+					default:
+						return false;
 				}
-
-				if (arg.ResolveResult is ArrayCreateResolveResult acrr &&
-					acrr.SizeArguments.Count == 1 &&
-					acrr.SizeArguments[0].IsCompileTimeConstant &&
-					acrr.SizeArguments[0].ConstantValue is int l)
-				{
-					len = l;
-					t = ((ArrayType)acrr.Type).ElementType;
-					return true;
-				}
-				return false;
 			}
 		}
 
-		bool IsOptionalArgument(IParameter parameter, TranslatedExpression arg)
+		internal static bool IsOptionalArgument(IParameter parameter, TranslatedExpression arg)
 		{
-			if (!parameter.IsOptional || !arg.ResolveResult.IsCompileTimeConstant)
+			if (!parameter.IsOptional)
+				return false;
+
+			if (!arg.ResolveResult.IsCompileTimeConstant && arg.ResolveResult is not ConversionResolveResult { Conversion.IsNullLiteralConversion: true })
 				return false;
 			if (parameter.GetAttributes().Any(a => a.AttributeType.IsKnownType(KnownAttribute.CallerMemberName)
 				|| a.AttributeType.IsKnownType(KnownAttribute.CallerFilePath)
@@ -877,248 +1281,156 @@ namespace ICSharpCode.Decompiler.CSharp
 			return object.Equals(parameter.GetConstantValue(), arg.ResolveResult.ConstantValue);
 		}
 
-		[Flags]
-		enum CallTransformation
+		/// <summary>
+		/// Extension method syntax is the shortest spelling of a call to an extension method: the
+		/// first argument becomes the target and the rest stay arguments. It is only available
+		/// when the name resolves back to <paramref name="foundMethod"/> from that target, which a
+		/// competing instance method, another extension method in scope or an inaccessible
+		/// declaring type can all prevent - then the call is written as the static call it is in
+		/// IL and this returns false.
+		/// <paramref name="transform"/> must be the one the call is being written with, because
+		/// whether the type arguments are spelled out decides which overloads the name reaches.
+		/// </summary>
+		private bool TryUseExtensionMethodSyntax(IParameterizedMember foundMethod, ReferenceTransformation transform,
+			ArgumentList argumentList, [NotNullWhen(true)] out MemberReferenceExpression? memberRef,
+			[NotNullWhen(true)] out ResolveResult? targetResolveResult)
 		{
-			None = 0,
-			RequireTarget = 1,
-			RequireTypeArguments = 2,
-			NoOptionalArgumentAllowed = 4,
-			All = 7
+			memberRef = null;
+			targetResolveResult = null;
+			// The overload the call resolves to, not the one the IL named: the two can differ in
+			// the type arguments inference substitutes, and the check below compares the candidate
+			// it finds against this one for equality.
+			if (foundMethod is not IMethod method)
+				return false;
+			// IsExtensionMethod is false unless settings.ExtensionMethods asked the type system
+			// for it, so it is the gate for the setting as well.
+			if (!method.IsExtensionMethod || argumentList.Length == 0)
+				return false;
+			// Without using declarations every type is named in full instead. An extension method
+			// has no such spelling: the namespace has to be imported for the name to be found.
+			if (!settings.UsingDeclarations)
+				return false;
+			// The target is the first argument, so it has to be written first and positionally.
+			var argumentNames = argumentList.GetArgumentNames();
+			if (argumentNames?[0] != null)
+				return false;
+			if (argumentList.ArgumentToParameterMap is { } map && map[0] != 0)
+				return false;
+			if (argumentList.FirstOptionalArgumentIndex == 0)
+				return false;
+
+			var firstArgument = argumentList.Arguments[0];
+			bool writeTypeArguments = (transform & ReferenceTransformation.RequireTypeArguments) != 0
+				&& (!settings.AnonymousTypes || !method.TypeArguments.Any(a => a.ContainsAnonymousType()));
+			IType[] typeArguments = writeTypeArguments ? method.TypeArguments.ToArray() : Empty<IType>.Array;
+
+			var directionExpression = firstArgument.Expression as DirectionExpression;
+			ResolveResult target = firstArgument.ResolveResult;
+			if (target is ConstantResolveResult { ConstantValue: null } nullLiteral)
+			{
+				// A null literal has no type of its own; the target type is the one the parameter
+				// gives it, which the cast below then writes out.
+				target = new ConversionResolveResult(method.Parameters[0].Type, nullLiteral,
+					Conversion.NullLiteralConversion);
+			}
+			else if (directionExpression != null)
+			{
+				if (!settings.RefExtensionMethods || directionExpression.FieldDirection == FieldDirection.Out)
+					return false;
+				target = directionExpression.Expression.GetResolveResult();
+			}
+
+			int actualArgumentCount = argumentList.GetActualArgumentCount();
+			string[]? remainingNames = argumentNames?.Take(actualArgumentCount).Skip(1).ToArray();
+			if (remainingNames != null && remainingNames.All(name => name == null))
+				remainingNames = null;
+			if (!resolver.CanTransformToExtensionMethodCall(method, typeArguments, target,
+				argumentList.GetArgumentResolveResults(skipCount: 1).ToArray(), remainingNames))
+			{
+				return false;
+			}
+
+			Expression targetExpression;
+			if (directionExpression != null)
+			{
+				// 'ref x.Ext()' is not a thing: the target carries the reference implicitly.
+				targetExpression = directionExpression.Expression.Detach();
+			}
+			else if (firstArgument.Expression is NullReferenceExpression)
+			{
+				targetExpression = new CastExpression(
+					expressionBuilder.ConvertType(method.Parameters[0].Type), firstArgument.Expression);
+			}
+			else
+			{
+				targetExpression = firstArgument.Expression;
+			}
+			memberRef = new MemberReferenceExpression(targetExpression, method.Name);
+			if (writeTypeArguments)
+			{
+				memberRef.TypeArguments.AddRange(method.TypeArguments.Select(expressionBuilder.ConvertType));
+			}
+			targetResolveResult = target;
+			return true;
 		}
 
-		private CallTransformation GetRequiredTransformationsForCall(ExpectedTargetDetails expectedTargetDetails, IMethod method,
-			ref TranslatedExpression target, ref ArgumentList argumentList, CallTransformation allowedTransforms, out IParameterizedMember foundMethod)
+		private ReferenceTransformation GetRequiredTransformationsForCall(ExpectedTargetDetails expectedTargetDetails, IMethod method,
+			ref TranslatedExpression target, ref ArgumentList argumentList, ReferenceTransformation allowedTransforms, out IParameterizedMember? foundMethod)
 		{
-			CallTransformation transform = CallTransformation.None;
+			ReferenceTransformation transform = ReferenceTransformation.None;
 
 			// initialize requireTarget flag
 			bool requireTarget;
-			ResolveResult targetResolveResult;
-			if ((allowedTransforms & CallTransformation.RequireTarget) != 0)
+			if ((allowedTransforms & ReferenceTransformation.RequireTarget) != 0)
 			{
-				if (settings.AlwaysQualifyMemberReferences || expressionBuilder.HidesVariableWithName(method.Name))
+				if (method.IsLocalFunction)
 				{
+					// A local function is never reached through a target.
+					requireTarget = settings.AlwaysQualifyMemberReferences
+						|| expressionBuilder.HidesVariableWithName(method.Name);
+				}
+				else if (method.Name == ".ctor" || method.Name == ".cctor")
+				{
+					// Always use target for base/this-ctor-call, the constructor initializer pattern depends on this
 					requireTarget = true;
 				}
 				else
 				{
-					if (method.IsLocalFunction)
-						requireTarget = false;
-					else if (method.IsStatic)
-						requireTarget = !expressionBuilder.IsCurrentOrContainingType(method.DeclaringTypeDefinition) || method.Name == ".cctor";
-					else if (method.Name == ".ctor")
-						requireTarget = true; // always use target for base/this-ctor-call, the constructor initializer pattern depends on this
-					else if (target.Expression is BaseReferenceExpression)
-						requireTarget = (expectedTargetDetails.CallOpCode != OpCode.CallVirt && method.IsVirtual);
-					else
-						requireTarget = !(target.Expression is ThisReferenceExpression);
+					requireTarget = expressionBuilder.RequiresQualifier(method, target,
+						nonVirtualDispatch: expectedTargetDetails.CallOpCode != OpCode.CallVirt);
 				}
-				targetResolveResult = requireTarget ? target.ResolveResult : null;
 			}
 			else
 			{
 				// HACK: this is a special case for collection initializer calls, they do not allow a target to be
 				// emitted, but we still need it for overload resolution.
 				requireTarget = true;
-				targetResolveResult = target.ResolveResult;
 			}
 
-			// initialize requireTypeArguments flag
-			bool requireTypeArguments;
-			IType[] typeArguments;
-			bool appliedRequireTypeArgumentsShortcut = false;
-			if (method.TypeParameters.Count > 0 && (allowedTransforms & CallTransformation.RequireTypeArguments) != 0
-				&& !IsPossibleExtensionMethodCallOnNull(method, argumentList.Arguments))
-			{
-				// The ambiguity resolution below only adds type arguments as last resort measure, however there are
-				// methods, such as Enumerable.OfType<TResult>(IEnumerable input) that always require type arguments,
-				// as those cannot be inferred from the parameters, which leads to bloated expressions full of extra casts
-				// that are no longer required once we add the type arguments.
-				// We lend overload resolution a hand by detecting such cases beforehand and requiring type arguments,
-				// if necessary.
-				if (!CanInferTypeArgumentsFromArguments(method, argumentList, expressionBuilder.typeInference))
-				{
-					requireTypeArguments = true;
-					typeArguments = method.TypeArguments.ToArray();
-					appliedRequireTypeArgumentsShortcut = true;
-				}
-				else
-				{
-					requireTypeArguments = false;
-					typeArguments = Empty<IType>.Array;
-				}
-			}
-			else
-			{
-				requireTypeArguments = false;
-				typeArguments = Empty<IType>.Array;
-			}
+			var disambiguator = Disambiguator.ForCall(expressionBuilder, method, argumentList, target,
+				requireTarget, expectedTargetDetails, allowedTransforms);
+			// Where even the most explicit spelling stays ambiguous, the call is written as it
+			// stands and annotated with the method it was meant to reach.
+			foundMethod = disambiguator.Resolved ? (IParameterizedMember?)disambiguator.FoundMember : method;
+			target = disambiguator.Target;
+			argumentList = disambiguator.Arguments;
+			requireTarget = disambiguator.RequireTarget;
+			bool requireTypeArguments = disambiguator.RequireTypeArguments;
 
-			bool targetCasted = false;
-			bool argumentsCasted = false;
-			OverloadResolutionErrors errors;
-			while ((errors = IsUnambiguousCall(expectedTargetDetails, method, targetResolveResult, typeArguments,
-				argumentList.GetArgumentResolveResults().ToArray(), argumentList.ArgumentNames, argumentList.FirstOptionalArgumentIndex, out foundMethod,
-				out var bestCandidateIsExpandedForm)) != OverloadResolutionErrors.None || bestCandidateIsExpandedForm != argumentList.IsExpandedForm)
-			{
-				switch (errors)
-				{
-					case OverloadResolutionErrors.TypeInferenceFailed:
-						if ((allowedTransforms & CallTransformation.RequireTypeArguments) != 0)
-						{
-							goto case OverloadResolutionErrors.WrongNumberOfTypeArguments;
-						}
-						goto default;
-					case OverloadResolutionErrors.WrongNumberOfTypeArguments:
-						Debug.Assert((allowedTransforms & CallTransformation.RequireTypeArguments) != 0);
-						if (requireTypeArguments)
-							goto default;
-						requireTypeArguments = true;
-						typeArguments = method.TypeArguments.ToArray();
-						continue;
-					case OverloadResolutionErrors.MissingArgumentForRequiredParameter:
-						if (argumentList.FirstOptionalArgumentIndex == -1)
-							goto default;
-						argumentList.FirstOptionalArgumentIndex = -1;
-						continue;
-					default:
-						// TODO : implement some more intelligent algorithm that decides which of these fixes (cast args, add target, cast target, add type args)
-						// is best in this case. Additionally we should not cast all arguments at once, but step-by-step try to add only a minimal number of casts.
-						if (argumentList.FirstOptionalArgumentIndex >= 0)
-						{
-							argumentList.FirstOptionalArgumentIndex = -1;
-						}
-						else if (!argumentsCasted)
-						{
-							// If we added type arguments beforehand, but that didn't make the code any better,
-							// undo that decision and add casts first.
-							if (appliedRequireTypeArgumentsShortcut)
-							{
-								requireTypeArguments = false;
-								typeArguments = Empty<IType>.Array;
-								appliedRequireTypeArgumentsShortcut = false;
-							}
-							argumentsCasted = true;
-							argumentList.UseImplicitlyTypedOut = false;
-							CastArguments(argumentList.Arguments, argumentList.ExpectedParameters);
-						}
-						else if ((allowedTransforms & CallTransformation.RequireTarget) != 0 && !requireTarget)
-						{
-							requireTarget = true;
-							targetResolveResult = target.ResolveResult;
-						}
-						else if ((allowedTransforms & CallTransformation.RequireTarget) != 0 && !targetCasted)
-						{
-							targetCasted = true;
-							target = target.ConvertTo(method.DeclaringType, expressionBuilder);
-							targetResolveResult = target.ResolveResult;
-						}
-						else if ((allowedTransforms & CallTransformation.RequireTypeArguments) != 0 && !requireTypeArguments)
-						{
-							requireTypeArguments = true;
-							typeArguments = method.TypeArguments.ToArray();
-						}
-						else
-						{
-							break;
-						}
-						continue;
-				}
-				// We've given up.
-				foundMethod = method;
-				break;
-			}
-			if ((allowedTransforms & CallTransformation.RequireTarget) != 0 && requireTarget)
-				transform |= CallTransformation.RequireTarget;
-			if ((allowedTransforms & CallTransformation.RequireTypeArguments) != 0 && requireTypeArguments)
-				transform |= CallTransformation.RequireTypeArguments;
+			if ((allowedTransforms & ReferenceTransformation.RequireTarget) != 0 && requireTarget)
+				transform |= ReferenceTransformation.RequireTarget;
+			if ((allowedTransforms & ReferenceTransformation.RequireTypeArguments) != 0 && requireTypeArguments)
+				transform |= ReferenceTransformation.RequireTypeArguments;
 			if (argumentList.FirstOptionalArgumentIndex < 0)
-				transform |= CallTransformation.NoOptionalArgumentAllowed;
+				transform |= ReferenceTransformation.NoOptionalArgumentAllowed;
+			if (!argumentList.AddNamesToPrimitiveValues)
+				transform |= ReferenceTransformation.NoNamedArgsForPrettiness;
 			return transform;
-		}
-
-		private bool IsPossibleExtensionMethodCallOnNull(IMethod method, IList<TranslatedExpression> arguments)
-		{
-			return method.IsExtensionMethod && arguments.Count > 0 && arguments[0].Expression is NullReferenceExpression;
-		}
-
-		static bool CanInferTypeArgumentsFromArguments(IMethod method, ArgumentList argumentList, TypeInference typeInference)
-		{
-			if (method.TypeParameters.Count == 0)
-				return true;
-			// always use unspecialized member, otherwise type inference fails
-			method = (IMethod)method.MemberDefinition;
-			IReadOnlyList<IType> paramTypesInArgumentOrder;
-			if (argumentList.ArgumentToParameterMap == null)
-				paramTypesInArgumentOrder = method.Parameters.SelectReadOnlyArray(p => p.Type);
-			else
-				paramTypesInArgumentOrder = argumentList.ArgumentToParameterMap
-					.SelectReadOnlyArray(
-						index => index >= 0 ? method.Parameters[index].Type : SpecialType.UnknownType
-					);
-			typeInference.InferTypeArguments(method.TypeParameters,
-				argumentList.Arguments.SelectReadOnlyArray(a => a.ResolveResult), paramTypesInArgumentOrder,
-				out bool success);
-			return success;
-		}
-
-		private void CastArguments(IList<TranslatedExpression> arguments, IList<IParameter> expectedParameters)
-		{
-			for (int i = 0; i < arguments.Count; i++)
-			{
-				if (settings.AnonymousTypes && expectedParameters[i].Type.ContainsAnonymousType())
-				{
-					if (arguments[i].Expression is LambdaExpression lambda)
-					{
-						ModifyReturnTypeOfLambda(lambda);
-					}
-				}
-				else
-				{
-					IType parameterType;
-					if (expectedParameters[i].Type.Kind == TypeKind.Dynamic)
-					{
-						parameterType = expressionBuilder.compilation.FindType(KnownTypeCode.Object);
-					}
-					else
-					{
-						parameterType = expectedParameters[i].Type;
-					}
-
-					arguments[i] = arguments[i].ConvertTo(parameterType, expressionBuilder, allowImplicitConversion: false);
-				}
-			}
 		}
 
 		static bool IsNullConditional(Expression expr)
 		{
 			return expr is UnaryOperatorExpression uoe && uoe.Operator == UnaryOperatorType.NullConditional;
-		}
-
-		private void ModifyReturnTypeOfLambda(LambdaExpression lambda)
-		{
-			var resolveResult = (DecompiledLambdaResolveResult)lambda.GetResolveResult();
-			if (lambda.Body is Expression exprBody)
-				lambda.Body = new TranslatedExpression(exprBody.Detach()).ConvertTo(resolveResult.ReturnType, expressionBuilder);
-			else
-				ModifyReturnStatementInsideLambda(resolveResult.ReturnType, lambda);
-			resolveResult.InferredReturnType = resolveResult.ReturnType;
-		}
-
-		private void ModifyReturnStatementInsideLambda(IType returnType, AstNode parent)
-		{
-			foreach (var child in parent.Children)
-			{
-				if (child is LambdaExpression || child is AnonymousMethodExpression)
-					continue;
-				if (child is ReturnStatement ret)
-				{
-					ret.Expression = new TranslatedExpression(ret.Expression.Detach()).ConvertTo(returnType, expressionBuilder);
-					continue;
-				}
-				ModifyReturnStatementInsideLambda(returnType, child);
-			}
 		}
 
 		private bool IsDelegateEqualityComparison(IMethod method, IList<TranslatedExpression> arguments)
@@ -1148,7 +1460,15 @@ namespace ICSharpCode.Decompiler.CSharp
 			var conversions = CSharpConversions.Get(expressionBuilder.compilation);
 			IType targetType = method.ReturnType;
 			var conv = conversions.ImplicitConversion(argument.Type, targetType);
-			if (!(conv.IsUserDefined && conv.Method.Equals(method)))
+			// The compiler emits an implicit span conversion as a call to one of the span types'
+			// own members, so such a call is the conversion and folding it back is exact. Any
+			// other method reaching this point is a user-defined conversion operator, which only
+			// the user-defined conversion resolving to that very operator may be folded into.
+			bool directlyConvertible = conv.IsValid
+				&& (conv.IsUserDefined
+					? conv.Method.Equals(method, NormalizeTypeVisitor.TypeErasure)
+					: conv.IsImplicitSpanConversion && IsEquivalentToSpanConversion(method));
+			if (!directlyConvertible)
 			{
 				// implicit conversion to targetType isn't directly possible, so first insert a cast to the argument type
 				argument = argument.ConvertTo(method.Parameters[0].Type, expressionBuilder);
@@ -1164,214 +1484,96 @@ namespace ICSharpCode.Decompiler.CSharp
 				.WithRR(new ConversionResolveResult(targetType, argument.ResolveResult, conv));
 		}
 
-		OverloadResolutionErrors IsUnambiguousCall(ExpectedTargetDetails expectedTargetDetails, IMethod method,
-			ResolveResult target, IType[] typeArguments, ResolveResult[] arguments,
-			string[] argumentNames, int firstOptionalArgumentIndex,
-			out IParameterizedMember foundMember, out bool bestCandidateIsExpandedForm)
+		/// <summary>The parameters a call takes its argument names from: for an indexer access the
+		/// indexer's, which the type system reads off the getter, not the accessor's. C# cannot
+		/// declare accessors that name them differently, but other languages can.</summary>
+		internal static IReadOnlyList<IParameter> GetNamedParameters(IMethod method)
 		{
-			foundMember = null;
-			bestCandidateIsExpandedForm = false;
-			var currentTypeDefinition = resolver.CurrentTypeDefinition;
-			var lookup = new MemberLookup(currentTypeDefinition, currentTypeDefinition.ParentModule);
-
-			Log.WriteLine("IsUnambiguousCall: Performing overload resolution for " + method);
-			Log.WriteCollection("  Arguments: ", arguments);
-
-			argumentNames = firstOptionalArgumentIndex < 0 || argumentNames == null
-				? argumentNames
-				: argumentNames.Take(firstOptionalArgumentIndex).ToArray();
-
-			var or = new OverloadResolution(resolver.Compilation,
-				arguments, argumentNames, typeArguments,
-				conversions: expressionBuilder.resolver.conversions);
-			if (expectedTargetDetails.CallOpCode == OpCode.NewObj)
-			{
-				foreach (IMethod ctor in method.DeclaringType.GetConstructors())
-				{
-					bool allowProtectedAccess =
-						resolver.CurrentTypeDefinition == method.DeclaringTypeDefinition;
-					if (lookup.IsAccessible(ctor, allowProtectedAccess))
-					{
-						or.AddCandidate(ctor);
-					}
-				}
-			}
-			else if (method.IsOperator)
-			{
-				IEnumerable<IParameterizedMember> operatorCandidates;
-				if (arguments.Length == 1)
-				{
-					IType argType = NullableType.GetUnderlyingType(arguments[0].Type);
-					operatorCandidates = resolver.GetUserDefinedOperatorCandidates(argType, method.Name);
-					if (method.Name == "op_Explicit")
-					{
-						// For casts, also consider candidates from the target type we are casting to.
-						var hashSet = new HashSet<IParameterizedMember>(operatorCandidates);
-						IType targetType = NullableType.GetUnderlyingType(method.ReturnType);
-						hashSet.UnionWith(
-							resolver.GetUserDefinedOperatorCandidates(targetType, method.Name)
-						);
-						operatorCandidates = hashSet;
-					}
-				}
-				else if (arguments.Length == 2)
-				{
-					IType lhsType = NullableType.GetUnderlyingType(arguments[0].Type);
-					IType rhsType = NullableType.GetUnderlyingType(arguments[1].Type);
-					var hashSet = new HashSet<IParameterizedMember>();
-					hashSet.UnionWith(resolver.GetUserDefinedOperatorCandidates(lhsType, method.Name));
-					hashSet.UnionWith(resolver.GetUserDefinedOperatorCandidates(rhsType, method.Name));
-					operatorCandidates = hashSet;
-				}
-				else
-				{
-					operatorCandidates = EmptyList<IParameterizedMember>.Instance;
-				}
-				foreach (var m in operatorCandidates)
-				{
-					or.AddCandidate(m);
-				}
-			}
-			else if (target == null)
-			{
-				var result = resolver.ResolveSimpleName(method.Name, typeArguments, isInvocationTarget: true)
-					as MethodGroupResolveResult;
-				if (result == null)
-					return OverloadResolutionErrors.AmbiguousMatch;
-				or.AddMethodLists(result.MethodsGroupedByDeclaringType.ToArray());
-			}
-			else
-			{
-				var result = lookup.Lookup(target, method.Name, typeArguments, isInvocation: true) as MethodGroupResolveResult;
-				if (result == null)
-					return OverloadResolutionErrors.AmbiguousMatch;
-				or.AddMethodLists(result.MethodsGroupedByDeclaringType.ToArray());
-			}
-			bestCandidateIsExpandedForm = or.BestCandidateIsExpandedForm;
-			if (or.BestCandidateErrors != OverloadResolutionErrors.None)
-				return or.BestCandidateErrors;
-			if (or.IsAmbiguous)
-				return OverloadResolutionErrors.AmbiguousMatch;
-			foundMember = or.GetBestCandidateWithSubstitutedTypeArguments();
-			if (!IsAppropriateCallTarget(expectedTargetDetails, method, foundMember))
-				return OverloadResolutionErrors.AmbiguousMatch;
-			return OverloadResolutionErrors.None;
+			return method.AccessorOwner is IProperty { IsIndexer: true } indexer
+				? indexer.Parameters
+				: method.Parameters;
 		}
 
-		bool IsUnambiguousAccess(ExpectedTargetDetails expectedTargetDetails, ResolveResult target, IMethod method,
-			IList<TranslatedExpression> arguments, string[] argumentNames, out IMember foundMember)
+		/// <summary>Whether the accessor is written as a property or indexer access. An accessor
+		/// with more parameters than that syntax takes is written as a call, including the
+		/// assigned value.</summary>
+		static bool IsWrittenAsMemberAccess(IMethod method)
 		{
-			Log.WriteLine("IsUnambiguousAccess: Performing overload resolution for " + method);
-			Log.WriteCollection("  Arguments: ", arguments.Select(a => a.ResolveResult));
-
-			foundMember = null;
-			if (target == null)
-			{
-				var result = resolver.ResolveSimpleName(method.AccessorOwner.Name,
-					EmptyList<IType>.Instance,
-					isInvocationTarget: false) as MemberResolveResult;
-				if (result == null || result.IsError)
-					return false;
-				foundMember = result.Member;
-			}
-			else
-			{
-				var lookup = new MemberLookup(resolver.CurrentTypeDefinition, resolver.CurrentTypeDefinition.ParentModule);
-				if (method.AccessorOwner.SymbolKind == SymbolKind.Indexer)
-				{
-					var or = new OverloadResolution(resolver.Compilation,
-						arguments.SelectArray(a => a.ResolveResult),
-						argumentNames: argumentNames,
-						typeArguments: Empty<IType>.Array,
-						conversions: expressionBuilder.resolver.conversions);
-					or.AddMethodLists(lookup.LookupIndexers(target));
-					if (or.BestCandidateErrors != OverloadResolutionErrors.None)
-						return false;
-					if (or.IsAmbiguous)
-						return false;
-					foundMember = or.GetBestCandidateWithSubstitutedTypeArguments();
-				}
-				else
-				{
-					var result = lookup.Lookup(target,
-						method.AccessorOwner.Name,
-						EmptyList<IType>.Instance,
-						isInvocation: false) as MemberResolveResult;
-					if (result == null || result.IsError)
-						return false;
-					foundMember = result.Member;
-				}
-			}
-			return foundMember != null && IsAppropriateCallTarget(expectedTargetDetails, method.AccessorOwner, foundMember);
+			if (!method.IsAccessor)
+				return false;
+			if (method.AccessorOwner!.SymbolKind == SymbolKind.Indexer)
+				return true;
+			return method.Parameters.Count == (method.ReturnType.IsKnownType(KnownTypeCode.Void) ? 1 : 0);
 		}
 
 		ExpressionWithResolveResult HandleAccessorCall(ExpectedTargetDetails expectedTargetDetails, IMethod method,
-			TranslatedExpression target, List<TranslatedExpression> arguments, string[] argumentNames)
+			TranslatedExpression target, ArgumentList argumentList)
 		{
-			bool requireTarget;
-			if (settings.AlwaysQualifyMemberReferences || method.AccessorOwner.SymbolKind == SymbolKind.Indexer || expressionBuilder.HidesVariableWithName(method.AccessorOwner.Name))
-				requireTarget = true;
-			else if (method.IsStatic)
-				requireTarget = !expressionBuilder.IsCurrentOrContainingType(method.DeclaringTypeDefinition);
-			else
-				requireTarget = !(target.Expression is ThisReferenceExpression);
-			bool targetCasted = false;
+			// An indexer has no name of its own to write, so it can never drop its target.
+			bool requireTarget = method.AccessorOwner!.SymbolKind == SymbolKind.Indexer
+				|| expressionBuilder.RequiresQualifier(method.AccessorOwner, target,
+					nonVirtualDispatch: expectedTargetDetails.CallOpCode != OpCode.CallVirt);
 			bool isSetter = method.ReturnType.IsKnownType(KnownTypeCode.Void);
-			bool argumentsCasted = (isSetter && method.Parameters.Count == 1) || (!isSetter && method.Parameters.Count == 0);
-			var targetResolveResult = requireTarget ? target.ResolveResult : null;
+			// Readability names are for arguments a call would otherwise leave unexplained; an
+			// access writes its index out regardless. Ambiguity is resolved by casting the target.
+			argumentList.AddNamesToPrimitiveValues = false;
+			// The accessor is probed with GetArgumentResolveResultsDirect(), which does not
+			// substitute OutVarResolveResult, so an implicitly typed out variable would be emitted
+			// against an argument list the disambiguator never validated.
+			argumentList.UseImplicitlyTypedOut = false;
 
 			TranslatedExpression value = default(TranslatedExpression);
 			if (isSetter)
 			{
-				value = arguments.Last();
-				arguments.Remove(value);
+				// The assigned value is not part of the member reference, so it is removed before
+				// the arguments are counted, named or cast.
+				value = argumentList.Arguments[argumentList.Length - 1];
+				argumentList.Arguments = argumentList.Arguments.Take(argumentList.Length - 1).ToArray();
+				argumentList.ArgumentToParameterMap = argumentList.ArgumentToParameterMap
+					?.Take(argumentList.ArgumentToParameterMap.Count - 1).ToArray();
 			}
 
-			IMember foundMember;
-			while (!IsUnambiguousAccess(expectedTargetDetails, targetResolveResult, method, arguments, argumentNames, out foundMember))
+			// An indexer access and an index initializer element both spell out at least one index,
+			// so the first one is kept whatever its default is: dropping every argument would turn
+			// the one into a property access and leave the other with no element to assign to.
+			// An index initializer is written as an element access even for a parameterized
+			// property, which is why the symbol kind alone does not decide this.
+			if (argumentList.FirstOptionalArgumentIndex == 0 && argumentList.Length > 0
+				&& (method.AccessorOwner.SymbolKind == SymbolKind.Indexer
+					|| target.ResolveResult is InitializedObjectResolveResult))
 			{
-				if (!argumentsCasted)
-				{
-					argumentsCasted = true;
-					CastArguments(arguments, method.Parameters.ToList());
-				}
-				else if (!requireTarget)
-				{
-					requireTarget = true;
-					targetResolveResult = target.ResolveResult;
-				}
-				else if (!targetCasted)
-				{
-					targetCasted = true;
-					target = target.ConvertTo(method.AccessorOwner.DeclaringType, expressionBuilder);
-					targetResolveResult = target.ResolveResult;
-				}
-				else
-				{
-					foundMember = method.AccessorOwner;
-					break;
-				}
+				argumentList.FirstOptionalArgumentIndex = 1;
 			}
+			var disambiguator = Disambiguator.ForAccessor(expressionBuilder, method, argumentList, target,
+				requireTarget, expectedTargetDetails);
+			IMember? foundMember = disambiguator.Resolved ? disambiguator.FoundMember : method.AccessorOwner!;
+			requireTarget = disambiguator.RequireTarget;
+			target = disambiguator.Target;
+			argumentList = disambiguator.Arguments;
 
 			var rr = new MemberResolveResult(target.ResolveResult, foundMember);
+			// Only an indexer access writes an argument list; a property access has none, so the
+			// expressions are built solely on the branches that put them in the output.
+			bool hasArguments = argumentList.GetActualArgumentCount() != 0;
 
 			if (isSetter)
 			{
 				TranslatedExpression expr;
 
-				if (arguments.Count != 0)
+				if (hasArguments)
 				{
-					expr = new IndexerExpression(target.ResolveResult is InitializedObjectResolveResult ? null : target.Expression, arguments.Select(a => a.Expression))
+					expr = new IndexerExpression(target.ResolveResult is InitializedObjectResolveResult ? null : target.Expression,
+						argumentList.GetArgumentExpressions())
 						.WithoutILInstruction().WithRR(rr);
 				}
 				else if (requireTarget)
 				{
-					expr = new MemberReferenceExpression(target.Expression, method.AccessorOwner.Name)
+					expr = new MemberReferenceExpression(target.Expression, method.AccessorOwner!.Name)
 						.WithoutILInstruction().WithRR(rr);
 				}
 				else
 				{
-					expr = new IdentifierExpression(method.AccessorOwner.Name)
+					expr = new IdentifierExpression(method.AccessorOwner!.Name)
 						.WithoutILInstruction().WithRR(rr);
 				}
 
@@ -1387,49 +1589,29 @@ namespace ICSharpCode.Decompiler.CSharp
 						op = AssignmentOperatorType.Subtract;
 					}
 				}
-				return new AssignmentExpression(expr, op, value.Expression).WithRR(new TypeResolveResult(method.AccessorOwner.ReturnType));
+				return new AssignmentExpression(expr, op, value.Expression!).WithRR(new TypeResolveResult(method.AccessorOwner!.ReturnType));
 			}
 			else
 			{
-				if (arguments.Count != 0)
+				if (hasArguments)
 				{
-					return new IndexerExpression(target.Expression, arguments.Select(a => a.Expression))
+					return new IndexerExpression(target.Expression, argumentList.GetArgumentExpressions())
 						.WithoutILInstruction().WithRR(rr);
 				}
 				else if (requireTarget)
 				{
-					return new MemberReferenceExpression(target.Expression, method.AccessorOwner.Name)
+					return new MemberReferenceExpression(target.Expression, method.AccessorOwner!.Name)
 						.WithoutILInstruction().WithRR(rr);
 				}
 				else
 				{
-					return new IdentifierExpression(method.AccessorOwner.Name)
+					return new IdentifierExpression(method.AccessorOwner!.Name)
 						.WithoutILInstruction().WithRR(rr);
 				}
 			}
 		}
 
-		bool IsAppropriateCallTarget(ExpectedTargetDetails expectedTargetDetails, IMember expectedTarget, IMember actualTarget)
-		{
-			if (expectedTarget.Equals(actualTarget, NormalizeTypeVisitor.TypeErasure))
-				return true;
-
-			if (expectedTargetDetails.CallOpCode == OpCode.CallVirt && actualTarget.IsOverride)
-			{
-				if (expectedTargetDetails.NeedsBoxingConversion && actualTarget.DeclaringType.IsReferenceType != true)
-					return false;
-				foreach (var possibleTarget in InheritanceHelper.GetBaseMembers(actualTarget, false))
-				{
-					if (expectedTarget.Equals(possibleTarget, NormalizeTypeVisitor.TypeErasure))
-						return true;
-					if (!possibleTarget.IsOverride)
-						break;
-				}
-			}
-			return false;
-		}
-
-		ExpressionWithResolveResult HandleConstructorCall(ExpectedTargetDetails expectedTargetDetails, ResolveResult target, IMethod method, ArgumentList argumentList)
+		ExpressionWithResolveResult HandleConstructorCall(ExpectedTargetDetails expectedTargetDetails, ResolveResult? target, IMethod method, ArgumentList argumentList)
 		{
 			if (settings.AnonymousTypes && method.DeclaringType.IsAnonymousType())
 			{
@@ -1457,25 +1639,28 @@ namespace ICSharpCode.Decompiler.CSharp
 			}
 			else
 			{
-				while (IsUnambiguousCall(expectedTargetDetails, method, null, Empty<IType>.Array,
-					argumentList.GetArgumentResolveResults().ToArray(),
-					argumentList.ArgumentNames, argumentList.FirstOptionalArgumentIndex, out _,
-					out var bestCandidateIsExpandedForm) != OverloadResolutionErrors.None || bestCandidateIsExpandedForm != argumentList.IsExpandedForm)
+				var disambiguator = Disambiguator.ForConstructorCall(expressionBuilder, method, argumentList,
+					expectedTargetDetails);
+				argumentList = disambiguator.Arguments;
+				IType? returnTypeOverride = null;
+				if (typeSystem.MainModule.TypeSystemOptions.HasFlag(TypeSystemOptions.NativeIntegersWithoutAttribute))
 				{
-					if (argumentList.FirstOptionalArgumentIndex >= 0)
-					{
-						argumentList.FirstOptionalArgumentIndex = -1;
-						continue;
-					}
-					CastArguments(argumentList.Arguments, argumentList.ExpectedParameters);
-					break; // make sure that we don't not end up in an infinite loop
+					// For DeclaringType, we don't use nint/nuint (so that DeclaringType.GetConstructors etc. works),
+					// but in NativeIntegersWithoutAttribute mode we must use nint/nuint for expression types,
+					// so that the appropriate set of conversions is used for further overload resolution.
+					if (method.DeclaringType.IsKnownType(KnownTypeCode.IntPtr))
+						returnTypeOverride = SpecialType.NInt;
+					else if (method.DeclaringType.IsKnownType(KnownTypeCode.UIntPtr))
+						returnTypeOverride = SpecialType.NUInt;
 				}
 				return new ObjectCreateExpression(
 					expressionBuilder.ConvertType(method.DeclaringType),
 					argumentList.GetArgumentExpressions()
 				).WithRR(new CSharpInvocationResolveResult(
 					target, method, argumentList.GetArgumentResolveResults().ToArray(),
-					isExpandedForm: argumentList.IsExpandedForm, argumentToParameterMap: argumentList.ArgumentToParameterMap
+					isExpandedForm: argumentList.IsExpandedForm,
+					argumentToParameterMap: argumentList.ArgumentToParameterMap,
+					returnTypeOverride: returnTypeOverride
 				));
 			}
 		}
@@ -1563,60 +1748,60 @@ namespace ICSharpCode.Decompiler.CSharp
 			return expr.Expression.WithRR(new MemberResolveResult(null, method));
 		}
 
-		ExpressionWithResolveResult BuildDelegateReference(IMethod method, IMethod invokeMethod, ExpectedTargetDetails expectedTargetDetails, ILInstruction thisArg)
+		ExpressionWithResolveResult BuildDelegateReference(IMethod method, IMethod? invokeMethod, ExpectedTargetDetails expectedTargetDetails, ILInstruction? thisArg)
 		{
-			TranslatedExpression target;
-			IType targetType;
-			bool requireTarget;
-			ResolveResult result = null;
-			string methodName = method.Name;
-			// There are three possible adjustments, we can make, to solve conflicts:
-			// 1. add target (represented as bit 0)
-			// 2. add type arguments (represented as bit 1)
-			// 3. cast target (represented as bit 2)
-			int step;
-			ILFunction localFunction = null;
+			ExpressionBuilder expressionBuilder = this.expressionBuilder;
+			ExpressionWithResolveResult targetExpression;
+			(TranslatedExpression target, bool addTypeArguments, string methodName, ResolveResult result) = DisambiguateDelegateReference(method, invokeMethod, expectedTargetDetails, thisArg);
+			if (target.Expression != null)
+			{
+				var mre = new MemberReferenceExpression(target, methodName);
+				if (addTypeArguments)
+				{
+					mre.TypeArguments.AddRange(method.TypeArguments.Select(expressionBuilder.ConvertType));
+				}
+				targetExpression = mre.WithRR(result);
+			}
+			else
+			{
+				var ide = new IdentifierExpression(methodName);
+				if (addTypeArguments)
+				{
+					ide.TypeArguments.AddRange(method.TypeArguments.Select(expressionBuilder.ConvertType));
+				}
+				targetExpression = ide.WithRR(result);
+			}
+			return targetExpression;
+
+		}
+
+		(TranslatedExpression target, bool addTypeArguments, string methodName, ResolveResult result) DisambiguateDelegateReference(IMethod method, IMethod? invokeMethod, ExpectedTargetDetails expectedTargetDetails, ILInstruction? thisArg)
+		{
 			if (method.IsLocalFunction)
 			{
-				localFunction = expressionBuilder.ResolveLocalFunction(method);
+				ILFunction? localFunction = expressionBuilder.ResolveLocalFunction(method);
 				Debug.Assert(localFunction != null);
+				return (default, addTypeArguments: true, localFunction.Name!, ToMethodGroup(method, localFunction));
 			}
-			if (localFunction != null)
+			if (method.IsExtensionMethod && method.Parameters.Count - 1 == invokeMethod?.Parameters.Count)
 			{
-				step = 2;
-				requireTarget = false;
-				result = ToMethodGroup(method, localFunction);
-				target = default;
-				targetType = default;
-				methodName = localFunction.Name;
-			}
-			else if (method.IsExtensionMethod && invokeMethod != null && method.Parameters.Count - 1 == invokeMethod.Parameters.Count)
-			{
-				step = 5;
-				targetType = method.Parameters[0].Type;
+				IType targetType = method.Parameters[0].Type;
 				if (targetType.Kind == TypeKind.ByReference && thisArg is Box thisArgBox)
 				{
 					targetType = ((ByReferenceType)targetType).ElementType;
 					thisArg = thisArgBox.Argument;
 				}
-				target = expressionBuilder.Translate(thisArg, targetType);
-				// TODO : check if cast is necessary
-				target = target.ConvertTo(targetType, expressionBuilder);
-				requireTarget = true;
-				result = new MethodGroupResolveResult(
-					target.ResolveResult, method.Name,
-					new MethodListWithDeclaringType[] {
-						new MethodListWithDeclaringType(
-							null,
-							new[] { method }
-						)
-					},
-					method.TypeArguments
-				);
+				TranslatedExpression target = expressionBuilder.Translate(thisArg!, targetType);
+				// A null literal carries no type at all, so its cast cannot wait its turn.
+				var disambiguator = Disambiguator.ForMethodReference(expressionBuilder, method, targetType,
+					target, requireTarget: true, expectedTargetDetails, isExtensionMethodReference: true,
+					castTargetUpFront: thisArg!.MatchLdNull());
+				return (disambiguator.Target, disambiguator.RequireTypeArguments, method.Name, disambiguator.Result!);
 			}
 			else
 			{
-				targetType = method.DeclaringType;
+				// Prepare call target
+				IType targetType = method.DeclaringType;
 				if (targetType.IsReferenceType == false && thisArg is Box thisArgBox)
 				{
 					// Normal struct instance method calls (which TranslateTarget is meant for) expect a 'ref T',
@@ -1630,69 +1815,25 @@ namespace ICSharpCode.Decompiler.CSharp
 						thisArg = new AddressOf(thisArgBox.Argument, thisArgBox.Type);
 					}
 				}
-				target = expressionBuilder.TranslateTarget(thisArg,
+				TranslatedExpression target = expressionBuilder.TranslateTarget(thisArg,
 					nonVirtualInvocation: expectedTargetDetails.CallOpCode == OpCode.Call,
 					memberStatic: method.IsStatic,
 					memberDeclaringType: method.DeclaringType);
-				requireTarget = expressionBuilder.HidesVariableWithName(method.Name)
-					|| (method.IsStatic ? !expressionBuilder.IsCurrentOrContainingType(method.DeclaringTypeDefinition) : !(target.Expression is ThisReferenceExpression));
-				step = requireTarget ? 1 : 0;
-				var savedTarget = target;
-				for (; step < 7; step++)
+				// check if target is required
+				bool requireTarget = expressionBuilder.RequiresQualifier(method, target,
+					nonVirtualDispatch: expectedTargetDetails.CallOpCode != OpCode.CallVirt);
+				var disambiguator = Disambiguator.ForMethodReference(expressionBuilder, method, targetType,
+					target, requireTarget, expectedTargetDetails, isExtensionMethodReference: false);
+				ResolveResult? result = disambiguator.Result;
+				if (result is MethodGroupResolveResult mgrr)
 				{
-					ResolveResult targetResolveResult;
-					//TODO: why there is an check for IsLocalFunction here, it should be unreachable in old code
-					if (localFunction == null && (step & 1) != 0)
-					{
-						targetResolveResult = savedTarget.ResolveResult;
-						target = savedTarget;
-					}
-					else
-					{
-						targetResolveResult = null;
-					}
-					IReadOnlyList<IType> typeArguments;
-					if ((step & 2) != 0)
-					{
-						typeArguments = method.TypeArguments;
-					}
-					else
-					{
-						typeArguments = EmptyList<IType>.Instance;
-					}
-					if (targetResolveResult != null && targetType != null && (step & 4) != 0)
-					{
-						target = target.ConvertTo(targetType, expressionBuilder);
-						targetResolveResult = target.ResolveResult;
-					}
-					bool success = IsUnambiguousMethodReference(expectedTargetDetails, method, targetResolveResult, typeArguments, out var newResult);
-					if (newResult is MethodGroupResolveResult || result == null)
-						result = newResult;
-					if (success)
-						break;
+					result = mgrr.WithChosenMethod(method);
 				}
+				// BuildDelegateReference tells a qualified reference from an unqualified one by
+				// whether it got a target expression at all.
+				return (disambiguator.RequireTarget ? disambiguator.Target : default,
+					disambiguator.RequireTypeArguments, method.Name, result!);
 			}
-			requireTarget = localFunction == null && (step & 1) != 0;
-			ExpressionWithResolveResult targetExpression;
-			Debug.Assert(result != null);
-			if (requireTarget)
-			{
-				Debug.Assert(target.Expression != null);
-				var mre = new MemberReferenceExpression(target, methodName);
-				if ((step & 2) != 0)
-					mre.TypeArguments.AddRange(method.TypeArguments.Select(expressionBuilder.ConvertType));
-				targetExpression = mre.WithRR(result);
-			}
-			else
-			{
-				var ide = new IdentifierExpression(methodName);
-				if ((step & 2) != 0)
-				{
-					ide.TypeArguments.AddRange(method.TypeArguments.Select(expressionBuilder.ConvertType));
-				}
-				targetExpression = ide.WithRR(result);
-			}
-			return targetExpression;
 		}
 
 		TranslatedExpression HandleDelegateConstruction(IType delegateType, IMethod method, ExpectedTargetDetails expectedTargetDetails, ILInstruction thisArg, ILInstruction inst)
@@ -1706,38 +1847,6 @@ namespace ICSharpCode.Decompiler.CSharp
 					targetExpression.ResolveResult,
 					Conversion.MethodGroupConversion(method, expectedTargetDetails.CallOpCode == OpCode.CallVirt, false)));
 			return oce;
-		}
-
-		bool IsUnambiguousMethodReference(ExpectedTargetDetails expectedTargetDetails, IMethod method, ResolveResult target, IReadOnlyList<IType> typeArguments, out ResolveResult result)
-		{
-			Log.WriteLine("IsUnambiguousMethodReference: Performing overload resolution for " + method);
-
-			var lookup = new MemberLookup(resolver.CurrentTypeDefinition, resolver.CurrentTypeDefinition.ParentModule);
-			var or = new OverloadResolution(resolver.Compilation,
-				arguments: method.Parameters.SelectReadOnlyArray(p => new TypeResolveResult(p.Type)), // there are no arguments, use parameter types
-				argumentNames: null, // argument names are not possible
-				typeArguments.ToArray(),
-				conversions: expressionBuilder.resolver.conversions
-			);
-			if (target == null)
-			{
-				result = resolver.ResolveSimpleName(method.Name, typeArguments, isInvocationTarget: false);
-				if (!(result is MethodGroupResolveResult mgrr))
-					return false;
-				or.AddMethodLists(mgrr.MethodsGroupedByDeclaringType.ToArray());
-			}
-			else
-			{
-				result = lookup.Lookup(target, method.Name, typeArguments, isInvocation: false);
-				if (!(result is MethodGroupResolveResult mgrr))
-					return false;
-				or.AddMethodLists(mgrr.MethodsGroupedByDeclaringType.ToArray());
-			}
-
-			var foundMethod = or.GetBestCandidateWithSubstitutedTypeArguments();
-			if (!IsAppropriateCallTarget(expectedTargetDetails, method, foundMethod))
-				return false;
-			return result is MethodGroupResolveResult;
 		}
 
 		static MethodGroupResolveResult ToMethodGroup(IMethod method, ILFunction localFunction)
@@ -1803,19 +1912,19 @@ namespace ICSharpCode.Decompiler.CSharp
 				}
 				else if (callOpCode == OpCode.Call && method.Name == "get_All" && argumentList.Length == 0)
 				{
-					result = new BinaryOperatorExpression(Expression.Null, BinaryOperatorType.Range, Expression.Null)
+					result = new BinaryOperatorExpression(null, BinaryOperatorType.Range, null)
 						.WithRR(new MemberResolveResult(null, method.AccessorOwner ?? method));
 					return true;
 				}
 				else if (callOpCode == OpCode.Call && method.Name == "StartAt" && argumentList.Length == 1)
 				{
-					result = new BinaryOperatorExpression(argumentList.Arguments[0], BinaryOperatorType.Range, Expression.Null)
+					result = new BinaryOperatorExpression(argumentList.Arguments[0], BinaryOperatorType.Range, null)
 						.WithRR(new MemberResolveResult(null, method));
 					return true;
 				}
 				else if (callOpCode == OpCode.Call && method.Name == "EndAt" && argumentList.Length == 1)
 				{
-					result = new BinaryOperatorExpression(Expression.Null, BinaryOperatorType.Range, argumentList.Arguments[0])
+					result = new BinaryOperatorExpression(null, BinaryOperatorType.Range, argumentList.Arguments[0])
 						.WithRR(new MemberResolveResult(null, method));
 					return true;
 				}

@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2016 Daniel Grunwald
+// Copyright (c) 2016 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -435,7 +435,14 @@ namespace ICSharpCode.Decompiler.FlowAnalysis
 				targetState.JoinWith(branchState);
 
 				BlockContainer container = (BlockContainer)targetBlock.Parent;
-				workLists[container].Add(targetBlock.ChildIndex);
+				if (workLists.TryGetValue(container, out var workList))
+				{
+					workList.Add(targetBlock.ChildIndex);
+				}
+				else
+				{
+					Debug.Fail("Failed to find target BlockContainer");
+				}
 			}
 		}
 

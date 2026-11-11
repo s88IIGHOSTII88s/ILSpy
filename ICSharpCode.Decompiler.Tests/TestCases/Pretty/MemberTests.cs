@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2008 Daniel Grunwald
+// Copyright (c) 2008 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -30,11 +30,13 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 #if ROSLYN
 			public int this[int index] => 0;
 #else
+			#pragma warning disable format
 			public int this[int index] {
 				get {
 					return 0;
 				}
 			}
+			#pragma warning restore format
 #endif
 		}
 
@@ -49,11 +51,19 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		private volatile int volatileField = 3;
 		private static volatile int staticVolatileField = 4;
 
+		public extern int ExternGetOnly { get; }
+		public extern int ExternSetOnly { set; }
+		public extern int ExternProperty { get; set; }
+
+		public extern event EventHandler Event;
+
 		public void UseVolatileFields()
 		{
 			Console.WriteLine(volatileField + staticVolatileField);
 			volatileField++;
 			staticVolatileField++;
 		}
+
+		public extern void ExternMethod();
 	}
 }

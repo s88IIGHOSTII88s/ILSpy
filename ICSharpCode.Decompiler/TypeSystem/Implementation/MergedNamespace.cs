@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -152,7 +152,10 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 						// and using the main assembly can cause a stack overflow if there
 						// are internal assembly attributes.
 					}
-					anyTypeDef = typeDef;
+					// If there's multiple possible matches prefer the first one -- we most likely are
+					// in the context of the assembly being decompiled, which usually is the first in the list,
+					// so this increases the odds of picking the correct type.
+					anyTypeDef ??= typeDef;
 				}
 			}
 			return anyTypeDef;

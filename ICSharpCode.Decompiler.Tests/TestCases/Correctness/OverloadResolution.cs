@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2016 Daniel Grunwald
+// Copyright (c) 2016 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -32,11 +32,97 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Correctness
 			Generics();
 			ConstructorTest();
 			TestIndexer();
+			TestIndexerWithNamedArguments();
+			TestRedeclaredDefaultValues();
+#if !MCS2
+			TestNamedWithOmittedOptional();
+#endif
 			Issue1281();
 			Issue1747();
 			CallAmbiguousOutParam();
 			CallWithInParam();
+			CallWithRefReadOnlyParam();
+#if CS90
+			NativeIntTests(new IntPtr(1), 2);
+#endif
+			Issue2444.M2();
+			Issue2741.B.Test(new Issue2741.C());
+			ExtensionMethodDemo.Issue2165.Test();
+#if CS71
+			DefaultLiteralTests();
+#endif
 		}
+
+#if CS71
+		static void DefaultLiteralTests()
+		{
+			// The decompiled output may shorten default(T) to a default literal;
+			// re-compilation must still pick the same overloads and operators.
+			DefaultOverload(default(DataStruct));
+			DefaultOverload(default(OtherStruct));
+			DefaultNullableOverload(default(DataStruct));
+			Console.WriteLine(default(DataStruct) == new DataStruct());
+			Console.WriteLine(GenericDefault("x", default));
+			Console.WriteLine(GenericDefault(42, default));
+		}
+
+		struct DataStruct
+		{
+			public int Field;
+
+			public static bool operator ==(DataStruct a, DataStruct b)
+			{
+				Console.WriteLine("DataStruct operator ==");
+				return a.Field == b.Field;
+			}
+
+			public static bool operator !=(DataStruct a, DataStruct b)
+			{
+				return a.Field != b.Field;
+			}
+
+			public override bool Equals(object obj)
+			{
+				return obj is DataStruct other && Field == other.Field;
+			}
+
+			public override int GetHashCode()
+			{
+				return Field;
+			}
+		}
+
+		struct OtherStruct
+		{
+			public int Field;
+		}
+
+		static void DefaultOverload(DataStruct data)
+		{
+			Console.WriteLine("DefaultOverload(DataStruct)");
+		}
+
+		static void DefaultOverload(OtherStruct data)
+		{
+			Console.WriteLine("DefaultOverload(OtherStruct)");
+		}
+
+		static void DefaultNullableOverload(DataStruct data)
+		{
+			Console.WriteLine("DefaultNullableOverload(DataStruct)");
+		}
+
+		static void DefaultNullableOverload(DataStruct? data)
+		{
+			Console.WriteLine("DefaultNullableOverload(DataStruct?)");
+		}
+
+		static T GenericDefault<T>(T a, T b)
+		{
+			Console.WriteLine("GenericDefault: " + typeof(T).Name);
+			return b;
+		}
+#endif
 
 		#region ConstructorTest
 		static void ConstructorTest()
@@ -249,6 +335,87 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Correctness
 		}
 		#endregion
 
+		#region Named arguments with omitted optional arguments
+		// mcs 2.6.4 crashes while emitting a call that names its arguments and leaves an optional
+		// one out.
+#if !MCS2
+		static void TestNamedWithOmittedOptional()
+		{
+			var obj = new NamedOptionalTests();
+			obj.M(b: Trace(2), a: Trace(1));
+			obj.N(y: Trace(1), x: Trace(2));
+			obj.N(z: Trace(1), x: Trace(2));
+		}
+
+		class NamedOptionalTests
+		{
+			public void M(int a, int b, int c = 3)
+			{
+				Console.WriteLine("M(" + a + ", " + b + ", " + c + ")");
+			}
+
+			public void N(int x, int y = 10, int z = 20)
+			{
+				Console.WriteLine("N(" + x + ", " + y + ", " + z + ")");
+			}
+		}
+#endif
+		#endregion
+
+		#region Redeclared default values
+		static void TestRedeclaredDefaultValues()
+		{
+			var derived = new DerivedDefaultValue();
+			Console.WriteLine(derived[1, 10]);
+			Console.WriteLine(derived.Method(1, 10));
+		}
+
+		class BaseDefaultValue
+		{
+			public virtual int this[int x, int y = 10] {
+				get {
+					return x + y;
+				}
+			}
+
+			public virtual int Method(int x, int y = 10)
+			{
+				return x + y;
+			}
+		}
+
+		class DerivedDefaultValue : BaseDefaultValue
+		{
+			public override int this[int x, int y = 20] {
+				get {
+					return x + y + 1;
+				}
+			}
+
+			public override int Method(int x, int y = 20)
+			{
+				return x + y + 1;
+			}
+		}
+		#endregion
+
+		#region Indexer with named arguments
+		static void TestIndexerWithNamedArguments()
+		{
+			var obj = new NamedArgumentIndexerTests();
+			Console.WriteLine(obj[y: Trace(1), x: Trace(2)]);
+			obj[y: Trace(3), x: Trace(4)] = Trace(5);
+			Console.WriteLine(obj[y: Trace(6), x: Trace(7)] = Trace(8));
+			obj[y: Trace(9), x: Trace(10)] += 5;
+		}
+
+		static int Trace(int i)
+		{
+			Console.WriteLine("Trace(" + i + ")");
+			return i;
+		}
+		#endregion
+
 		#region Out Parameter
 		static void AmbiguousOutParam(out string a)
 		{
@@ -270,6 +437,73 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Correctness
 			AmbiguousOutParam(out a);
 			AmbiguousOutParam(out b);
 		}
+		#endregion
+
+		#region Ref readonly Parameter
+
+		static void CallWithRefReadOnlyParam()
+		{
+#if CS120
+#pragma warning disable CS9193
+			Console.WriteLine("OverloadSetWithRefReadOnlyParam:");
+			OverloadSetWithRefReadOnlyParam(1);
+			OverloadSetWithRefReadOnlyParam(2L);
+			int i = 3;
+			OverloadSetWithRefReadOnlyParam(in i);
+			OverloadSetWithRefReadOnlyParam((long)4);
+
+			Console.WriteLine("OverloadSetWithRefReadOnlyParam2:");
+			OverloadSetWithRefReadOnlyParam2(1);
+			OverloadSetWithRefReadOnlyParam2((object)1);
+
+			Console.WriteLine("OverloadSetWithRefReadOnlyParam3:");
+			OverloadSetWithRefReadOnlyParam3(1);
+			OverloadSetWithRefReadOnlyParam3<int>(2);
+			OverloadSetWithRefReadOnlyParam3((object)3);
+
+			Console.WriteLine("RefReadOnlyVsRegularParam:");
+			RefReadOnlyVsRegularParam(1);
+			i = 2;
+			RefReadOnlyVsRegularParam(in i);
+#endif
+		}
+
+#if CS120
+		static void OverloadSetWithRefReadOnlyParam(ref readonly int i)
+		{
+			Console.WriteLine("ref readonly int " + i);
+		}
+		static void OverloadSetWithRefReadOnlyParam(long l)
+		{
+			Console.WriteLine("long " + l);
+		}
+		static void OverloadSetWithRefReadOnlyParam2(ref readonly long i)
+		{
+			Console.WriteLine("ref readonly long " + i);
+		}
+		static void OverloadSetWithRefReadOnlyParam2(object o)
+		{
+			Console.WriteLine("object " + o);
+		}
+		static void OverloadSetWithRefReadOnlyParam3(ref readonly int i)
+		{
+			Console.WriteLine("ref readonly int " + i);
+		}
+		static void OverloadSetWithRefReadOnlyParam3<T>(T a)
+		{
+			Console.WriteLine("T " + a);
+		}
+		static void RefReadOnlyVsRegularParam(ref readonly int i)
+		{
+			Console.WriteLine("ref readonly int " + i);
+		}
+		static void RefReadOnlyVsRegularParam(int i)
+		{
+			Console.WriteLine("int " + i);
+		}
+
+#endif
+
 		#endregion
 
 		#region In Parameter
@@ -334,6 +568,137 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Correctness
 		}
 #endif
 		#endregion
+
+#if CS90
+		static void NativeIntTests(IntPtr i1, nint i2)
+		{
+			Console.WriteLine("NativeIntTests(i1):");
+			ObjectOrLong((object)i1);
+			ObjectOrLong((long)i1);
+			Console.WriteLine("NativeIntTests(i2):");
+			ObjectOrLong((object)i2);
+			ObjectOrLong((long)i2);
+			Console.WriteLine("NativeIntTests(new IntPtr):");
+			ObjectOrLong((object)new IntPtr(3));
+			ObjectOrLong((long)new IntPtr(3));
+			Console.WriteLine("NativeIntTests(IntPtr.Zero):");
+			ObjectOrLong((object)IntPtr.Zero);
+			ObjectOrLong((long)IntPtr.Zero);
+		}
+
+		static void ObjectOrLong(object o)
+		{
+			Console.WriteLine("object " + o);
+		}
+
+		static void ObjectOrLong(long l)
+		{
+			Console.WriteLine("long " + l);
+		}
+#endif
+
+		#region #2444
+		public struct Issue2444
+		{
+			public class X { }
+			public class Y { }
+
+			public static implicit operator Issue2444(X x)
+			{
+				Console.WriteLine("#2444: op_Implicit(X)");
+				return new Issue2444();
+			}
+
+			public static implicit operator Issue2444(Y y)
+			{
+				Console.WriteLine("#2444: op_Implicit(Y)");
+				return new Issue2444();
+			}
+
+			public static void M1(Issue2444 z)
+			{
+				Console.WriteLine(string.Format("#2444: M1({0})", z));
+			}
+
+			public static void M2()
+			{
+				Console.WriteLine("#2444: before M1");
+				M1((X)null);
+				Console.WriteLine("#2444: after M1");
+			}
+		}
+
+		public class Issue2741
+		{
+			public class B
+			{
+				private void M()
+				{
+					Console.WriteLine("B::M");
+				}
+
+				protected void M2()
+				{
+					Console.WriteLine("B::M2");
+				}
+
+				protected void M3()
+				{
+					Console.WriteLine("B::M3");
+				}
+
+				protected void M4()
+				{
+					Console.WriteLine("B::M4");
+				}
+
+				public static void Test(C c)
+				{
+					((B)c).M();
+					((B)c).M2();
+					c.Test();
+				}
+			}
+
+			public class C : B
+			{
+				public void M()
+				{
+					Console.WriteLine("C::M");
+				}
+
+				public new void M2()
+				{
+					Console.WriteLine("C::M2");
+				}
+
+				public new void M3()
+				{
+					Console.WriteLine("C::M3");
+				}
+
+				public void Test()
+				{
+					M3();
+					base.M3();
+					M4();
+				}
+			}
+		}
+		#endregion
+	}
+
+	class NamedArgumentIndexerTests
+	{
+		public int this[int x, int y] {
+			get {
+				Console.WriteLine("get_Item(" + x + ", " + y + ")");
+				return x;
+			}
+			set {
+				Console.WriteLine("set_Item(" + x + ", " + y + ", " + value + ")");
+			}
+		}
 	}
 
 	class IndexerTests
@@ -356,6 +721,49 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Correctness
 			set {
 				Console.WriteLine("IndexerTests.set_Item(int key, object value)");
 			}
+		}
+	}
+}
+
+namespace ExtensionMethodDemo
+{
+	// First extension class with an out int parameter
+	public static class StringExtensions
+	{
+		public static bool TryParseCustom(this string input, out int result)
+		{
+			return int.TryParse(input, out result);
+		}
+	}
+
+	// Second extension class with an out double parameter
+	public static class StringDoubleExtensions
+	{
+		public static bool TryParseCustom(this string input, out double result)
+		{
+			return double.TryParse(input, out result);
+		}
+	}
+
+	class Issue2165
+	{
+		public static void Test()
+		{
+			string value1 = "123";
+			string value2 = "123.45";
+#if CS70
+			// Use the int version with extension method syntax
+			if (value1.TryParseCustom(out int intResult))
+			{
+				Console.WriteLine("Parsed int: " + intResult);
+			}
+
+			// Use the double version with extension method syntax
+			if (value2.TryParseCustom(out double doubleResult))
+			{
+				Console.WriteLine("Parsed double: " + doubleResult);
+			}
+#endif
 		}
 	}
 }

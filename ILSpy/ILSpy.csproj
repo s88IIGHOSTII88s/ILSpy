@@ -1,137 +1,219 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
-<Project Sdk="Microsoft.NET.Sdk.WindowsDesktop">
-
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <LangVersion>9.0</LangVersion>
-    <GenerateAssemblyInfo>False</GenerateAssemblyInfo>
-    <AutoGenerateBindingRedirects>false</AutoGenerateBindingRedirects>
-    <GenerateSupportedRuntime>false</GenerateSupportedRuntime>
-    <UseWpf>true</UseWpf>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- RIDs we publish the app for. Declared here (not solution-wide) so the lock
+         file stays in sync for these targets without forcing per-RID restore onto
+         the ILSpyCmd tool (PackAsTool + GeneratePackageOnBuild) or the test projects. -->
+    <RuntimeIdentifiers>win-x64;win-arm64;linux-x64;linux-arm64;osx-arm64</RuntimeIdentifiers>
+    <!-- Framework-dependent publishes target net10.0; roll forward to a newer major runtime when
+         the exact one isn't installed so the app still starts on machines that only have a later
+         .NET. -->
+    <RollForward>major</RollForward>
+    <Nullable>enable</Nullable>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets/ILSpy-Large.ico</ApplicationIcon>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
     <RootNamespace>ICSharpCode.ILSpy</RootNamespace>
-
-    <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
-
-    <ApplicationIcon>Images\ILSpy-Large.ico</ApplicationIcon>
-
-    <SignAssembly>True</SignAssembly>
-    <AssemblyOriginatorKeyFile>..\ICSharpCode.Decompiler\ICSharpCode.Decompiler.snk</AssemblyOriginatorKeyFile>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Properties/AssemblyInfo.cs sets [assembly: AssemblyVersion(...)] from
+         DecompilerVersionInfo (which the build pipeline rewrites with the live
+         git revision). The SDK auto-generated AssemblyInfo would overwrite those
+         with whatever <Version> resolves to in the project, defeating the dynamic
+         version injection. -->
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <!-- ILSpy uses System.Composition with attribute-driven discovery; MEF002 nudges toward
+         code-based DI which doesn't apply. MEF004 wants an explicit Shared/NonShared marker, but
+         System.Composition has no [NonShared] attribute (the absence of [Shared] *is* the
+         non-shared semantic), so it is a false positive on every Options panel viewmodel.
+         CA1001/CA2213 fire because tab-page models hold a CancellationTokenSource that lives as
+         long as the document dock, which is intentional. -->
+    <NoWarn>$(NoWarn);MEF002;MEF004;CA1001;CA2213</NoWarn>
+    <!-- Server GC: spawns one GC heap per CPU core and runs collections on dedicated
+         GC threads, which keeps the UI thread responsive when background work
+         allocates aggressively. Workstation GC (the default) would pause the UI
+         thread on every Gen-1/2 collection caused by allocations on ANY thread.
+         Concurrent stays on (the default) so even server collections don't
+         stop-the-world for long. -->
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <!-- DATAS: let server GC scale its heap count to the live load instead of pinning one heap
+         per core, trading a little throughput for a much smaller idle working set. -->
+    <GarbageCollectionAdaptationMode>1</GarbageCollectionAdaptationMode>
   </PropertyGroup>
-  
-  <Import Project="..\multitargeting.props" Condition="Exists('..\multitargeting.props')" />
-  <PropertyGroup Condition="!Exists('..\multitargeting.props')">
-    <TargetFramework>net472</TargetFramework>
-  </PropertyGroup>
 
+  <!-- Trap arithmetic overflow/underflow in Debug builds so off-by-one bugs surface as exceptions
+       during development instead of silently wrapping. -->
   <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
-    <DebugType>full</DebugType>
-    <DebugSymbols>true</DebugSymbols>
-    <CheckForOverflowUnderflow>True</CheckForOverflowUnderflow>
+    <CheckForOverflowUnderflow>true</CheckForOverflowUnderflow>
   </PropertyGroup>
-
-  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
-    <DebugType>pdbonly</DebugType>
-    <DebugSymbols>true</DebugSymbols>
-  </PropertyGroup>
-
-  <PropertyGroup>
-    <CodeAnalysisRuleSet>..\ICSharpCode.Decompiler\ICSharpCode.Decompiler.ruleset</CodeAnalysisRuleSet>
-  </PropertyGroup>
-
-  <Import Project="..\packages.props" />
 
   <ItemGroup>
-    <PackageReference Include="AvalonEdit" Version="$(AvalonEditVersion)" />
-    <PackageReference Include="System.IO.Compression" Version="4.3.0" />
-    <PackageReference Include="System.Reflection.Metadata" Version="$(SystemReflectionMetadataVersion)" />
-    <PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="$(SystemCompilerServicesUnsafeVersion)" />
-    <PackageReference Include="Dirkster.AvalonDock.Themes.VS2013" Version="4.50.1" />
-    <PackageReference Include="Microsoft.VisualStudio.Composition" Version="16.9.6-alpha" />
-    <PackageReference Include="System.Composition" Version="$(SystemCompositionVersion)" />
-    <PackageReference Include="Mono.Cecil" Version="$(MonoCecilVersion)" />
-    <PackageReference Include="OSVersionHelper" Version="1.1.24" />
-    <PackageReference Include="DataGridExtensions" Version="2.5.0" />
-    <PackageReference Include="Microsoft.Xaml.Behaviors.Wpf" Version="1.1.31" />
-    <PackageReference Include="TomsToolbox.Wpf.Styles" Version="2.5.3" />
-    <PackageReference Include="System.Runtime.Loader" Version="4.3.0" />
+    <AvaloniaResource Include="Assets\**" />
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Include="..\ICSharpCode.Decompiler.PdbProvider.Cecil\MonoCecilDebugInfoProvider.cs" Link="DebugInfo\MonoCecilDebugInfoProvider.cs" />
-    <EmbeddedResource Include="..\doc\ILSpyAboutPage.txt" />
-    <EmbeddedResource Include="..\doc\ILSpyAboutPage_zh_Hans.txt" />
-    <EmbeddedResource Include="..\doc\third-party-notices.txt" />
-    <EmbeddedResource Include="..\doc\license.txt">
-      <Link>license.txt</Link>
+    <AvaloniaResource Remove="Assets\ILSpy-Large.ico" />
+    <AvaloniaResource Remove="Assets\ILSpy.pdn" />
+    <!-- macOS bundle inputs: copied into ILSpy.app at publish-time by BuildMacAppBundle.
+         Excluded from avares:// because they're consumed by the OS loader, not the app. -->
+    <AvaloniaResource Remove="Assets\ILSpy.icns" />
+    <AvaloniaResource Remove="Assets\macos\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="TextView\*.xshd" />
+    <EmbeddedResource Include="..\doc\ILSpyAboutPage.txt">
+      <LogicalName>ILSpyAboutPage.txt</LogicalName>
     </EmbeddedResource>
-    <Resource Include="Images\NuGet.png" />
-    <Resource Include="Images\DarkMode.png" />
-    <Resource Include="Images\ILSpy.ico" />
-    <EmbeddedResource Include="TextView\CSharp-Mode.xshd" />
-    <EmbeddedResource Include="TextView\ILAsm-Mode.xshd" />
-    <EmbeddedResource Include="TextView\Asm-Mode.xshd" />
-    <EmbeddedResource Include="TextView\XML-Mode.xshd" />
-    <EmbeddedResource Include="TextView\CSharp-Mode-Dark.xshd" />
-    <EmbeddedResource Include="TextView\ILAsm-Mode-Dark.xshd" />
-    <EmbeddedResource Include="TextView\Asm-Mode-Dark.xshd" />
-    <EmbeddedResource Include="TextView\XML-Mode-Dark.xshd" />
-    <Compile Remove="Properties\AssemblyInfo.template.cs" />
-    <None Remove="Properties\launchSettings.json" />
-    <None Remove="Properties\app.config.template" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Compile Update="Properties\Resources.Designer.cs">
-      <DesignTime>True</DesignTime>
-      <AutoGen>True</AutoGen>
-      <DependentUpon>Resources.resx</DependentUpon>
-    </Compile>
-  </ItemGroup>
-
-  <ItemGroup>
-    <EmbeddedResource Update="Properties\Resources.resx">
-      <Generator>PublicResXFileCodeGenerator</Generator>
-      <LastGenOutput>Resources.Designer.cs</LastGenOutput>
+    <EmbeddedResource Include="..\doc\third-party-notices.txt">
+      <LogicalName>third-party-notices.txt</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\LICENSE">
+      <LogicalName>license.txt</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Avalonia core -->
+    <PackageReference Include="Avalonia" />
+    <PackageReference Include="Avalonia.Desktop" />
+    <PackageReference Include="Avalonia.Themes.Simple" />
+    <PackageReference Include="Svg.Controls.Skia.Avalonia" />
+    <!-- Avalonia 12 DevTools: the in-app bridge half. Pairs with the AvaloniaUI.DeveloperTools
+         global tool (the inspector UI process) that connects over this bridge. DEBUG-only: the
+         assets are dropped in Release so nothing diagnostic ships. The matching WithDeveloperTools
+         and AttachDeveloperTools calls live in Program.cs / App.axaml.cs, also under #if DEBUG. -->
+    <PackageReference Include="AvaloniaUI.DiagnosticsSupport">
+      <IncludeAssets Condition="'$(Configuration)' != 'Debug'">None</IncludeAssets>
+      <PrivateAssets Condition="'$(Configuration)' != 'Debug'">All</PrivateAssets>
+    </PackageReference>
+
+    <!-- Editor, docking, grid, behaviors -->
+    <PackageReference Include="Avalonia.AvaloniaEdit" />
+    <PackageReference Include="AvaloniaEdit.TextMate" />
+    <PackageReference Include="Xaml.Behaviors.Avalonia" />
+    <PackageReference Include="Dock.Avalonia" />
+    <PackageReference Include="Dock.Avalonia.Themes.Simple" />
+    <PackageReference Include="Dock.Controls.Recycling" />
+    <PackageReference Include="Dock.Model.Mvvm" />
+    <PackageReference Include="ProDataGrid" />
+
+    <!-- MVVM, DI, MEF -->
+    <PackageReference Include="CommunityToolkit.Mvvm" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="System.Composition.AttributedModel" />
+    <PackageReference Include="System.Composition.Hosting" />
+    <PackageReference Include="System.Composition.TypedParts" />
+
+    <!-- NRBF decoder for the ImageList resource viewer — first-party Microsoft MIT
+         package, netstandard2.0+, parses BinaryFormatter-shape payloads without
+         instantiating the contained types. Lets us decode
+         System.Windows.Forms.ImageListStreamer blobs on Linux/macOS without
+         referencing WinForms. -->
+    <PackageReference Include="System.Formats.Nrbf" />
+
+    <!-- CLI parsing -->
+    <PackageReference Include="McMaster.Extensions.CommandLineUtils" />
+
+    <!-- NuGet V3 feed client for the "Open from NuGet feed" dialog: search, version
+         enumeration, and download into the global packages folder. -->
+    <PackageReference Include="NuGet.Protocol" />
+
+    <!-- Parses/validates target-framework monikers for the "Set Target Framework" dialog. -->
+    <PackageReference Include="NuGet.Frameworks" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ICSharpCode.ILSpyX\ICSharpCode.ILSpyX.csproj" />
     <ProjectReference Include="..\ICSharpCode.Decompiler\ICSharpCode.Decompiler.csproj" />
-    <ProjectReference Include="..\SharpTreeView\ICSharpCode.TreeView.csproj" />
+    <ProjectReference Include="..\ICSharpCode.BamlDecompiler\ICSharpCode.BamlDecompiler.csproj" />
   </ItemGroup>
 
-  <ItemGroup Condition="'$(Configuration)' == 'Debug'">
-    <PackageReference Include="Microsoft.DiaSymReader.Converter.Xml" Version="$(DSRConverterXmlVersion)" />
+  <!-- The Debug Steps pane is a DEBUG-only diagnostic. The code-behind and viewmodel
+       are wrapped in `#if DEBUG`, so the C# type vanishes under Release; but Avalonia
+       compiles every .axaml file regardless of preprocessor state, and the XamlIl
+       compiler then fails resolving x:Class="ICSharpCode.ILSpy.Views.DebugSteps". Removing the
+       AXAML from the build under non-Debug configurations matches the C# gating. -->
+  <ItemGroup Condition="'$(Configuration)' != 'Debug'">
+    <AvaloniaXaml Remove="Views\DebugSteps.axaml" />
   </ItemGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug' AND $([MSBuild]::IsOSPlatform('Windows'))">
+    <DefineConstants>$(DefineConstants);WINDOWS</DefineConstants>
+  </PropertyGroup>
 
+  <!-- macOS .app bundle.
+       The Avalonia Window.Icon property doesn't reach the Dock on macOS; the Dock
+       reads CFBundleIconFile from Info.plist and loads <name>.icns from Resources/.
+       Bundle layout under bin/<config>/<tfm>/<rid>/:
+         ILSpy.app/Contents/Info.plist
+         ILSpy.app/Contents/MacOS/<published files, with apphost made executable>
+         ILSpy.app/Contents/Resources/ILSpy.icns
+       Trigger: any osx-* RuntimeIdentifier after the standard Publish target. -->
+  <Target Name="BuildMacAppBundle"
+          AfterTargets="Publish"
+          Condition="$(RuntimeIdentifier.StartsWith('osx-'))">
+    <PropertyGroup>
+      <_MacBundleRoot>$([System.IO.Path]::GetFullPath('$(PublishDir)..'))/$(AssemblyName).app</_MacBundleRoot>
+      <_MacBundleContents>$(_MacBundleRoot)/Contents</_MacBundleContents>
+    </PropertyGroup>
+    <ItemGroup>
+      <_MacPublishFiles Include="$(PublishDir)**/*" />
+    </ItemGroup>
+    <RemoveDir Directories="$(_MacBundleRoot)" />
+    <MakeDir Directories="$(_MacBundleContents);$(_MacBundleContents)/MacOS;$(_MacBundleContents)/Resources" />
+    <Copy SourceFiles="@(_MacPublishFiles)"
+          DestinationFiles="@(_MacPublishFiles->'$(_MacBundleContents)/MacOS/%(RecursiveDir)%(Filename)%(Extension)')" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)/Assets/ILSpy.icns"
+          DestinationFolder="$(_MacBundleContents)/Resources" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)/Assets/macos/Info.plist"
+          DestinationFolder="$(_MacBundleContents)" />
+    <Exec Command="chmod +x &quot;$(_MacBundleContents)/MacOS/$(AssemblyName)&quot;"
+          Condition="!$([MSBuild]::IsOSPlatform('Windows'))" />
+    <Message Importance="high" Text="macOS bundle written to $(_MacBundleRoot)" />
+  </Target>
+
+  <!-- Locate the installed MSVC tools so ApplyStackExtension below can find editbin.exe. The props
+       file the import pulls in defines $(VCToolsVersion); it only exists when building under VS /
+       a Developer environment on Windows, so $(VCToolsVersion) stays empty everywhere else and the
+       stack-extension target is skipped. -->
   <PropertyGroup>
-    <VCBasePath>$(MSBuildToolsPath)\..\..\..\VC\</VCBasePath>
     <VCToolsVersionPropsFileNameDefault>Microsoft.VCToolsVersion.default.props</VCToolsVersionPropsFileNameDefault>
-    <!-- This is necessary as long as AppVeyor does not offer Visual Studio 2019 RC or later -->
-    <VCToolsVersionPropsFileNameVS2019Preview>Microsoft.VCToolsVersion.v142.default.props</VCToolsVersionPropsFileNameVS2019Preview>
+    <VCBasePath>$(MSBuildToolsPath)\..\..\..\VC\</VCBasePath>
+    <!-- In VS 2022 there is an extra directory level that's why we need to add one more '..' -->
+    <VCBasePath Condition="!Exists('$(VCBasePath)Auxiliary\Build\$(VCToolsVersionPropsFileNameDefault)')">$(MSBuildToolsPath)\..\..\..\..\VC\</VCBasePath>
     <VCToolsVersionPropsFile>$(VCBasePath)Auxiliary\Build\$(VCToolsVersionPropsFileNameDefault)</VCToolsVersionPropsFile>
-    <VCToolsVersionPropsFile Condition="!Exists('$(VCToolsVersionPropsFile)')">$(VCBasePath)Auxiliary\Build\$(VCToolsVersionPropsFileNameVS2019Preview)</VCToolsVersionPropsFile>
   </PropertyGroup>
 
   <Import Project="$(VCToolsVersionPropsFile)" Condition="Exists('$(VCToolsVersionPropsFile)')" />
 
   <ItemGroup>
     <SortResXInput Include="Properties\*.resx" />
-    <SortResXInput Include="..\ILSpy.AddIn\*.resx" />
     <SortResXInput Include="..\ILSpy.ReadyToRun\Properties\*.resx" />
     <SortResXStamp Include="obj\sort-resx.stamp" />
   </ItemGroup>
 
-  <Target Name="SortResX" BeforeTargets="BeforeBuild" Inputs="@(SortResXInput)" Outputs="@(SortResXStamp)">
+  <!-- Keep .resx entries sorted by name so localisation diffs stay clean. Local Windows builds
+       only (the command is empty otherwise) and skipped on CI; the stamp makes it incremental. -->
+  <Target Name="SortResX" BeforeTargets="BeforeBuild" Inputs="@(SortResXInput)" Outputs="@(SortResXStamp)" Condition="'$(GITHUB_ACTIONS)' != 'true'">
     <PropertyGroup Condition=" '$(OS)' == 'Windows_NT' ">
       <SortResX>powershell -NoProfile -ExecutionPolicy Bypass -File BuildTools/sort-resx.ps1</SortResX>
     </PropertyGroup>
-    <Exec WorkingDirectory=".." Command="$(SortResX)" Timeout="60000" />
-    <Touch Files="@(SortResXStamp)" AlwaysCreate="true" />
+    <PropertyGroup Condition=" '$(OS)' != 'Windows_NT' ">
+      <SortResX>pwsh -NoProfile -ExecutionPolicy Bypass -File BuildTools/sort-resx.ps1</SortResX>
+    </PropertyGroup>
+    <Exec WorkingDirectory=".." Command="$(SortResX)" Timeout="60000" Condition="'$(SortResX)' != ''" />
+    <Touch Files="@(SortResXStamp)" AlwaysCreate="true" Condition="'$(SortResX)' != ''" />
   </Target>
 
-  <Target Name="ApplyStackExtension" AfterTargets="PostBuildEvent">
-    <Exec Condition="'$(VCToolsVersion)'!=''" Command="&quot;$(VCBasePath)Tools\MSVC\$(VCToolsVersion)\bin\Hostx64\x64\editbin.exe&quot; /stack:16777216 &quot;$(TargetPath)&quot;&#xD;&#xA;EXIT 0" />
-    <Exec Command="&quot;$(TargetFrameworkSDKToolsDirectory)sn.exe&quot; -R &quot;$(TargetPath)&quot; &quot;$(SolutionDir)\ICSharpCode.Decompiler\ICSharpCode.Decompiler.snk&quot;" />
+  <!-- Deeply nested types / expressions can drive the IL+AST transforms into recursion deep
+       enough to overflow the default 1 MB main-thread stack. On Windows the managed runtime
+       can't grow the main thread's stack at run time, so (as in the WPF build) editbin rewrites
+       the apphost's PE stack-reserve header to 16 MB. Gated on the MSVC tools being present
+       ($(VCToolsVersion) is empty outside a VS / Developer environment), so it is a no-op on
+       Linux/macOS CI and any non-MSVC Windows build. EXIT 0 keeps editbin warnings from failing
+       the build. -->
+  <Target Name="ApplyStackExtension" AfterTargets="PostBuildEvent" Condition="'$(VCToolsVersion)'!=''">
+    <Exec Command="&quot;$(VCBasePath)Tools\MSVC\$(VCToolsVersion)\bin\Hostx64\x64\editbin.exe&quot; /stack:16777216 &quot;$(TargetDir)$(TargetName).exe&quot;&#xD;&#xA;EXIT 0" />
   </Target>
 </Project>

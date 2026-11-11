@@ -1,17 +1,20 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     <RootNamespace>ICSharpCode.Decompiler.PowerShell</RootNamespace>
+    <LangVersion>8.0</LangVersion>
   </PropertyGroup>
 
-  <Import Project="..\packages.props" />
-
   <ItemGroup>
-    <PackageReference Include="PowerShellStandard.Library" Version="5.1.0" />
-    <PackageReference Include="Mono.Cecil" Version="$(MonoCecilVersion)" />
+    <PackageReference Include="PowerShellStandard.Library" />
+    <PackageReference Include="Mono.Cecil" />
+    <!-- Unify System.Memory with the version ICSharpCode.Decompiler binds to;
+         without this, PowerShellStandard.Library's transitive 4.5.5 wins as
+         "primary" and conflicts with Decompiler.dll's 4.6.x binding (MSB3277). -->
+    <PackageReference Include="System.Memory" />
   </ItemGroup>
 
   <ItemGroup>
@@ -19,9 +22,13 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Include="..\ICSharpCode.Decompiler.PdbProvider.Cecil\MonoCecilDebugInfoProvider.cs" Link="MonoCecilDebugInfoProvider.cs" />
-    <Compile Include="..\ILSpy\DebugInfo\PortableDebugInfoProvider.cs" Link="PortableDebugInfoProvider.cs" />
-    <Compile Include="..\ILSpy\DebugInfo\DebugInfoUtils.cs" Link="DebugInfoUtils.cs" />
+    <Compile Include="..\ICSharpCode.ILSpyX\PdbProvider\MonoCecilDebugInfoProvider.cs" Link="%(Filename)%(Extension)" />
+    <Compile Include="..\ICSharpCode.ILSpyX\PdbProvider\PortableDebugInfoProvider.cs" Link="%(Filename)%(Extension)" />
+    <Compile Include="..\ICSharpCode.ILSpyX\PdbProvider\DebugInfoUtils.cs" Link="%(Filename)%(Extension)" />
   </ItemGroup>
 
+  <Target Name="PostBuild" AfterTargets="PostBuildEvent">
+    <Exec Condition=" '$(OS)' == 'Windows_NT' " Command="powershell -Command &quot;Copy-Item '$(ProjectDir)manifest.psd1' '$(TargetDir)$(TargetName).psd1'&quot;" />
+	<Exec Condition=" '$(OS)' != 'Windows_NT' " Command="pwsh -Command &quot;Copy-Item '$(ProjectDir)manifest.psd1' '$(TargetDir)$(TargetName).psd1'&quot;" />
+  </Target>
 </Project>

@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -175,6 +175,7 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 		public abstract bool HasReferenceTypeConstraint { get; }
 		public abstract bool HasValueTypeConstraint { get; }
 		public abstract bool HasUnmanagedConstraint { get; }
+		public abstract bool AllowsRefLikeType { get; }
 		public abstract Nullability NullabilityConstraint { get; }
 
 		public TypeKind Kind {
@@ -266,6 +267,11 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 		}
 
 		ITypeDefinition IType.GetDefinition()
+		{
+			return null;
+		}
+
+		ITypeDefinitionOrUnknown IType.GetDefinitionOrUnknown()
 		{
 			return null;
 		}
@@ -373,10 +379,8 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 
 		static Predicate<T> FilterNonStatic<T>(Predicate<T> filter) where T : class, IMember
 		{
-			if (filter == null)
-				return member => !member.IsStatic;
-			else
-				return member => !member.IsStatic && filter(member);
+			return member => (!member.IsStatic || member.SymbolKind == SymbolKind.Operator || member.IsVirtual)
+				&& (filter == null || filter(member));
 		}
 
 		public sealed override bool Equals(object obj)

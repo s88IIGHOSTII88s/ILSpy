@@ -1,14 +1,14 @@
-﻿// Copyright (c) 2011 AlphaSierraPapa for the SharpDevelop Team
-// 
+// Copyright (c) 2026 AlphaSierraPapa for the SharpDevelop Team
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
 // without restriction, including without limitation the rights to use, copy, modify, merge,
 // publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
 // to whom the Software is furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in all copies or
 // substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
 // INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
 // PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
@@ -18,124 +18,192 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
+
+using Avalonia.Threading;
 
 using ICSharpCode.Decompiler.TypeSystem;
+using ICSharpCode.ILSpyX;
+using ICSharpCode.ILSpyX.Analyzers;
+using ICSharpCode.ILSpyX.TreeView;
+
 using ICSharpCode.ILSpy.Analyzers.TreeNodes;
-using ICSharpCode.ILSpy.TreeNodes;
 
 namespace ICSharpCode.ILSpy.Analyzers
 {
-	class AnalyzerSearchTreeNode : AnalyzerTreeNode
+	/// <summary>
+	/// Row that runs a single <see cref="IAnalyzer"/> against an analysed symbol and shows
+	/// its results as its lazy-loaded children. On expansion a <see cref="Task.Run"/> calls
+	/// <see cref="IAnalyzer.Analyze"/> off the UI thread and posts each result back through
+	/// <see cref="Dispatcher.UIThread"/> so the tree updates incrementally. Collapsing the
+	/// row cancels the in-flight task and re-arms <see cref="SharpTreeNode.LazyLoading"/>
+	/// so the next expand starts a fresh fetch.
+	/// </summary>
+	public class AnalyzerSearchTreeNode : AnalyzerTreeNode
 	{
-		private readonly ThreadingSupport threading = new ThreadingSupport();
-		readonly ISymbol symbol;
+		readonly ISymbol analyzedSymbol;
 		readonly IAnalyzer analyzer;
-		readonly string analyzerHeader;
+		readonly string headerText;
+		readonly Stopwatch stopwatch = new Stopwatch();
+		CancellationTokenSource? cancellation;
+		Task? loadTask;
 
-		public AnalyzerSearchTreeNode(ISymbol symbol, IAnalyzer analyzer, string analyzerHeader)
+		public AnalyzerSearchTreeNode(ISymbol analyzedSymbol, IAnalyzer analyzer, string? analyzerHeader)
 		{
-			this.symbol = symbol;
+			this.analyzedSymbol = analyzedSymbol ?? throw new ArgumentNullException(nameof(analyzedSymbol));
 			this.analyzer = analyzer ?? throw new ArgumentNullException(nameof(analyzer));
-			this.LazyLoading = true;
-			this.analyzerHeader = analyzerHeader;
+			this.headerText = analyzerHeader ?? string.Empty;
+			LazyLoading = true;
 		}
 
-		public override object Text => analyzerHeader + (Children.Count > 0 ? " (" + Children.Count + ")" : "");
+		public IAnalyzer Analyzer => analyzer;
+		public ISymbol AnalyzedSymbol => analyzedSymbol;
 
+		/// <summary>The header string this row started with (e.g. "Used By").</summary>
+		public string AnalyzerHeader => headerText;
+
+		/// <summary>True while the background fetch is in flight.</summary>
+		public bool IsLoading => loadTask is { IsCompleted: false };
+
+		public override object Text => IsLoading || Children.Count == 0
+			? headerText
+			: headerText + " (" + Children.Count + " in " + stopwatch.ElapsedMilliseconds + " ms)";
+
+		/// <summary>
+		/// Semantic icon for an analyzer-search header row ("Used By", "Uses", "Exposed By",
+		/// etc.). Without this override the row inherits null from <see cref="SharpTreeNode"/>
+		/// and renders an empty icon slot next to the header text — visually mismatched with
+		/// the result rows underneath, which all carry entity-kind icons.
+		/// </summary>
 		public override object Icon => Images.Search;
 
 		protected override void LoadChildren()
 		{
-			threading.LoadChildren(this, FetchChildren);
+			cancellation?.Cancel();
+			cancellation?.Dispose();
+			cancellation = new CancellationTokenSource();
+			var token = cancellation.Token;
+
+			// "Loading…" placeholder. Removed once the task settles. Posted synchronously
+			// so users who expand a long-running analysis see immediate feedback.
+			Children.Add(new LoadingPlaceholderNode());
+
+			stopwatch.Restart();
+			loadTask = Task.Run(() => RunAnalyzer(token), token);
 		}
 
-		protected IEnumerable<AnalyzerTreeNode> FetchChildren(CancellationToken ct)
+		void RunAnalyzer(CancellationToken ct)
 		{
-			if (symbol is IEntity)
+			var assemblyList = CurrentAssemblyList;
+			if (assemblyList == null)
 			{
-				var context = new AnalyzerContext() {
-					CancellationToken = ct,
-					Language = Language,
-					AssemblyList = MainWindow.Instance.CurrentAssemblyList
-				};
-				foreach (var result in analyzer.Analyze(symbol, context))
+				FinishOnUIThread(error: new InvalidOperationException("no active assembly list"));
+				return;
+			}
+			var context = new AnalyzerContext {
+				CancellationToken = ct,
+				Language = Language,
+				AssemblyList = assemblyList,
+			};
+			try
+			{
+				foreach (var resultSymbol in analyzer.Analyze(analyzedSymbol, context))
 				{
-					yield return SymbolTreeNodeFactory(result);
+					if (ct.IsCancellationRequested)
+						return;
+					var child = WrapResult(resultSymbol);
+					Dispatcher.UIThread.Post(() => {
+						if (ct.IsCancellationRequested)
+							return;
+						// Insert before the trailing placeholder.
+						var index = Math.Max(0, Children.Count - 1);
+						Children.Insert(index, child);
+					});
 				}
+				FinishOnUIThread(error: null);
 			}
-			else
+			catch (OperationCanceledException)
 			{
-				throw new NotSupportedException("Currently symbols that are not entities are not supported!");
+				// Expected on collapse; OnCollapsing has already cleared state.
+			}
+			catch (Exception ex)
+			{
+				FinishOnUIThread(error: ex);
 			}
 		}
 
-		AnalyzerTreeNode SymbolTreeNodeFactory(ISymbol symbol)
+		void FinishOnUIThread(Exception? error)
 		{
-			if (symbol == null)
-			{
-				throw new ArgumentNullException(nameof(symbol));
-			}
-
-			switch (symbol)
-			{
-				case IModule module:
-					return new AnalyzedModuleTreeNode(module) {
-						Language = this.Language
-					};
-				case ITypeDefinition td:
-					return new AnalyzedTypeTreeNode(td) {
-						Language = this.Language
-					};
-				case IField fd:
-					return new AnalyzedFieldTreeNode(fd) {
-						Language = this.Language
-					};
-				case IMethod md:
-					return new AnalyzedMethodTreeNode(md) {
-						Language = this.Language
-					};
-				case IProperty pd:
-					return new AnalyzedPropertyTreeNode(pd) {
-						Language = this.Language
-					};
-				case IEvent ed:
-					return new AnalyzedEventTreeNode(ed) {
-						Language = this.Language
-					};
-				default:
-					throw new ArgumentOutOfRangeException(nameof(symbol), $"Symbol {symbol.GetType().FullName} is not supported.");
-			}
+			Dispatcher.UIThread.Post(() => {
+				stopwatch.Stop();
+				// Drop the placeholder if it's still the trailing child.
+				if (Children.Count > 0 && Children[Children.Count - 1] is LoadingPlaceholderNode)
+					Children.RemoveAt(Children.Count - 1);
+				if (error != null)
+					Children.Add(new AnalyzerErrorNode(error));
+				RaisePropertyChanged(nameof(Text));
+			});
 		}
 
-		protected override void OnIsVisibleChanged()
+		AnalyzerTreeNode WrapResult(ISymbol resultSymbol)
 		{
-			base.OnIsVisibleChanged();
-			if (!this.IsVisible && threading.IsRunning)
-			{
-				this.LazyLoading = true;
-				threading.Cancel();
-				this.Children.Clear();
-			}
+			var sourceEntity = analyzedSymbol as IEntity;
+			return resultSymbol switch {
+				IModule module => new AnalyzedModuleTreeNode(module, sourceEntity),
+				ITypeDefinition type => new AnalyzedTypeTreeNode(type, sourceEntity),
+				IField field => new AnalyzedFieldTreeNode(field, sourceEntity),
+				IMethod method => new AnalyzedMethodTreeNode(method, sourceEntity),
+				IProperty property => new AnalyzedPropertyTreeNode(property, sourceEntity),
+				IEvent ev => new AnalyzedEventTreeNode(ev, sourceEntity),
+				_ => throw new ArgumentOutOfRangeException(nameof(resultSymbol),
+					$"Symbol {resultSymbol.GetType().FullName} is not supported.")
+			};
 		}
 
-		public override bool HandleAssemblyListChanged(ICollection<LoadedAssembly> removedAssemblies, ICollection<LoadedAssembly> addedAssemblies)
+		protected override void OnCollapsing()
 		{
-			// only cancel a running analysis if user has manually added/removed assemblies
-			bool manualAdd = false;
-			foreach (var asm in addedAssemblies)
-			{
-				if (!asm.IsAutoLoaded)
-					manualAdd = true;
-			}
+			base.OnCollapsing();
+			if (loadTask == null)
+				return;
+			cancellation?.Cancel();
+			cancellation?.Dispose();
+			cancellation = null;
+			loadTask = null;
+			stopwatch.Reset();
+			Children.Clear();
+			LazyLoading = true;
+			RaisePropertyChanged(nameof(Text));
+		}
+
+		public override bool HandleAssemblyListChanged(
+			ICollection<LoadedAssembly> removedAssemblies,
+			ICollection<LoadedAssembly> addedAssemblies)
+		{
+			bool manualAdd = addedAssemblies.Any(a => !a.IsAutoLoaded);
 			if (removedAssemblies.Count > 0 || manualAdd)
 			{
-				this.LazyLoading = true;
-				threading.Cancel();
-				this.Children.Clear();
+				cancellation?.Cancel();
+				cancellation?.Dispose();
+				cancellation = null;
+				loadTask = null;
+				stopwatch.Reset();
+				LazyLoading = true;
+				Children.Clear();
+				RaisePropertyChanged(nameof(Text));
 			}
 			return true;
+		}
+
+		sealed class LoadingPlaceholderNode : AnalyzerTreeNode
+		{
+			public override object Text => "Loading…";
+
+			public override bool HandleAssemblyListChanged(
+				ICollection<LoadedAssembly> removedAssemblies,
+				ICollection<LoadedAssembly> addedAssemblies) => true;
 		}
 	}
 }

@@ -1,14 +1,14 @@
-﻿// Copyright (c) 2011 AlphaSierraPapa for the SharpDevelop Team
-// 
+// Copyright (c) 2026 AlphaSierraPapa for the SharpDevelop Team
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
 // without restriction, including without limitation the rights to use, copy, modify, merge,
 // publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
 // to whom the Software is furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in all copies or
 // substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
 // INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
 // PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
@@ -20,96 +20,66 @@ using System.Collections.Generic;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 
-using ICSharpCode.Decompiler;
 using ICSharpCode.Decompiler.Metadata;
 
-namespace ICSharpCode.ILSpy.Metadata
+namespace ICSharpCode.ILSpy.Metadata.CorTables
 {
-	internal class ModuleTableTreeNode : MetadataTableTreeNode
+	/// <summary>
+	/// View of the Module table — always exactly one row carrying the module name and the
+	/// MVID (the GUID identifying this module's identity). Reads the GUID heap for MVID and
+	/// the optional generation IDs (only present in EnC / hot-reload deltas).
+	/// </summary>
+	public sealed class ModuleTableTreeNode : MetadataTableTreeNode<ModuleTableTreeNode.ModuleEntry>
 	{
-		public ModuleTableTreeNode(PEFile module)
-			: base(HandleKind.ModuleDefinition, module)
+		public ModuleTableTreeNode(MetadataFile metadataFile)
+			: base(TableIndex.Module, metadataFile)
 		{
 		}
 
-		public override object Text => $"00 Module ({module.Metadata.GetTableRowCount(TableIndex.Module)})";
+		protected override IReadOnlyList<ModuleEntry> LoadTable()
+			=> [new ModuleEntry(metadataFile, (ModuleDefinitionHandle)EntityHandle.ModuleDefinition)];
 
-		public override object Icon => Images.Literal;
-
-		public override bool View(ViewModels.TabPageModel tabPage)
+		public sealed class ModuleEntry
 		{
-			tabPage.Title = Text.ToString();
-			tabPage.SupportsLanguageSwitching = false;
-
-			var view = Helpers.PrepareDataGrid(tabPage, this);
-
-			var list = new List<ModuleEntry>();
-			ModuleEntry scrollTargetEntry = default;
-
-			list.Add(new ModuleEntry(module, EntityHandle.ModuleDefinition));
-
-			view.ItemsSource = list;
-
-			tabPage.Content = view;
-
-			if (scrollTargetEntry.RID > 0)
-			{
-				ScrollItemIntoView(view, scrollTargetEntry);
-			}
-
-			return true;
-		}
-
-		struct ModuleEntry
-		{
-			readonly int metadataOffset;
-			readonly PEFile module;
-			readonly MetadataReader metadata;
+			readonly MetadataFile metadataFile;
 			readonly ModuleDefinitionHandle handle;
 			readonly ModuleDefinition moduleDef;
 
 			public int RID => MetadataTokens.GetRowNumber(handle);
 
+			[ColumnInfo("X8")]
 			public int Token => MetadataTokens.GetToken(handle);
 
-			public int Offset => metadataOffset
-				+ metadata.GetTableMetadataOffset(TableIndex.Module)
-				+ metadata.GetTableRowSize(TableIndex.Module) * (RID - 1);
+			[ColumnInfo("X8")]
+			public int Offset => GetRowOffset(metadataFile, TableIndex.Module, RID);
 
 			public int Generation => moduleDef.Generation;
 
-			public string Name => metadata.GetString(moduleDef.Name);
+			public string Name => metadataFile.Metadata.GetString(moduleDef.Name);
 
 			public string NameTooltip => $"{MetadataTokens.GetHeapOffset(moduleDef.Name):X} \"{Name}\"";
 
-			[StringFormat("X")]
+			[ColumnInfo("X8")]
 			public int Mvid => MetadataTokens.GetHeapOffset(moduleDef.Mvid);
 
-			public string MvidTooltip => metadata.GetGuid(moduleDef.Mvid).ToString();
+			public string MvidTooltip => metadataFile.Metadata.GetGuid(moduleDef.Mvid).ToString();
 
-			[StringFormat("X")]
+			[ColumnInfo("X8")]
 			public int GenerationId => MetadataTokens.GetHeapOffset(moduleDef.GenerationId);
 
-			public string GenerationIdTooltip => moduleDef.GenerationId.IsNil ? null : metadata.GetGuid(moduleDef.GenerationId).ToString();
+			public string? GenerationIdTooltip => moduleDef.GenerationId.IsNil ? null : metadataFile.Metadata.GetGuid(moduleDef.GenerationId).ToString();
 
-			[StringFormat("X")]
+			[ColumnInfo("X8")]
 			public int BaseGenerationId => MetadataTokens.GetHeapOffset(moduleDef.BaseGenerationId);
 
-			public string BaseGenerationIdTooltip => moduleDef.BaseGenerationId.IsNil ? null : metadata.GetGuid(moduleDef.BaseGenerationId).ToString();
+			public string? BaseGenerationIdTooltip => moduleDef.BaseGenerationId.IsNil ? null : metadataFile.Metadata.GetGuid(moduleDef.BaseGenerationId).ToString();
 
-			public ModuleEntry(PEFile module, ModuleDefinitionHandle handle)
+			public ModuleEntry(MetadataFile metadataFile, ModuleDefinitionHandle handle)
 			{
-				this.metadataOffset = module.Reader.PEHeaders.MetadataStartOffset;
-				this.module = module;
-				this.metadata = module.Metadata;
+				this.metadataFile = metadataFile;
 				this.handle = handle;
-				this.moduleDef = metadata.GetModuleDefinition();
+				moduleDef = metadataFile.Metadata.GetModuleDefinition();
 			}
-		}
-
-		public override void Decompile(Language language, ITextOutput output, DecompilationOptions options)
-		{
-			language.WriteCommentLine(output, "Modules");
 		}
 	}
 }

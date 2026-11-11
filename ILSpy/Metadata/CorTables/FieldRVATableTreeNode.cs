@@ -1,14 +1,14 @@
-﻿// Copyright (c) 2011 AlphaSierraPapa for the SharpDevelop Team
-// 
+// Copyright (c) 2026 AlphaSierraPapa for the SharpDevelop Team
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
 // without restriction, including without limitation the rights to use, copy, modify, merge,
 // publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
 // to whom the Software is furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in all copies or
 // substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
 // INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
 // PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
@@ -20,115 +20,66 @@ using System.Collections.Generic;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 
-using ICSharpCode.Decompiler;
-using ICSharpCode.Decompiler.Disassembler;
-using ICSharpCode.Decompiler.IL;
 using ICSharpCode.Decompiler.Metadata;
 
-namespace ICSharpCode.ILSpy.Metadata
+namespace ICSharpCode.ILSpy.Metadata.CorTables
 {
-	internal class FieldRVATableTreeNode : MetadataTableTreeNode
+	/// <summary>
+	/// View of the FieldRVA table — for static fields backed by a fixed PE-image RVA, the
+	/// table maps each FieldDef to its data location. Common with <c>fixed</c> array initializers
+	/// (the compiler emits a synthesised type whose static fields point at the .rdata bytes).
+	/// </summary>
+	public sealed class FieldRVATableTreeNode : MetadataTableTreeNode<FieldRVATableTreeNode.FieldRVAEntry>
 	{
-		public FieldRVATableTreeNode(PEFile module)
-			: base((HandleKind)0x1D, module)
+		public FieldRVATableTreeNode(MetadataFile metadataFile)
+			: base(TableIndex.FieldRva, metadataFile)
 		{
 		}
 
-		public override object Text => $"1D FieldRVA ({module.Metadata.GetTableRowCount(TableIndex.FieldRva)})";
-
-		public override object Icon => Images.Literal;
-
-		public unsafe override bool View(ViewModels.TabPageModel tabPage)
+		protected override IReadOnlyList<FieldRVAEntry> LoadTable()
 		{
-			tabPage.Title = Text.ToString();
-			tabPage.SupportsLanguageSwitching = false;
-
-			var view = Helpers.PrepareDataGrid(tabPage, this);
-			var metadata = module.Metadata;
-
 			var list = new List<FieldRVAEntry>();
-			FieldRVAEntry scrollTargetEntry = default;
-
+			var metadata = metadataFile.Metadata;
 			var length = metadata.GetTableRowCount(TableIndex.FieldRva);
-			byte* ptr = metadata.MetadataPointer;
-			int metadataOffset = module.Reader.PEHeaders.MetadataStartOffset;
+			var reader = metadata.AsBlobReader();
+			reader.Offset = metadata.GetTableMetadataOffset(TableIndex.FieldRva);
+			int fieldDefSize = metadata.GetTableRowCount(TableIndex.Field) < ushort.MaxValue ? 2 : 4;
 			for (int rid = 1; rid <= length; rid++)
 			{
-				FieldRVAEntry entry = new FieldRVAEntry(module, ptr, metadataOffset, rid);
-				if (entry.RID == this.scrollTarget)
-				{
-					scrollTargetEntry = entry;
-				}
-				list.Add(entry);
+				int rva = reader.ReadInt32();
+				int fieldRow = fieldDefSize == 2 ? reader.ReadUInt16() : reader.ReadInt32();
+				list.Add(new FieldRVAEntry(metadataFile, rid, rva, MetadataTokens.FieldDefinitionHandle(fieldRow)));
 			}
-
-			view.ItemsSource = list;
-
-			tabPage.Content = view;
-
-			if (scrollTargetEntry.RID > 0)
-			{
-				ScrollItemIntoView(view, scrollTargetEntry);
-			}
-
-			return true;
+			return list;
 		}
 
-		readonly struct FieldRVA
+		public sealed class FieldRVAEntry
 		{
-			public readonly int Offset;
-			public readonly FieldDefinitionHandle Field;
-
-			public unsafe FieldRVA(byte* ptr, int fieldDefSize)
-			{
-				Offset = Helpers.GetValue(ptr, 4);
-				Field = MetadataTokens.FieldDefinitionHandle(Helpers.GetValue(ptr + 4, fieldDefSize));
-			}
-		}
-
-		unsafe struct FieldRVAEntry
-		{
-			readonly PEFile module;
-			readonly MetadataReader metadata;
-			readonly FieldRVA fieldLayout;
+			// Verbatim fieldHandle — see FieldLayoutTableTreeNode for the C# 14 keyword note.
+			readonly MetadataFile metadataFile;
+			readonly FieldDefinitionHandle fieldHandle;
 
 			public int RID { get; }
 
+			[ColumnInfo("X8")]
 			public int Token => 0x1D000000 | RID;
 
-			public int Offset { get; }
+			[ColumnInfo("X8", Kind = ColumnKind.Token)]
+			public int Field => MetadataTokens.GetToken(fieldHandle);
 
-			[StringFormat("X8")]
-			public int Field => MetadataTokens.GetToken(fieldLayout.Field);
+			string? fieldTooltip;
+			public string? FieldTooltip => GenerateTooltip(ref fieldTooltip, metadataFile, fieldHandle);
 
-			public string FieldTooltip {
-				get {
-					ITextOutput output = new PlainTextOutput();
-					var context = new Decompiler.Metadata.GenericContext(default(TypeDefinitionHandle), module);
-					((EntityHandle)fieldLayout.Field).WriteTo(module, output, context);
-					return output.ToString();
-				}
-			}
+			[ColumnInfo("X8")]
+			public int RVA { get; }
 
-			[StringFormat("X")]
-			public int FieldOffset => fieldLayout.Offset;
-
-			public FieldRVAEntry(PEFile module, byte* ptr, int metadataOffset, int row)
+			public FieldRVAEntry(MetadataFile metadataFile, int rid, int rva, FieldDefinitionHandle field)
 			{
-				this.module = module;
-				this.metadata = module.Metadata;
-				this.RID = row;
-				var rowOffset = metadata.GetTableMetadataOffset(TableIndex.FieldRva)
-					+ metadata.GetTableRowSize(TableIndex.FieldRva) * (row - 1);
-				this.Offset = metadataOffset + rowOffset;
-				int fieldDefSize = metadata.GetTableRowCount(TableIndex.Field) < ushort.MaxValue ? 2 : 4;
-				this.fieldLayout = new FieldRVA(ptr + rowOffset, fieldDefSize);
+				this.metadataFile = metadataFile;
+				RID = rid;
+				RVA = rva;
+				fieldHandle = field;
 			}
-		}
-
-		public override void Decompile(Language language, ITextOutput output, DecompilationOptions options)
-		{
-			language.WriteCommentLine(output, "FieldRVAs");
 		}
 	}
 }

@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -58,14 +58,19 @@ namespace ICSharpCode.Decompiler.TypeSystem
 
 		/// <summary>
 		/// The module in which this entity is defined.
+		/// May return null, if the IEntity was not created from a module.
 		/// </summary>
-		IModule ParentModule { get; }
+		IModule? ParentModule { get; }
 
 		/// <summary>
 		/// Gets the attributes on this entity.
 		/// Does not include inherited attributes.
 		/// </summary>
 		IEnumerable<IAttribute> GetAttributes();
+
+		bool HasAttribute(KnownAttribute attribute);
+
+		IAttribute? GetAttribute(KnownAttribute attribute);
 
 		/// <summary>
 		/// Gets the accessibility of this entity.

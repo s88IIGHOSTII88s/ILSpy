@@ -1,14 +1,14 @@
-﻿// Copyright (c) 2011 AlphaSierraPapa for the SharpDevelop Team
-// 
+// Copyright (c) 2026 AlphaSierraPapa for the SharpDevelop Team
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
 // without restriction, including without limitation the rights to use, copy, modify, merge,
 // publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
 // to whom the Software is furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in all copies or
 // substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
 // INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
 // PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
@@ -21,112 +21,67 @@ using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 
-using ICSharpCode.Decompiler;
-using ICSharpCode.Decompiler.Disassembler;
-using ICSharpCode.Decompiler.IL;
 using ICSharpCode.Decompiler.Metadata;
-using ICSharpCode.Decompiler.TypeSystem;
-using ICSharpCode.ILSpy.TreeNodes;
 
-namespace ICSharpCode.ILSpy.Metadata
+namespace ICSharpCode.ILSpy.Metadata.CorTables
 {
-	internal class PropertyTableTreeNode : MetadataTableTreeNode
+	/// <summary>
+	/// View of the Property table — every property the module's types declare. Method-level
+	/// accessor binding lives in MethodSemantics; this table just carries each property's
+	/// attributes, name, and signature blob.
+	/// </summary>
+	public sealed class PropertyTableTreeNode : MetadataTableTreeNode<PropertyTableTreeNode.PropertyDefEntry>
 	{
-		public PropertyTableTreeNode(PEFile module)
-			: base(HandleKind.PropertyDefinition, module)
+		public PropertyTableTreeNode(MetadataFile metadataFile)
+			: base(TableIndex.Property, metadataFile)
 		{
 		}
 
-		public override object Text => $"17 Property ({module.Metadata.GetTableRowCount(TableIndex.Property)})";
-
-		public override object Icon => Images.Literal;
-
-		public override bool View(ViewModels.TabPageModel tabPage)
+		protected override IReadOnlyList<PropertyDefEntry> LoadTable()
 		{
-			tabPage.Title = Text.ToString();
-			tabPage.SupportsLanguageSwitching = false;
-
-			var view = Helpers.PrepareDataGrid(tabPage, this);
-			var metadata = module.Metadata;
-
 			var list = new List<PropertyDefEntry>();
-			PropertyDefEntry scrollTargetEntry = default;
-
-			foreach (var row in metadata.PropertyDefinitions)
-			{
-				PropertyDefEntry entry = new PropertyDefEntry(module, row);
-				if (entry.RID == this.scrollTarget)
-				{
-					scrollTargetEntry = entry;
-				}
-				list.Add(entry);
-			}
-
-			view.ItemsSource = list;
-
-			tabPage.Content = view;
-
-			if (scrollTargetEntry.RID > 0)
-			{
-				ScrollItemIntoView(view, scrollTargetEntry);
-			}
-
-			return true;
+			foreach (var row in metadataFile.Metadata.PropertyDefinitions)
+				list.Add(new PropertyDefEntry(metadataFile, row));
+			return list;
 		}
 
-		struct PropertyDefEntry : IMemberTreeNode
+		public sealed class PropertyDefEntry
 		{
-			readonly int metadataOffset;
-			readonly PEFile module;
-			readonly MetadataReader metadata;
+			readonly MetadataFile metadataFile;
 			readonly PropertyDefinitionHandle handle;
 			readonly PropertyDefinition propertyDef;
 
 			public int RID => MetadataTokens.GetRowNumber(handle);
 
+			[ColumnInfo("X8")]
 			public int Token => MetadataTokens.GetToken(handle);
 
-			public int Offset => metadataOffset
-				+ metadata.GetTableMetadataOffset(TableIndex.Property)
-				+ metadata.GetTableRowSize(TableIndex.Property) * (RID - 1);
+			[ColumnInfo("X8")]
+			public int Offset => GetRowOffset(metadataFile, TableIndex.Property, RID);
 
-			[StringFormat("X8")]
+			[ColumnInfo("X8")]
 			public PropertyAttributes Attributes => propertyDef.Attributes;
 
 			public object AttributesTooltip => new FlagsTooltip {
 				FlagGroup.CreateMultipleChoiceGroup(typeof(PropertyAttributes), selectedValue: (int)propertyDef.Attributes, includeAll: false),
 			};
 
-			public string Name => metadata.GetString(propertyDef.Name);
+			public string Name => metadataFile.Metadata.GetString(propertyDef.Name);
 
 			public string NameTooltip => $"{MetadataTokens.GetHeapOffset(propertyDef.Name):X} \"{Name}\"";
 
-			IEntity IMemberTreeNode.Member => ((MetadataModule)module.GetTypeSystemWithCurrentOptionsOrNull()?.MainModule).GetDefinition(handle);
-
-			[StringFormat("X")]
+			[ColumnInfo("X8", Kind = ColumnKind.HeapOffset)]
 			public int Signature => MetadataTokens.GetHeapOffset(propertyDef.Signature);
 
-			public string SignatureTooltip {
-				get {
-					ITextOutput output = new PlainTextOutput();
-					((EntityHandle)handle).WriteTo(module, output, Decompiler.Metadata.GenericContext.Empty);
-					return output.ToString();
-				}
-			}
+			string? signatureTooltip;
+			public string? SignatureTooltip => GenerateTooltip(ref signatureTooltip, metadataFile, handle);
 
-			public PropertyDefEntry(PEFile module, PropertyDefinitionHandle handle)
+			public PropertyDefEntry(MetadataFile metadataFile, PropertyDefinitionHandle handle)
 			{
-				this.metadataOffset = module.Reader.PEHeaders.MetadataStartOffset;
-				this.module = module;
-				this.metadata = module.Metadata;
+				this.metadataFile = metadataFile;
 				this.handle = handle;
-				this.propertyDef = metadata.GetPropertyDefinition(handle);
+				propertyDef = metadataFile.Metadata.GetPropertyDefinition(handle);
 			}
-		}
-
-		public override void Decompile(Language language, ITextOutput output, DecompilationOptions options)
-		{
-			language.WriteCommentLine(output, "PropertyDefs");
 		}
 	}
 }

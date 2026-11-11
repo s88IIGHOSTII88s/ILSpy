@@ -1,6 +1,9 @@
-﻿#nullable enable
+#nullable enable
 using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
+using System.Linq;
 
 namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 {
@@ -39,7 +42,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 
 		public int GetLength2(string[]? arr)
 		{
-			return field_nullable_string!.Length + arr!.Length;
+			return field_nullable_string.Length + arr.Length;
 		}
 
 		public int? GetLength3(string[]? arr)
@@ -59,7 +62,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		public void CallByRef(ref string a, ref string? b)
 		{
 			ByRef(ref a).ToString();
-			ByRef(ref b)!.ToString();
+			ByRef(ref b).ToString();
 		}
 
 		public void Constraints<UC, C, CN, NN, S, SN, D, DN, NND>() where C : class where CN : class? where NN : notnull where S : struct where D : IDisposable where DN : IDisposable? where NND : notnull, IDisposable
@@ -110,5 +113,116 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		private int[]? _buckets;
 		private Entry[]? _entries;
 		private IEqualityComparer<TKey>? _comparer;
+	}
+
+	public class T05_NullableUnconstrainedGeneric
+	{
+		public static TValue? Default<TValue>()
+		{
+			return default;
+		}
+
+		public static void CallDefault()
+		{
+#if OPT
+			string? format = Default<string>();
+#else
+			// With optimizations it's a stack slot, so ILSpy picks a nullable type.
+			// Without optimizations it's a local, so the nullability is missing.
+			string format = Default<string>();
+#endif
+			int num = Default<int>();
+#if CS110 && NET70
+			nint num2 = Default<nint>();
+#else
+			int num2 = Default<int>();
+#endif
+			(object, string) tuple = Default<(object, string)>();
+			Console.WriteLine("No inlining");
+			Console.WriteLine(format, num, num2, tuple);
+		}
+	}
+
+	public class T06_ExplicitInterfaceImplementation : IEnumerable<KeyValuePair<string, string?>>, IEnumerable
+	{
+		IEnumerator<KeyValuePair<string, string?>> IEnumerable<KeyValuePair<string, string?>>.GetEnumerator()
+		{
+			yield return new KeyValuePair<string, string>("a", "b");
+		}
+
+		IEnumerator IEnumerable.GetEnumerator()
+		{
+			throw new NotImplementedException();
+		}
+	}
+
+	public class T07_ExplicitInterfaceImplementation : IEnumerator<KeyValuePair<string, string?>>, IEnumerator, IDisposable
+	{
+		KeyValuePair<string, string?> IEnumerator<KeyValuePair<string, string?>>.Current {
+			get {
+				throw new NotImplementedException();
+			}
+		}
+
+		object IEnumerator.Current {
+			get {
+				throw new NotImplementedException();
+			}
+		}
+
+		void IDisposable.Dispose()
+		{
+			throw new NotImplementedException();
+		}
+
+		bool IEnumerator.MoveNext()
+		{
+			throw new NotImplementedException();
+		}
+
+		void IEnumerator.Reset()
+		{
+			throw new NotImplementedException();
+		}
+	}
+
+	public class T08_NullablePostconditionAttributes
+	{
+		public bool TryGet(string key, [MaybeNullWhen(false)] out string value)
+		{
+			value = null;
+			return false;
+		}
+
+		public static void ThrowIfNull([NotNull] object? o)
+		{
+			if (o == null)
+			{
+				throw new ArgumentNullException("o");
+			}
+		}
+
+		[return: MaybeNull]
+		public T FirstOrDefault<T>(IEnumerable<T> source)
+		{
+			return default;
+		}
+	}
+
+	public class T09_Linq
+	{
+		public IEnumerable<string> QueryWithNonNullableReferenceTypes(IEnumerable<string> strings)
+		{
+			return from s in strings
+				   where s.Length > 0
+				   select s.ToUpper();
+		}
+
+		public IEnumerable<string> QueryWithNullableReferenceTypes(IEnumerable<string?> strings)
+		{
+			return from s in strings
+				   where s != null
+				   select s.ToUpper();
+		}
 	}
 }

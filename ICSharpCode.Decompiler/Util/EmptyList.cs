@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -15,10 +15,12 @@
 // FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
+#nullable enable
 
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 
 namespace ICSharpCode.Decompiler.Util
 {
@@ -91,13 +93,15 @@ namespace ICSharpCode.Decompiler.Util
 		}
 
 		T IEnumerator<T>.Current {
-			get { return default(T); }
+			get { throw new NotSupportedException(); }
 		}
 
 		object IEnumerator.Current {
-			get { return default(T); }
+			get { throw new NotSupportedException(); }
 		}
 
+		[SuppressMessage("Usage", "CA1063:Implement IDisposable Correctly",
+			Justification = "Explicit IDisposable implementation for IEnumerator<T>; intentional no-op for the singleton.")]
 		void IDisposable.Dispose()
 		{
 		}

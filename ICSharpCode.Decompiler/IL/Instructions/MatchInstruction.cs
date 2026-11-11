@@ -1,4 +1,5 @@
-﻿// Copyright (c) 2020 Siegfried Pammer
+#nullable enable
+// Copyright (c) 2020 Siegfried Pammer
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -18,7 +19,7 @@
 
 using System;
 using System.Diagnostics;
-using System.Linq;
+using System.Diagnostics.CodeAnalysis;
 
 using ICSharpCode.Decompiler.TypeSystem;
 
@@ -84,7 +85,7 @@ namespace ICSharpCode.Decompiler.IL
 					comp(deconstruct.result1(c) == 1),
 					match.type[D].deconstruct(d = deconstruct.result2(c)) {
 						comp(deconstruct.result1(d) == 2),
-						comp(deconstruct.result2(d) == 2),
+						comp(deconstruct.result2(d) == 3),
 					}
 				}
 		 */
@@ -96,7 +97,7 @@ namespace ICSharpCode.Decompiler.IL
 		public int NumPositionalPatterns {
 			get {
 				if (IsDeconstructCall)
-					return method.Parameters.Count - (method.IsStatic ? 1 : 0);
+					return method!.Parameters.Count - (method.IsStatic ? 1 : 0);
 				else if (IsDeconstructTuple)
 					return TupleType.GetTupleElementTypes(variable.Type).Length;
 				else
@@ -118,7 +119,7 @@ namespace ICSharpCode.Decompiler.IL
 		/// (even if the pattern fails to match!).
 		/// The pattern matching instruction evaluates to 1 (as I4) if the pattern matches, or 0 otherwise.
 		/// </summary>
-		public static bool IsPatternMatch(ILInstruction inst, out ILInstruction testedOperand)
+		public static bool IsPatternMatch(ILInstruction? inst, [NotNullWhen(true)] out ILInstruction? testedOperand, DecompilerSettings? settings)
 		{
 			switch (inst)
 			{
@@ -126,26 +127,54 @@ namespace ICSharpCode.Decompiler.IL
 					testedOperand = m.testedOperand;
 					return true;
 				case Comp comp:
-					testedOperand = comp.Left;
-					return IsConstant(comp.Right);
-				case ILInstruction logicNot when logicNot.MatchLogicNot(out var operand):
-					return IsPatternMatch(operand, out testedOperand);
+					if (comp.MatchLogicNot(out var operand) && IsPatternMatch(operand, out testedOperand, settings))
+					{
+						return settings?.PatternCombinators ?? true;
+					}
+					else
+					{
+						testedOperand = comp.Left;
+						if (!(settings?.RelationalPatterns ?? true))
+						{
+							if (comp.Kind is not (ComparisonKind.Equality or ComparisonKind.Inequality))
+								return false;
+						}
+						if (!(settings?.PatternCombinators ?? true))
+						{
+							if (comp.Kind is ComparisonKind.Inequality)
+								return false;
+						}
+						return IsConstant(comp.Right);
+					}
+				case Call call when IsCallToOpEquality(call, KnownTypeCode.String):
+					testedOperand = call.Arguments[0];
+					return call.Arguments[1].OpCode == OpCode.LdStr;
+				case Call call when IsCallToOpEquality(call, KnownTypeCode.Decimal):
+					testedOperand = call.Arguments[0];
+					return call.Arguments[1].OpCode == OpCode.LdcDecimal;
 				default:
 					testedOperand = null;
 					return false;
 			}
 		}
 
-		private static bool IsConstant(ILInstruction inst)
+		internal static bool IsCallToOpEquality(Call call, KnownTypeCode knownType)
 		{
-			return inst.OpCode switch
-			{
+			return call.Method.IsOperator && call.Method.Name == "op_Equality"
+				&& call.Method.DeclaringType.IsKnownType(knownType)
+				&& call.Arguments.Count == 2;
+		}
+
+		internal static bool IsConstant(ILInstruction inst)
+		{
+			return inst.OpCode switch {
 				OpCode.LdcDecimal => true,
 				OpCode.LdcF4 => true,
 				OpCode.LdcF8 => true,
 				OpCode.LdcI4 => true,
 				OpCode.LdcI8 => true,
 				OpCode.LdNull => true,
+				OpCode.DefaultValue => inst.ResultType == StackType.Obj || ((DefaultValue)inst).Type.IsKnownType(KnownTypeCode.NullableOfT),
 				_ => false
 			};
 		}
@@ -154,9 +183,9 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			if (this.IsDeconstructCall)
 			{
-				int firstOutParam = (method.IsStatic ? 1 : 0);
-				var outParamType = this.Method.Parameters[firstOutParam + index].Type;
-				if (!(outParamType is ByReferenceType brt))
+				int firstOutParam = (method!.IsStatic ? 1 : 0);
+				var outParamType = method.Parameters[firstOutParam + index].Type;
+				if (outParamType is not ByReferenceType brt)
 					throw new InvalidOperationException("deconstruct out param must be by reference");
 				return brt.ElementType;
 			}
@@ -186,8 +215,8 @@ namespace ICSharpCode.Decompiler.IL
 			Debug.Assert(SubPatterns.Count >= NumPositionalPatterns);
 			foreach (var subPattern in SubPatterns)
 			{
-				if (!IsPatternMatch(subPattern, out ILInstruction operand))
-					Debug.Fail("Sub-Pattern must be a valid pattern");
+				if (!IsPatternMatch(subPattern, out ILInstruction? operand, null))
+					throw new InvalidOperationException("Sub-Pattern must be a valid pattern");
 				// the first child is TestedOperand
 				int subPatternIndex = subPattern.ChildIndex - 1;
 				if (subPatternIndex < NumPositionalPatterns)
@@ -197,12 +226,12 @@ namespace ICSharpCode.Decompiler.IL
 				}
 				else if (operand.MatchLdFld(out var target, out _))
 				{
-					Debug.Assert(target.MatchLdLoc(variable));
+					Debug.Assert(target.MatchLdLocRef(variable));
 				}
 				else if (operand is CallInstruction call)
 				{
 					Debug.Assert(call.Method.AccessorKind == System.Reflection.MethodSemanticsAttributes.Getter);
-					Debug.Assert(call.Arguments[0].MatchLdLoc(variable));
+					Debug.Assert(call.Arguments[0].MatchLdLocRef(variable));
 				}
 				else
 				{
@@ -211,8 +240,10 @@ namespace ICSharpCode.Decompiler.IL
 			}
 		}
 
-		internal static bool IsDeconstructMethod(IMethod method)
+		internal static bool IsDeconstructMethod(IMethod? method)
 		{
+			if (method == null)
+				return false;
 			if (method.Name != "Deconstruct")
 				return false;
 			if (method.ReturnType.Kind != TypeKind.Void)
@@ -237,14 +268,14 @@ namespace ICSharpCode.Decompiler.IL
 
 			for (int i = firstOutParam; i < method.Parameters.Count; i++)
 			{
-				if (!method.Parameters[i].IsOut)
+				if (method.Parameters[i].ReferenceKind != ReferenceKind.Out)
 					return false;
 			}
 
 			return true;
 		}
 
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -261,7 +292,10 @@ namespace ICSharpCode.Decompiler.IL
 			if (IsDeconstructCall)
 			{
 				output.Write(".deconstruct[");
-				method.WriteTo(output);
+				if (method == null)
+					output.Write("<null>");
+				else
+					method.WriteTo(output);
 				output.Write(']');
 			}
 			if (IsDeconstructTuple)

@@ -1,14 +1,14 @@
-﻿// Copyright (c) 2011 AlphaSierraPapa for the SharpDevelop Team
-// 
+// Copyright (c) 2026 AlphaSierraPapa for the SharpDevelop Team
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
 // without restriction, including without limitation the rights to use, copy, modify, merge,
 // publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
 // to whom the Software is furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in all copies or
 // substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
 // INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
 // PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
@@ -17,150 +17,86 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System.Collections.Generic;
+using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 
-using ICSharpCode.Decompiler;
-using ICSharpCode.Decompiler.Disassembler;
-using ICSharpCode.Decompiler.IL;
 using ICSharpCode.Decompiler.Metadata;
 
-using Mono.Cecil;
-
-namespace ICSharpCode.ILSpy.Metadata
+namespace ICSharpCode.ILSpy.Metadata.CorTables
 {
-	class ImplMapTableTreeNode : MetadataTableTreeNode
+	/// <summary>
+	/// View of the ImplMap table — P/Invoke linkage. Each row maps a managed MethodDef (or
+	/// Field, in legacy CIL) to its native entry point: the <c>extern</c> name plus the
+	/// ModuleRef holding the DLL identifier.
+	/// </summary>
+	public sealed class ImplMapTableTreeNode : MetadataTableTreeNode<ImplMapTableTreeNode.ImplMapEntry>
 	{
-		public ImplMapTableTreeNode(PEFile module)
-			: base((HandleKind)0x1C, module)
+		public ImplMapTableTreeNode(MetadataFile metadataFile)
+			: base(TableIndex.ImplMap, metadataFile)
 		{
 		}
 
-		public override object Text => $"1C ImplMap ({module.Metadata.GetTableRowCount(TableIndex.ImplMap)})";
-
-		public override object Icon => Images.Literal;
-
-		public unsafe override bool View(ViewModels.TabPageModel tabPage)
+		protected override IReadOnlyList<ImplMapEntry> LoadTable()
 		{
-			tabPage.Title = Text.ToString();
-			tabPage.SupportsLanguageSwitching = false;
-
-			var view = Helpers.PrepareDataGrid(tabPage, this);
-			var metadata = module.Metadata;
-
 			var list = new List<ImplMapEntry>();
-			ImplMapEntry scrollTargetEntry = default;
-
-			var length = metadata.GetTableRowCount(TableIndex.ImplMap);
-			byte* ptr = metadata.MetadataPointer;
-			int metadataOffset = module.Reader.PEHeaders.MetadataStartOffset;
-			for (int rid = 1; rid <= length; rid++)
+			int rid = 0;
+			foreach (var (mappingFlags, memberForwarded, importName, importScope) in metadataFile.Metadata.GetImplMaps())
 			{
-				ImplMapEntry entry = new ImplMapEntry(module, ptr, metadataOffset, rid);
-				if (entry.RID == this.scrollTarget)
-				{
-					scrollTargetEntry = entry;
-				}
-				list.Add(entry);
+				list.Add(new ImplMapEntry(metadataFile, ++rid, mappingFlags, memberForwarded, importName, importScope));
 			}
-
-			view.ItemsSource = list;
-
-			tabPage.Content = view;
-
-			if (scrollTargetEntry.RID > 0)
-			{
-				ScrollItemIntoView(view, scrollTargetEntry);
-			}
-
-			return true;
+			return list;
 		}
 
-		readonly struct ImplMap
+		public sealed class ImplMapEntry
 		{
-			public readonly PInvokeAttributes MappingFlags;
-			public readonly EntityHandle MemberForwarded;
-			public readonly StringHandle ImportName;
-			public readonly ModuleReferenceHandle ImportScope;
-
-			public unsafe ImplMap(byte* ptr, int moduleRefSize, int memberForwardedTagRefSize, int stringHandleSize)
-			{
-				MappingFlags = (PInvokeAttributes)Helpers.GetValue(ptr, 2);
-				MemberForwarded = Helpers.FromMemberForwardedTag((uint)Helpers.GetValue(ptr + 2, memberForwardedTagRefSize));
-				ImportName = MetadataTokens.StringHandle(Helpers.GetValue(ptr + 2 + memberForwardedTagRefSize, stringHandleSize));
-				ImportScope = MetadataTokens.ModuleReferenceHandle(Helpers.GetValue(ptr + 2 + memberForwardedTagRefSize + stringHandleSize, moduleRefSize));
-			}
-		}
-
-		unsafe struct ImplMapEntry
-		{
-			readonly PEFile module;
-			readonly MetadataReader metadata;
-			readonly ImplMap implMap;
-
 			public int RID { get; }
 
+			[ColumnInfo("X8")]
 			public int Token => 0x1C000000 | RID;
 
-			public int Offset { get; }
+			[ColumnInfo("X8")]
+			public MethodImportAttributes MappingFlags { get; }
 
-			[StringFormat("X8")]
-			public PInvokeAttributes MappingFlags => implMap.MappingFlags;
-
-			const PInvokeAttributes otherFlagsMask = ~(PInvokeAttributes.CallConvMask | PInvokeAttributes.CharSetMask);
+			const MethodImportAttributes otherFlagsMask = ~(MethodImportAttributes.CallingConventionMask | MethodImportAttributes.CharSetMask);
 
 			public object MappingFlagsTooltip => new FlagsTooltip {
-				FlagGroup.CreateSingleChoiceGroup(typeof(PInvokeAttributes), "Character set: ", (int)PInvokeAttributes.CharSetMask, (int)(implMap.MappingFlags & PInvokeAttributes.CharSetMask), new Flag("CharSetNotSpec (0000)", 0, false), includeAny: false),
-				FlagGroup.CreateSingleChoiceGroup(typeof(PInvokeAttributes), "Calling convention: ", (int)PInvokeAttributes.CallConvMask, (int)(implMap.MappingFlags & PInvokeAttributes.CallConvMask), new Flag("Invalid (0000)", 0, false), includeAny: false),
-				FlagGroup.CreateMultipleChoiceGroup(typeof(PInvokeAttributes), "Flags:", (int)otherFlagsMask, (int)(implMap.MappingFlags & otherFlagsMask), includeAll: false),
+				FlagGroup.CreateSingleChoiceGroup(typeof(MethodImportAttributes), "Character set: ", (int)MethodImportAttributes.CharSetMask, (int)(MappingFlags & MethodImportAttributes.CharSetMask), new Flag("CharSetNotSpec (0000)", 0, false), includeAny: false),
+				FlagGroup.CreateSingleChoiceGroup(typeof(MethodImportAttributes), "Calling convention: ", (int)MethodImportAttributes.CallingConventionMask, (int)(MappingFlags & MethodImportAttributes.CallingConventionMask), new Flag("Invalid (0000)", 0, false), includeAny: false),
+				FlagGroup.CreateMultipleChoiceGroup(typeof(MethodImportAttributes), "Flags:", (int)otherFlagsMask, (int)(MappingFlags & otherFlagsMask), includeAll: false),
 			};
 
-			[StringFormat("X8")]
-			public int MemberForwarded => MetadataTokens.GetToken(implMap.MemberForwarded);
+			[ColumnInfo("X8", Kind = ColumnKind.Token)]
+			public int MemberForwarded => MetadataTokens.GetToken(memberForwarded);
 
-			public string MemberForwardedTooltip {
-				get {
-					ITextOutput output = new PlainTextOutput();
-					var context = new GenericContext(default(TypeDefinitionHandle), module);
-					((EntityHandle)implMap.MemberForwarded).WriteTo(module, output, context);
-					return output.ToString();
-				}
-			}
+			string? memberForwardedTooltip;
+			public string? MemberForwardedTooltip => GenerateTooltip(ref memberForwardedTooltip, metadataFile, memberForwarded);
 
-			[StringFormat("X8")]
-			public int ImportScope => MetadataTokens.GetToken(implMap.ImportScope);
+			public string ImportName { get; }
 
-			public string ImportScopeTooltip {
-				get {
-					ITextOutput output = new PlainTextOutput();
-					var context = new GenericContext(default(TypeDefinitionHandle), module);
-					((EntityHandle)implMap.ImportScope).WriteTo(module, output, context);
-					return output.ToString();
-				}
-			}
+			public string ImportNameTooltip => $"{MetadataTokens.GetHeapOffset(importNameHandle):X} \"{ImportName}\"";
 
-			public string ImportName => metadata.GetString(implMap.ImportName);
+			[ColumnInfo("X8", Kind = ColumnKind.Token)]
+			public int ImportScope => MetadataTokens.GetToken(importScope);
 
-			public string ImportNameTooltip => $"{MetadataTokens.GetHeapOffset(implMap.ImportName):X} \"{ImportName}\"";
+			string? importScopeTooltip;
+			public string? ImportScopeTooltip => GenerateTooltip(ref importScopeTooltip, metadataFile, importScope);
 
-			public unsafe ImplMapEntry(PEFile module, byte* ptr, int metadataOffset, int row)
+			readonly MetadataFile metadataFile;
+			readonly EntityHandle memberForwarded;
+			readonly StringHandle importNameHandle;
+			readonly ModuleReferenceHandle importScope;
+
+			public ImplMapEntry(MetadataFile metadataFile, int rid, MethodImportAttributes mappingFlags, EntityHandle memberForwarded, StringHandle importNameHandle, ModuleReferenceHandle importScope)
 			{
-				this.module = module;
-				this.metadata = module.Metadata;
-				this.RID = row;
-				var rowOffset = metadata.GetTableMetadataOffset(TableIndex.ImplMap)
-					+ metadata.GetTableRowSize(TableIndex.ImplMap) * (row - 1);
-				this.Offset = metadataOffset + rowOffset;
-				int moduleRefSize = metadata.GetTableRowCount(TableIndex.ModuleRef) < ushort.MaxValue ? 2 : 4;
-				int memberForwardedTagRefSize = metadata.ComputeCodedTokenSize(32768, TableMask.MethodDef | TableMask.Field);
-				int stringHandleSize = metadata.GetHeapSize(HeapIndex.String) < ushort.MaxValue ? 2 : 4;
-				this.implMap = new ImplMap(ptr + rowOffset, moduleRefSize, memberForwardedTagRefSize, stringHandleSize);
+				this.metadataFile = metadataFile;
+				RID = rid;
+				MappingFlags = mappingFlags;
+				this.memberForwarded = memberForwarded;
+				this.importNameHandle = importNameHandle;
+				ImportName = metadataFile.Metadata.GetString(importNameHandle);
+				this.importScope = importScope;
 			}
-		}
-
-		public override void Decompile(Language language, ITextOutput output, DecompilationOptions options)
-		{
-			language.WriteCommentLine(output, "ImplMap");
 		}
 	}
 }

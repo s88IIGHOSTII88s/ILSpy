@@ -16,6 +16,8 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+#nullable enable
+
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -56,10 +58,18 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 				throw new ArgumentNullException(nameof(formattingPolicy));
 
 			TypeSystemAstBuilder astBuilder = CreateAstBuilder();
+
+			if (IsExtension(symbol as ITypeDefinition, out var extensionGroup))
+			{
+				astBuilder.ShowParameterNames = true;
+			}
+			else
+			{
+				extensionGroup = default;
+			}
 			AstNode node = astBuilder.ConvertSymbol(symbol);
 			writer.StartNode(node);
-			EntityDeclaration entityDecl = node as EntityDeclaration;
-			if (entityDecl != null)
+			if (node is EntityDeclaration entityDecl)
 				PrintModifiers(entityDecl.Modifiers, writer);
 
 			if ((ConversionFlags & ConversionFlags.ShowDefinitionKeyword) == ConversionFlags.ShowDefinitionKeyword)
@@ -69,19 +79,24 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 					switch (((TypeDeclaration)node).ClassType)
 					{
 						case ClassType.Class:
-							writer.WriteKeyword(Roles.ClassKeyword, "class");
+							writer.WriteKeyword("class");
 							break;
 						case ClassType.Struct:
-							writer.WriteKeyword(Roles.StructKeyword, "struct");
+							writer.WriteKeyword("struct");
 							break;
 						case ClassType.Interface:
-							writer.WriteKeyword(Roles.InterfaceKeyword, "interface");
+							writer.WriteKeyword("interface");
 							break;
 						case ClassType.Enum:
-							writer.WriteKeyword(Roles.EnumKeyword, "enum");
+							writer.WriteKeyword("enum");
 							break;
 						case ClassType.RecordClass:
-							writer.WriteKeyword(Roles.RecordKeyword, "record");
+							writer.WriteKeyword("record");
+							break;
+						case ClassType.RecordStruct:
+							writer.WriteKeyword("record");
+							writer.Space();
+							writer.WriteKeyword("struct");
 							break;
 						default:
 							throw new Exception("Invalid value for ClassType");
@@ -90,17 +105,17 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 				}
 				else if (node is DelegateDeclaration)
 				{
-					writer.WriteKeyword(Roles.DelegateKeyword, "delegate");
+					writer.WriteKeyword("delegate");
 					writer.Space();
 				}
 				else if (node is EventDeclaration)
 				{
-					writer.WriteKeyword(EventDeclaration.EventKeywordRole, "event");
+					writer.WriteKeyword("event");
 					writer.Space();
 				}
 				else if (node is NamespaceDeclaration)
 				{
-					writer.WriteKeyword(Roles.NamespaceKeyword, "namespace");
+					writer.WriteKeyword("namespace");
 					writer.Space();
 				}
 			}
@@ -108,8 +123,8 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 			if ((ConversionFlags & ConversionFlags.PlaceReturnTypeAfterParameterList) != ConversionFlags.PlaceReturnTypeAfterParameterList
 				&& (ConversionFlags & ConversionFlags.ShowReturnType) == ConversionFlags.ShowReturnType)
 			{
-				var rt = node.GetChildByRole(Roles.Type);
-				if (!rt.IsNull)
+				var rt = node.GetChild(Slots.Type);
+				if (rt is not null)
 				{
 					rt.AcceptVisitor(new CSharpOutputVisitor(writer, formattingPolicy));
 					writer.Space();
@@ -123,19 +138,37 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 			else
 				writer.WriteIdentifier(Identifier.Create(symbol.Name));
 
-			if ((ConversionFlags & ConversionFlags.ShowParameterList) == ConversionFlags.ShowParameterList && HasParameters(symbol))
+			if (ShowParameterList(symbol))
 			{
-				writer.WriteToken(symbol.SymbolKind == SymbolKind.Indexer ? Roles.LBracket : Roles.LPar, symbol.SymbolKind == SymbolKind.Indexer ? "[" : "(");
+				writer.WriteToken(symbol.SymbolKind == SymbolKind.Indexer ? "[" : "(");
 				bool first = true;
-				foreach (var param in node.GetChildrenByRole(Roles.Parameter))
+				IEnumerable<ParameterDeclaration> parameters;
+				if (extensionGroup.Marker != null)
+				{
+					var subst = new TypeParameterSubstitution(extensionGroup.TypeParameters, null);
+					parameters = extensionGroup.Marker.Specialize(subst).Parameters.Select(p => astBuilder.ConvertParameter(p));
+				}
+				else if (symbol is IProperty { SymbolKind: SymbolKind.Property } parameterizedProperty)
+				{
+					// C# property syntax has no parameter list, so the converted node carries
+					// none; parameterized properties take theirs from the symbol.
+					parameters = parameterizedProperty.Parameters.Select(p => astBuilder.ConvertParameter(p));
+				}
+				else
+				{
+					parameters = node.GetChildren(Slots.Parameter);
+				}
+				foreach (var param in parameters)
 				{
 					if ((ConversionFlags & ConversionFlags.ShowParameterModifiers) == 0)
 					{
-						param.ParameterModifier = ParameterModifier.None;
+						param.ParameterModifier = ReferenceKind.None;
+						param.IsScopedRef = false;
+						param.IsParams = false;
 					}
 					if ((ConversionFlags & ConversionFlags.ShowParameterDefaultValues) == 0)
 					{
-						param.DefaultExpression.Detach();
+						param.DefaultExpression?.Detach();
 					}
 					if (first)
 					{
@@ -143,22 +176,22 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 					}
 					else
 					{
-						writer.WriteToken(Roles.Comma, ",");
+						writer.WriteToken(",");
 						writer.Space();
 					}
 					param.AcceptVisitor(new CSharpOutputVisitor(writer, formattingPolicy));
 				}
-				writer.WriteToken(symbol.SymbolKind == SymbolKind.Indexer ? Roles.RBracket : Roles.RPar, symbol.SymbolKind == SymbolKind.Indexer ? "]" : ")");
+				writer.WriteToken(symbol.SymbolKind == SymbolKind.Indexer ? "]" : ")");
 			}
 
 			if ((ConversionFlags & ConversionFlags.PlaceReturnTypeAfterParameterList) == ConversionFlags.PlaceReturnTypeAfterParameterList
 				&& (ConversionFlags & ConversionFlags.ShowReturnType) == ConversionFlags.ShowReturnType)
 			{
-				var rt = node.GetChildByRole(Roles.Type);
-				if (!rt.IsNull)
+				var rt = node.GetChild(Slots.Type);
+				if (rt is not null)
 				{
 					writer.Space();
-					writer.WriteToken(Roles.Colon, ":");
+					writer.WriteToken(":");
 					writer.Space();
 					if (symbol is IField f && CSharpDecompiler.IsFixedField(f, out var type, out int elementCount))
 					{
@@ -175,46 +208,62 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 
 			if ((ConversionFlags & ConversionFlags.ShowBody) == ConversionFlags.ShowBody && !(node is TypeDeclaration))
 			{
-				IProperty property = symbol as IProperty;
-				if (property != null)
+				if (symbol is IProperty property)
 				{
 					writer.Space();
-					writer.WriteToken(Roles.LBrace, "{");
+					writer.WriteToken("{");
 					writer.Space();
 					if (property.CanGet)
 					{
-						writer.WriteKeyword(PropertyDeclaration.GetKeywordRole, "get");
-						writer.WriteToken(Roles.Semicolon, ";");
+						writer.WriteKeyword("get");
+						writer.WriteToken(";");
 						writer.Space();
 					}
 					if (property.CanSet)
 					{
-						writer.WriteKeyword(PropertyDeclaration.SetKeywordRole, "set");
-						writer.WriteToken(Roles.Semicolon, ";");
+						if ((ConversionFlags & ConversionFlags.SupportInitAccessors) != 0 && property.Setter.IsInitOnly)
+							writer.WriteKeyword("init");
+						else
+							writer.WriteKeyword("set");
+						writer.WriteToken(";");
 						writer.Space();
 					}
-					writer.WriteToken(Roles.RBrace, "}");
+					writer.WriteToken("}");
 				}
 				else
 				{
-					writer.WriteToken(Roles.Semicolon, ";");
+					writer.WriteToken(";");
 				}
 				writer.EndNode(node);
 			}
 		}
 
-		static bool HasParameters(ISymbol e)
+		bool IsExtension(ITypeDefinition? typeDef, out (IMethod Marker, IReadOnlyList<ITypeParameter> TypeParameters) extensionGroup)
+		{
+			extensionGroup = default;
+			if ((ConversionFlags & ConversionFlags.SupportExtensionDeclarations) == 0)
+				return false;
+			if (typeDef == null)
+				return false;
+			var extensionInfo = typeDef.DeclaringTypeDefinition?.ExtensionInfo ?? typeDef.DeclaringTypeDefinition?.DeclaringTypeDefinition?.ExtensionInfo;
+			return extensionInfo != null && extensionInfo.IsExtensionMarkerType(typeDef, out extensionGroup);
+		}
+
+		bool ShowParameterList(ISymbol e)
 		{
 			switch (e.SymbolKind)
 			{
-				case SymbolKind.TypeDefinition:
-					return ((ITypeDefinition)e).Kind == TypeKind.Delegate;
+				case SymbolKind.TypeDefinition when ((ITypeDefinition)e).Kind is TypeKind.Delegate:
+					return (ConversionFlags & ConversionFlags.ShowParameterList) != 0;
+				case SymbolKind.TypeDefinition when IsExtension((ITypeDefinition)e, out _):
+					return (ConversionFlags & ConversionFlags.SupportExtensionDeclarations) != 0;
 				case SymbolKind.Indexer:
 				case SymbolKind.Method:
 				case SymbolKind.Operator:
 				case SymbolKind.Constructor:
 				case SymbolKind.Destructor:
-					return true;
+				case SymbolKind.Property when ((IProperty)e).Parameters.Count > 0:
+					return (ConversionFlags & ConversionFlags.ShowParameterList) != 0;
 				default:
 					return false;
 			}
@@ -227,11 +276,16 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 			astBuilder.ShowTypeParametersForUnboundTypes = true;
 			astBuilder.ShowModifiers = (ConversionFlags & ConversionFlags.ShowModifiers) == ConversionFlags.ShowModifiers;
 			astBuilder.ShowAccessibility = (ConversionFlags & ConversionFlags.ShowAccessibility) == ConversionFlags.ShowAccessibility;
+			astBuilder.UsePrivateProtectedAccessibility = (ConversionFlags & ConversionFlags.UsePrivateProtectedAccessibility) == ConversionFlags.UsePrivateProtectedAccessibility;
 			astBuilder.AlwaysUseShortTypeNames = (ConversionFlags & ConversionFlags.UseFullyQualifiedTypeNames) != ConversionFlags.UseFullyQualifiedTypeNames;
 			astBuilder.ShowParameterNames = (ConversionFlags & ConversionFlags.ShowParameterNames) == ConversionFlags.ShowParameterNames;
 			astBuilder.UseNullableSpecifierForValueTypes = (ConversionFlags & ConversionFlags.UseNullableSpecifierForValueTypes) != 0;
 			astBuilder.SupportInitAccessors = (ConversionFlags & ConversionFlags.SupportInitAccessors) != 0;
 			astBuilder.SupportRecordClasses = (ConversionFlags & ConversionFlags.SupportRecordClasses) != 0;
+			astBuilder.SupportRecordStructs = (ConversionFlags & ConversionFlags.SupportRecordStructs) != 0;
+			astBuilder.SupportUnsignedRightShift = (ConversionFlags & ConversionFlags.SupportUnsignedRightShift) != 0;
+			astBuilder.SupportOperatorChecked = (ConversionFlags & ConversionFlags.SupportOperatorChecked) != 0;
+			astBuilder.SupportExtensionDeclarations = (ConversionFlags & ConversionFlags.SupportExtensionDeclarations) != 0;
 			return astBuilder;
 		}
 
@@ -244,18 +298,26 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 				(ConversionFlags & ConversionFlags.UseFullyQualifiedEntityNames) == ConversionFlags.UseFullyQualifiedEntityNames))
 			{
 				WriteTypeDeclarationName(typeDef.DeclaringTypeDefinition, writer, formattingPolicy);
-				writer.WriteToken(Roles.Dot, ".");
+				writer.WriteToken(".");
 			}
 			else if ((ConversionFlags & ConversionFlags.UseFullyQualifiedEntityNames) == ConversionFlags.UseFullyQualifiedEntityNames)
 			{
 				if (!string.IsNullOrEmpty(typeDef.Namespace))
 				{
 					WriteQualifiedName(typeDef.Namespace, writer, formattingPolicy);
-					writer.WriteToken(Roles.Dot, ".");
+					writer.WriteToken(".");
 				}
 			}
-			writer.WriteIdentifier(node.NameToken);
-			WriteTypeParameters(node, writer, formattingPolicy);
+			if (IsExtension(typeDef, out var group))
+			{
+				writer.WriteKeyword("extension");
+				WriteTypeParameters(group.TypeParameters.Select(tp => astBuilder.ConvertTypeParameter(tp)), writer, formattingPolicy);
+			}
+			else
+			{
+				writer.WriteIdentifier(node.NameToken);
+				WriteTypeParameters(node.GetChildren(Slots.TypeParameter), writer, formattingPolicy);
+			}
 		}
 
 		void WriteMemberDeclarationName(IMember member, TokenWriter writer, CSharpFormattingOptions formattingPolicy)
@@ -265,61 +327,106 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 			if ((ConversionFlags & ConversionFlags.ShowDeclaringType) == ConversionFlags.ShowDeclaringType && member.DeclaringType != null && !(member is LocalFunctionMethod))
 			{
 				ConvertType(member.DeclaringType, writer, formattingPolicy);
-				writer.WriteToken(Roles.Dot, ".");
+				writer.WriteToken(".");
+			}
+			IType? explicitInterfaceType = GetExplicitInterfaceType(member);
+			string name = member.Name;
+			if (explicitInterfaceType != null)
+			{
+				name = name.Substring(name.LastIndexOf('.') + 1);
 			}
 			switch (member.SymbolKind)
 			{
 				case SymbolKind.Indexer:
-					writer.WriteKeyword(Roles.Identifier, "this");
+					if (explicitInterfaceType != null)
+					{
+						ConvertType(explicitInterfaceType, writer, formattingPolicy);
+						writer.WriteToken(".");
+					}
+					writer.WriteKeyword("this");
 					break;
 				case SymbolKind.Constructor:
-					WriteQualifiedName(member.DeclaringType.Name, writer, formattingPolicy);
+					WriteQualifiedName(member.DeclaringType!.Name, writer, formattingPolicy);
 					break;
 				case SymbolKind.Destructor:
-					writer.WriteToken(DestructorDeclaration.TildeRole, "~");
-					WriteQualifiedName(member.DeclaringType.Name, writer, formattingPolicy);
+					writer.WriteToken("~");
+					WriteQualifiedName(member.DeclaringType!.Name, writer, formattingPolicy);
 					break;
 				case SymbolKind.Operator:
-					switch (member.Name)
+					switch (name)
 					{
 						case "op_Implicit":
-							writer.WriteKeyword(OperatorDeclaration.ImplicitRole, "implicit");
+							writer.WriteKeyword("implicit");
 							writer.Space();
-							writer.WriteKeyword(OperatorDeclaration.OperatorKeywordRole, "operator");
+							if (explicitInterfaceType != null)
+							{
+								ConvertType(explicitInterfaceType, writer, formattingPolicy);
+								writer.WriteToken(".");
+							}
+							writer.WriteKeyword("operator");
 							writer.Space();
 							ConvertType(member.ReturnType, writer, formattingPolicy);
 							break;
 						case "op_Explicit":
-							writer.WriteKeyword(OperatorDeclaration.ExplicitRole, "explicit");
+						case "op_CheckedExplicit":
+							writer.WriteKeyword("explicit");
 							writer.Space();
-							writer.WriteKeyword(OperatorDeclaration.OperatorKeywordRole, "operator");
+							if (explicitInterfaceType != null)
+							{
+								ConvertType(explicitInterfaceType, writer, formattingPolicy);
+								writer.WriteToken(".");
+							}
+							writer.WriteKeyword("operator");
 							writer.Space();
+							if (name == "op_CheckedExplicit")
+							{
+								writer.WriteToken("checked");
+								writer.Space();
+							}
 							ConvertType(member.ReturnType, writer, formattingPolicy);
 							break;
 						default:
-							writer.WriteKeyword(OperatorDeclaration.OperatorKeywordRole, "operator");
+							if (explicitInterfaceType != null)
+							{
+								ConvertType(explicitInterfaceType, writer, formattingPolicy);
+								writer.WriteToken(".");
+							}
+							writer.WriteKeyword("operator");
 							writer.Space();
-							var operatorType = OperatorDeclaration.GetOperatorType(member.Name);
-							if (operatorType.HasValue)
-								writer.WriteToken(OperatorDeclaration.GetRole(operatorType.Value), OperatorDeclaration.GetToken(operatorType.Value));
+							var operatorType = OperatorDeclaration.GetOperatorType(name);
+							if (operatorType.HasValue && !((ConversionFlags & ConversionFlags.SupportOperatorChecked) == 0 && OperatorDeclaration.IsChecked(operatorType.Value)))
+							{
+								if (OperatorDeclaration.IsChecked(operatorType.Value))
+								{
+									writer.WriteToken("checked");
+									writer.Space();
+								}
+								writer.WriteToken(OperatorDeclaration.GetToken(operatorType.Value));
+							}
 							else
+							{
 								writer.WriteIdentifier(node.NameToken);
+							}
 							break;
 					}
 					break;
 				default:
-					writer.WriteIdentifier(Identifier.Create(member.Name));
+					if (explicitInterfaceType != null)
+					{
+						ConvertType(explicitInterfaceType, writer, formattingPolicy);
+						writer.WriteToken(".");
+					}
+					writer.WriteIdentifier(Identifier.Create(name));
 					break;
 			}
-			WriteTypeParameters(node, writer, formattingPolicy);
+			WriteTypeParameters(node.GetChildren(Slots.TypeParameter), writer, formattingPolicy);
 		}
 
-		void WriteTypeParameters(EntityDeclaration node, TokenWriter writer, CSharpFormattingOptions formattingPolicy)
+		void WriteTypeParameters(IEnumerable<TypeParameterDeclaration> typeParameters, TokenWriter writer, CSharpFormattingOptions formattingPolicy)
 		{
 			if ((ConversionFlags & ConversionFlags.ShowTypeParameterList) == ConversionFlags.ShowTypeParameterList)
 			{
 				var outputVisitor = new CSharpOutputVisitor(writer, formattingPolicy);
-				IEnumerable<TypeParameterDeclaration> typeParameters = node.GetChildrenByRole(Roles.TypeParameter);
 				if ((ConversionFlags & ConversionFlags.ShowTypeParameterVarianceModifier) == 0)
 				{
 					typeParameters = typeParameters.Select(RemoveVarianceModifier);
@@ -336,11 +443,11 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 
 		void PrintModifiers(Modifiers modifiers, TokenWriter writer)
 		{
-			foreach (var m in CSharpModifierToken.AllModifiers)
+			foreach (var m in CSharpModifiers.AllModifiers)
 			{
 				if ((modifiers & m) == m)
 				{
-					writer.WriteKeyword(EntityDeclaration.ModifierRole, CSharpModifierToken.GetModifierName(m));
+					writer.WriteKeyword(CSharpModifiers.GetModifierName(m));
 					writer.Space();
 				}
 			}
@@ -372,12 +479,23 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 			return astType.ToString();
 		}
 
-		public void ConvertType(IType type, TokenWriter writer, CSharpFormattingOptions formattingPolicy)
+		void ConvertType(IType type, TokenWriter writer, CSharpFormattingOptions formattingPolicy)
 		{
 			TypeSystemAstBuilder astBuilder = CreateAstBuilder();
 			astBuilder.AlwaysUseShortTypeNames = (ConversionFlags & ConversionFlags.UseFullyQualifiedEntityNames) != ConversionFlags.UseFullyQualifiedEntityNames;
 			AstType astType = astBuilder.ConvertType(type);
 			astType.AcceptVisitor(new CSharpOutputVisitor(writer, formattingPolicy));
+		}
+
+		IType? GetExplicitInterfaceType(IMember member)
+		{
+			if (member.IsExplicitInterfaceImplementation)
+			{
+				var baseMember = member.ExplicitlyImplementedInterfaceMembers.FirstOrDefault();
+				if (baseMember != null)
+					return baseMember.DeclaringType.GetInterfaceAsImplementedBy(member.DeclaringType);
+			}
+			return null;
 		}
 
 		public string ConvertConstantValue(object constantValue)

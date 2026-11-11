@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2020 Daniel Grunwald
+// Copyright (c) 2020 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -16,28 +16,41 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+#nullable enable
+
 using System;
 
 using ICSharpCode.Decompiler.Metadata;
+using ICSharpCode.Decompiler.TypeSystem;
 
 namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 {
 	/// <summary>
 	/// An interface that provides common information for a project being decompiled to.
 	/// </summary>
-	interface IProjectInfoProvider
+	public interface IProjectInfoProvider
 	{
 		/// <summary>
 		/// Gets the assembly resolver active for the project.
 		/// </summary>
 		IAssemblyResolver AssemblyResolver { get; }
 
-		AssemblyReferenceClassifier AssemblyReferenceClassifier { get; }
+		IAssemblyReferenceClassifier AssemblyReferenceClassifier { get; }
+
+		/// <summary>
+		/// Gets the type system used to decompile the project, when one is available.
+		/// </summary>
+		IDecompilerTypeSystem? TypeSystem { get; }
 
 		/// <summary>
 		/// Gets the C# language version of the project.
 		/// </summary>
 		LanguageVersion LanguageVersion { get; }
+
+		/// <summary>
+		/// Check for overflow and underflow in operators.
+		/// </summary>
+		bool CheckForOverflowUnderflow { get; }
 
 		/// <summary>
 		/// Gets the unique ID of the project.
@@ -52,6 +65,6 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 		/// <summary>
 		/// Gets the name of the key file being used for strong name signing. Can be null if no file is available.
 		/// </summary>
-		string StrongNameKeyFile { get; }
+		string? StrongNameKeyFile { get; }
 	}
 }

@@ -1,14 +1,14 @@
-﻿// Copyright (c) 2011 AlphaSierraPapa for the SharpDevelop Team
-// 
+// Copyright (c) 2026 AlphaSierraPapa for the SharpDevelop Team
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
 // without restriction, including without limitation the rights to use, copy, modify, merge,
 // publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
 // to whom the Software is furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in all copies or
 // substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
 // INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
 // PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
@@ -17,19 +17,24 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System;
-using System.ComponentModel.Composition;
-using System.Linq;
-using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Input;
-using System.Windows.Media;
+using System.Composition;
 
-using ICSharpCode.AvalonEdit;
+using Avalonia;
+using Avalonia.Controls;
+
+using ICSharpCode.ILSpyX.TreeView;
+
 using ICSharpCode.ILSpy.TextView;
-using ICSharpCode.TreeView;
 
 namespace ICSharpCode.ILSpy
 {
+	/// <summary>
+	/// MEF-exported entry that contributes a single item to a context menu. Exports are
+	/// discovered via <see cref="ExportContextMenuEntryAttribute"/> and surfaced through
+	/// <see cref="ContextMenuProvider.Build"/>, which calls back into <see cref="IsVisible"/>
+	/// (filters the menu), <see cref="IsEnabled"/> (greys the item out), and
+	/// <see cref="Execute"/> (runs the action) with the live <see cref="TextViewContext"/>.
+	/// </summary>
 	public interface IContextMenuEntry
 	{
 		bool IsVisible(TextViewContext context);
@@ -37,271 +42,88 @@ namespace ICSharpCode.ILSpy
 		void Execute(TextViewContext context);
 	}
 
+	/// <summary>
+	/// Snapshot of the surface that opened a context menu (which control, the selection in it,
+	/// the reference under the pointer if any). Entries inspect the populated fields to decide
+	/// visibility / enabled state and to scope their action.
+	/// </summary>
 	public class TextViewContext
 	{
-		/// <summary>
-		/// Returns the selected nodes in the tree view.
-		/// Returns null, if context menu does not belong to a tree view.
-		/// </summary>
-		public SharpTreeNode[] SelectedTreeNodes { get; private set; }
+		/// <summary>The selected nodes in the assembly-tree DataGrid, or null when the menu wasn't opened on the tree.</summary>
+		public SharpTreeNode[]? SelectedTreeNodes { get; init; }
 
-		/// <summary>
-		/// Returns the tree view the context menu is assigned to.
-		/// Returns null, if context menu is not assigned to a tree view.
-		/// </summary>
-		public SharpTreeView TreeView { get; private set; }
+		/// <summary>The tree control the menu was opened on (a DataGrid or the SharpTreeView), or null otherwise.</summary>
+		public Control? TreeGrid { get; init; }
 
-		/// <summary>
-		/// Returns the text view the context menu is assigned to.
-		/// Returns null, if context menu is not assigned to a text view.
-		/// </summary>
-		public DecompilerTextView TextView { get; private set; }
+		/// <summary>The decompiler text view the menu was opened on, or null otherwise.</summary>
+		public DecompilerTextView? TextView { get; init; }
 
-		/// <summary>
-		/// Returns the list box the context menu is assigned to.
-		/// Returns null, if context menu is not assigned to a list box.
-		/// </summary>
-		public ListBox ListBox { get; private set; }
+		/// <summary>The list box (e.g. search results) the menu was opened on, or null otherwise.</summary>
+		public ListBox? ListBox { get; init; }
 
-		/// <summary>
-		/// Returns the data grid the context menu is assigned to.
-		/// Returns null, if context menu is not assigned to a data grid.
-		/// </summary>
-		public DataGrid DataGrid { get; private set; }
+		/// <summary>The data grid (e.g. metadata table) the menu was opened on, or null otherwise.</summary>
+		public DataGrid? DataGrid { get; init; }
 
-		/// <summary>
-		/// Returns the reference the mouse cursor is currently hovering above.
-		/// Returns null, if there was no reference found.
-		/// </summary>
-		public ReferenceSegment Reference { get; private set; }
+		/// <summary>The reference under the pointer in the text view, or the focused list/grid item, when applicable.</summary>
+		public ReferenceSegment? Reference { get; init; }
 
-		/// <summary>
-		/// Returns the position in TextView the mouse cursor is currently hovering above.
-		/// Returns null, if TextView returns null;
-		/// </summary>
-		public TextViewPosition? Position { get; private set; }
+		/// <summary>The document offset under the pointer at the time the text-view menu opened, or null
+		/// when the menu wasn't opened on the text view (or the click missed the text). Entries that act on
+		/// a position (e.g. toggle the fold under the click) use this rather than the caret, which may sit
+		/// on an entirely different line than the one the user right-clicked.</summary>
+		public int? TextLocation { get; init; }
 
-		public Point MousePosition { get; private set; }
-
-		public static TextViewContext Create(SharpTreeView treeView = null, DecompilerTextView textView = null, ListBox listBox = null, DataGrid dataGrid = null)
-		{
-			ReferenceSegment reference;
-			if (textView != null)
-				reference = textView.GetReferenceSegmentAtMousePosition();
-			else if (listBox?.SelectedItem is SearchResult result)
-				reference = new ReferenceSegment { Reference = result.Reference };
-			else if (listBox?.SelectedItem is TreeNodes.IMemberTreeNode provider)
-				reference = new ReferenceSegment { Reference = provider.Member };
-			else if (listBox?.SelectedItem != null)
-				reference = new ReferenceSegment { Reference = listBox.SelectedItem };
-			else if (dataGrid?.SelectedItem is TreeNodes.IMemberTreeNode provider2)
-				reference = new ReferenceSegment { Reference = provider2.Member };
-			else if (dataGrid?.SelectedItem != null)
-				reference = new ReferenceSegment { Reference = dataGrid.SelectedItem };
-			else
-				reference = null;
-			var position = textView != null ? textView.GetPositionFromMousePosition() : null;
-			var selectedTreeNodes = treeView != null ? treeView.GetTopLevelSelection().ToArray() : null;
-			return new TextViewContext {
-				ListBox = listBox,
-				DataGrid = dataGrid,
-				TreeView = treeView,
-				SelectedTreeNodes = selectedTreeNodes,
-				TextView = textView,
-				Reference = reference,
-				Position = position,
-				MousePosition = ((Visual)textView ?? treeView ?? (Visual)listBox ?? dataGrid).PointToScreen(Mouse.GetPosition((IInputElement)textView ?? treeView ?? (IInputElement)listBox ?? dataGrid))
-			};
-		}
+		/// <summary>The visual element the original event came from — useful for context-aware entries that need to inspect the click target.</summary>
+		public Visual? OriginalSource { get; init; }
 	}
 
-	public interface IContextMenuEntryMetadata
+	/// <summary>
+	/// Concrete metadata view for context-menu entries: <see cref="System.Composition"/>
+	/// requires a class (not an interface) for metadata views.
+	/// </summary>
+	public class ContextMenuEntryMetadata
 	{
-		string Icon { get; }
-		string Header { get; }
-		string Category { get; }
-		string InputGestureText { get; }
-
-		double Order { get; }
+		public string? MenuID { get; set; }
+		public string? ParentMenuID { get; set; }
+		public string? Icon { get; set; }
+		public string? Header { get; set; }
+		public string? Category { get; set; }
+		public string? InputGestureText { get; set; }
+		public double Order { get; set; } = double.MaxValue;
 	}
 
+	/// <summary>
+	/// Marks a class as a context-menu entry discoverable through MEF. The metadata properties
+	/// drive where the entry appears in the menu hierarchy and what it looks like.
+	/// </summary>
 	[MetadataAttribute]
 	[AttributeUsage(AttributeTargets.Class, AllowMultiple = false)]
-	public class ExportContextMenuEntryAttribute : ExportAttribute, IContextMenuEntryMetadata
+	public sealed class ExportContextMenuEntryAttribute : ExportAttribute
 	{
 		public ExportContextMenuEntryAttribute()
-			: base(typeof(IContextMenuEntry))
+			: base("ContextMenuEntry", typeof(IContextMenuEntry))
 		{
-			// entries default to end of menu unless given specific order position
+			// Entries default to end-of-menu unless explicitly ordered.
 			Order = double.MaxValue;
 		}
 
-		public string Icon { get; set; }
-		public string Header { get; set; }
-		public string Category { get; set; }
-		public string InputGestureText { get; set; }
-		public double Order { get; set; }
-	}
-
-	internal class ContextMenuProvider
-	{
 		/// <summary>
-		/// Enables extensible context menu support for the specified tree view.
+		/// Optional ID that identifies this entry as a sub-menu parent. Other entries can set
+		/// <see cref="ParentMenuID"/> to this value to nest under it. Avoid cycles
+		/// (<c>MenuID == ParentMenuID</c>); they would loop forever during menu construction.
 		/// </summary>
-		public static void Add(SharpTreeView treeView)
-		{
-			var provider = new ContextMenuProvider(treeView);
-			treeView.ContextMenuOpening += provider.treeView_ContextMenuOpening;
-			// Context menu is shown only when the ContextMenu property is not null before the
-			// ContextMenuOpening event handler is called.
-			treeView.ContextMenu = new ContextMenu();
-		}
+		public string? MenuID { get; set; }
 
-		public static void Add(DecompilerTextView textView)
-		{
-			var provider = new ContextMenuProvider(textView);
-			textView.ContextMenuOpening += provider.textView_ContextMenuOpening;
-			// Context menu is shown only when the ContextMenu property is not null before the
-			// ContextMenuOpening event handler is called.
-			textView.ContextMenu = new ContextMenu();
-		}
+		/// <summary>
+		/// Optional ID of the parent sub-menu. <see langword="null"/> places the entry at the
+		/// top level of the context menu.
+		/// </summary>
+		public string? ParentMenuID { get; set; }
 
-		public static void Add(ListBox listBox)
-		{
-			var provider = new ContextMenuProvider(listBox);
-			listBox.ContextMenuOpening += provider.listBox_ContextMenuOpening;
-			listBox.ContextMenu = new ContextMenu();
-		}
-
-		public static void Add(DataGrid dataGrid)
-		{
-			var provider = new ContextMenuProvider(dataGrid);
-			dataGrid.ContextMenuOpening += provider.dataGrid_ContextMenuOpening;
-			dataGrid.ContextMenu = new ContextMenu();
-		}
-
-		readonly SharpTreeView treeView;
-		readonly DecompilerTextView textView;
-		readonly ListBox listBox;
-		readonly DataGrid dataGrid;
-		readonly Lazy<IContextMenuEntry, IContextMenuEntryMetadata>[] entries;
-
-		private ContextMenuProvider()
-		{
-			entries = App.ExportProvider.GetExports<IContextMenuEntry, IContextMenuEntryMetadata>().ToArray();
-		}
-
-		ContextMenuProvider(DecompilerTextView textView)
-			: this()
-		{
-			this.textView = textView ?? throw new ArgumentNullException(nameof(textView));
-		}
-
-		ContextMenuProvider(SharpTreeView treeView)
-			: this()
-		{
-			this.treeView = treeView ?? throw new ArgumentNullException(nameof(treeView));
-		}
-
-		ContextMenuProvider(ListBox listBox)
-			: this()
-		{
-			this.listBox = listBox ?? throw new ArgumentNullException(nameof(listBox));
-		}
-
-		ContextMenuProvider(DataGrid dataGrid)
-			: this()
-		{
-			this.dataGrid = dataGrid ?? throw new ArgumentNullException(nameof(dataGrid));
-		}
-
-		void treeView_ContextMenuOpening(object sender, ContextMenuEventArgs e)
-		{
-			TextViewContext context = TextViewContext.Create(treeView);
-			if (context.SelectedTreeNodes.Length == 0)
-			{
-				e.Handled = true; // don't show the menu
-				return;
-			}
-			ContextMenu menu;
-			if (ShowContextMenu(context, out menu))
-				treeView.ContextMenu = menu;
-			else
-				// hide the context menu.
-				e.Handled = true;
-		}
-
-		void textView_ContextMenuOpening(object sender, ContextMenuEventArgs e)
-		{
-			TextViewContext context = TextViewContext.Create(textView: textView);
-			ContextMenu menu;
-			if (ShowContextMenu(context, out menu))
-				textView.ContextMenu = menu;
-			else
-				// hide the context menu.
-				e.Handled = true;
-		}
-
-		void listBox_ContextMenuOpening(object sender, ContextMenuEventArgs e)
-		{
-			TextViewContext context = TextViewContext.Create(listBox: listBox);
-			ContextMenu menu;
-			if (ShowContextMenu(context, out menu))
-				listBox.ContextMenu = menu;
-			else
-				// hide the context menu.
-				e.Handled = true;
-		}
-
-		void dataGrid_ContextMenuOpening(object sender, ContextMenuEventArgs e)
-		{
-			TextViewContext context = TextViewContext.Create(dataGrid: dataGrid);
-			ContextMenu menu;
-			if (ShowContextMenu(context, out menu))
-				dataGrid.ContextMenu = menu;
-			else
-				// hide the context menu.
-				e.Handled = true;
-		}
-
-		bool ShowContextMenu(TextViewContext context, out ContextMenu menu)
-		{
-			menu = new ContextMenu();
-			foreach (var category in entries.OrderBy(c => c.Metadata.Order).GroupBy(c => c.Metadata.Category))
-			{
-				bool needSeparatorForCategory = menu.Items.Count > 0;
-				foreach (var entryPair in category)
-				{
-					IContextMenuEntry entry = entryPair.Value;
-					if (entry.IsVisible(context))
-					{
-						if (needSeparatorForCategory)
-						{
-							menu.Items.Add(new Separator());
-							needSeparatorForCategory = false;
-						}
-						MenuItem menuItem = new MenuItem();
-						menuItem.Header = MainWindow.GetResourceString(entryPair.Metadata.Header);
-						menuItem.InputGestureText = entryPair.Metadata.InputGestureText;
-						if (!string.IsNullOrEmpty(entryPair.Metadata.Icon))
-						{
-							menuItem.Icon = new Image {
-								Width = 16,
-								Height = 16,
-								Source = Images.Load(entryPair.Value, entryPair.Metadata.Icon)
-							};
-						}
-						if (entryPair.Value.IsEnabled(context))
-						{
-							menuItem.Click += delegate { entry.Execute(context); };
-						}
-						else
-							menuItem.IsEnabled = false;
-						menu.Items.Add(menuItem);
-					}
-				}
-			}
-			return menu.Items.Count > 0;
-		}
+		public string? Icon { get; set; }
+		public string? Header { get; set; }
+		public string? Category { get; set; }
+		public string? InputGestureText { get; set; }
+		public double Order { get; set; }
 	}
 }

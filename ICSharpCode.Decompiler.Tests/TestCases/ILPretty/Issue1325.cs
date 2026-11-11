@@ -1,6 +1,5 @@
-﻿using System;
+using System;
 using System.ComponentModel;
-using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -12,6 +11,8 @@ using Microsoft.VisualBasic.CompilerServices;
 [assembly: AssemblyInformationalVersion("1.0.0")]
 [assembly: AssemblyConfiguration("Debug")]
 [assembly: AssemblyFileVersion("1.0.0.0")]
+
+#pragma warning disable format 
 
 namespace Issue1325
 {
@@ -34,16 +35,15 @@ namespace Issue1325
 
 	internal class Test
 	{
-		[DebuggerBrowsable(DebuggerBrowsableState.Never)]
-		[CompilerGenerated]
-		private string _Unparameterized;
-		public string Parameterized {
-			get {
-				throw new NotImplementedException();
-			}
-			set {
-				throw new NotImplementedException();
-			}
+		// C# has no syntax for parameterized property 'Parameterized'.
+		public string get_Parameterized(int i)
+		{
+			throw new NotImplementedException();
+		}
+
+		public void set_Parameterized(int i, string value)
+		{
+			throw new NotImplementedException();
 		}
 		public string Unparameterized { get; set; }
 	}

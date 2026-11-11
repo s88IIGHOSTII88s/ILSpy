@@ -1,0 +1,12 @@
+FROM mcr.microsoft.com/dotnet/sdk:10.0
+
+RUN useradd -m -s /bin/bash ilspy
+USER ilspy
+
+WORKDIR /home/ilspy
+
+RUN dotnet tool install -g ilspycmd --version 11.2.0.10050
+
+RUN echo 'export PATH="$PATH:/home/ilspy/.dotnet/tools/"' >> /home/ilspy/.bashrc
+
+ENTRYPOINT [ "/bin/bash" ]

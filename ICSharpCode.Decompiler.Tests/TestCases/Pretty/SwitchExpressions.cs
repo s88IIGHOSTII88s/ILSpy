@@ -1,4 +1,4 @@
-﻿// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -37,11 +37,34 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			Null
 		}
 
+		public abstract class Animal
+		{
+			public abstract string Name { get; }
+
+			public Animal ToValidated()
+			{
+				return this;
+			}
+		}
+
+		public class Dog : Animal
+		{
+			public override string Name => "Dog";
+		}
+
+		public class Fish : Animal
+		{
+			public override string Name => "Fish";
+		}
+
 		public static bool? SwitchOverNullableEnum(State? state)
 		{
-			return state switch
-			{
-				State.False => false,
+			// Note: we output a cast for the first element because
+			// {false,true,null} has no "best common type".
+			// (however C# doesn't require this cast due to target
+			//  typing, but the decompiler doesn't make use of that yet)
+			return state switch {
+				State.False => (bool?)false,
 				State.True => true,
 				State.Null => null,
 				_ => throw new InvalidOperationException(),
@@ -51,8 +74,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		public static string SparseIntegerSwitch(int i)
 		{
 			Console.WriteLine("SparseIntegerSwitch: " + i);
-			return i switch
-			{
+			return i switch {
 				-10000000 => "-10 mln",
 				-100 => "-hundred",
 				-1 => "-1",
@@ -88,8 +110,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 
 		public static string SwitchOverNullableInt(int? i, int? j)
 		{
-			return (i + j) switch
-			{
+			return (i + j) switch {
 				null => "null",
 				0 => "zero",
 				5 => "five",
@@ -100,8 +121,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 
 		public static void SwitchOverInt(int i)
 		{
-			Console.WriteLine(i switch
-			{
+			Console.WriteLine(i switch {
 				0 => "zero",
 				5 => "five",
 				10 => "ten",
@@ -116,8 +136,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		public static string SwitchOverString1(string text)
 		{
 			Console.WriteLine("SwitchOverString1: " + text);
-			return text switch
-			{
+			return text switch {
 				"First case" => "Text1",
 				"Second case" => "Text2",
 				"Third case" => "Text3",
@@ -157,13 +176,218 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 
 		public static string Issue2222()
 		{
-			return (string)new ImplicitlyCastToString() switch
-			{
+			return (string)new ImplicitlyCastToString() switch {
 				"foo" => "foo",
 				"bar" => "bar",
 				"quux" => "quux",
 				_ => "default",
 			};
 		}
+#pragma warning disable CS8509 // The switch expression does not handle all possible values of its input type (it is not exhaustive).
+		public static int Issue3382(StringComparison c)
+		{
+			return c switch {
+				StringComparison.Ordinal => 0,
+				StringComparison.OrdinalIgnoreCase => 1,
+			};
+		}
+
+		public static void Issue3382b(ref StringComparison? c)
+		{
+#if NET40
+			c = c switch {
+				null => StringComparison.Ordinal,
+				StringComparison.Ordinal => StringComparison.OrdinalIgnoreCase,
+				StringComparison.OrdinalIgnoreCase => StringComparison.InvariantCulture,
+			};
+#else
+			StringComparison? stringComparison = c;
+			c = stringComparison switch {
+				null => StringComparison.Ordinal,
+				StringComparison.Ordinal => StringComparison.OrdinalIgnoreCase,
+				StringComparison.OrdinalIgnoreCase => StringComparison.InvariantCulture,
+			};
+#endif
+		}
+
+		public static void Issue3382c(StringComparison? c)
+		{
+			c = c switch {
+				null => StringComparison.Ordinal,
+				StringComparison.Ordinal => StringComparison.OrdinalIgnoreCase,
+				StringComparison.OrdinalIgnoreCase => StringComparison.InvariantCulture,
+			};
+		}
+
+		public static void Issue3382d(ref StringComparison c)
+		{
+#if NET40
+			c = c switch {
+				StringComparison.Ordinal => StringComparison.OrdinalIgnoreCase,
+				StringComparison.OrdinalIgnoreCase => StringComparison.InvariantCulture,
+			};
+#else
+			StringComparison stringComparison = c;
+			c = stringComparison switch {
+				StringComparison.Ordinal => StringComparison.OrdinalIgnoreCase,
+				StringComparison.OrdinalIgnoreCase => StringComparison.InvariantCulture,
+			};
+#endif
+		}
+
+		public static Animal Issue3683(int animalType)
+		{
+			return (animalType switch {
+				0 => (Animal)new Dog(),
+				1 => new Fish(),
+				_ => throw new ArgumentException("Invalid animal type"),
+			}).ToValidated();
+		}
+
+		public static bool NullableDateTime(int i)
+		{
+			return (i switch {
+				0 => (DateTime?)DateTime.Now,
+				1 => DateTime.UtcNow,
+				_ => null,
+			}).HasValue;
+		}
+
+		public static bool TupleWithImmediateUse(int i)
+		{
+			return (i switch {
+				0 => (0, true),
+				1 => (1, true),
+				_ => (i, false),
+			}).Item2;
+		}
+
+		public static void ThrowDifferentExceptions(int i)
+		{
+			throw i switch {
+				0 => (Exception)new ArgumentException("Invalid argument"),
+				1 => new InvalidOperationException("Invalid operation"),
+				_ => new NotSupportedException(),
+			};
+		}
+
+		public static int SwitchOnStringImplicitDefault(string s)
+		{
+			return s switch {
+				"Hello" => 42,
+				"World" => 4711,
+				"!" => 7,
+				"Foo" => 13,
+				"Bar" => 21,
+				"Baz" => 84,
+				"Qux" => 168,
+				"Quux" => 336,
+				"Corge" => 672,
+				"Grault" => 1344,
+				"Garply" => 2688,
+			};
+		}
+		public static int SwitchOnStringImplicitDefaultFewCases(string s)
+		{
+			return s switch {
+				"red" => 1,
+				"green" => 2,
+				"blue" => 3,
+			};
+		}
+
+		public static int SwitchOnStringImplicitDefaultUniqueLengths(string s)
+		{
+			return s switch {
+				"a" => 1,
+				"bb" => 2,
+				"ccc" => 3,
+				"dddd" => 4,
+				"eeeee" => 5,
+				"ffffff" => 6,
+				"ggggggg" => 7,
+				"hhhhhhhh" => 8,
+				"iiiiiiiii" => 9,
+			};
+		}
+
+		public static int SwitchOnStringImplicitDefaultSameLength(string s)
+		{
+			return s switch {
+				"aabb" => 1,
+				"abab" => 2,
+				"abba" => 3,
+				"baab" => 4,
+				"baba" => 5,
+				"bbaa" => 6,
+				"bbbb" => 7,
+				"aaab" => 8,
+				"aaba" => 9,
+			};
+		}
+
+		public static int SwitchOnStringImplicitDefaultWithNullCase(string s)
+		{
+			return s switch {
+				"a" => 1,
+				"bb" => 2,
+				"ccc" => 3,
+				"dddd" => 4,
+				"eeeee" => 5,
+				"ffffff" => 6,
+				"ggggggg" => 7,
+				"hhhhhhhh" => 8,
+				"iiiiiiiii" => 9,
+				null => -1,
+			};
+		}
+
+		public static int SwitchOnStringImplicitDefaultTwoCases(string s)
+		{
+			return s switch {
+				"red" => 1,
+				"green" => 2,
+			};
+		}
+
+		public static string SwitchOnCharImplicitDefault(char c)
+		{
+			return c switch {
+				'a' => "first",
+				'b' => "second",
+				'c' => "third",
+			};
+		}
+
+		public static string SwitchOnLongImplicitDefault(long l)
+		{
+			return l switch {
+				1L => "one",
+				100L => "hundred",
+				10000L => "ten thousand",
+				long.MaxValue => "max",
+			};
+		}
+
+		public static void SwitchExpressionAsArgumentImplicitDefault(int i)
+		{
+			Console.WriteLine(i switch {
+				0 => "zero",
+				5 => "five",
+				10 => "ten",
+			});
+		}
+
+		public static int SwitchExpressionNestedImplicitDefault(StringComparison c, int i)
+		{
+			return c switch {
+				StringComparison.Ordinal => i switch {
+					0 => 1,
+					1 => 2,
+				},
+				StringComparison.OrdinalIgnoreCase => 3,
+			};
+		}
+#pragma warning restore CS8509 // The switch expression does not handle all possible values of its input type (it is not exhaustive).
 	}
 }

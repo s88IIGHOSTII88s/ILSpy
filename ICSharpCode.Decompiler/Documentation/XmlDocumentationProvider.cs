@@ -120,9 +120,20 @@ namespace ICSharpCode.Decompiler.Documentation
 
 		readonly string fileName;
 		readonly Encoding encoding;
+		readonly Func<string, Stream> openFile;
 		volatile IndexEntry[] index; // SORTED array of index entries
 
 		#region Constructor / Redirection support
+		/// <summary>
+		/// Constructor for subclasses that aggregate multiple <see cref="XmlDocumentationProvider"/>
+		/// instances (see the modern .NET ref-pack lookup in <see cref="XmlDocLoader"/>).
+		/// The base class's index stays empty; subclasses must override
+		/// <see cref="GetDocumentation(string)"/> to fan out across their contributors.
+		/// </summary>
+		protected XmlDocumentationProvider()
+		{
+		}
+
 		/// <summary>
 		/// Creates a new XmlDocumentationProvider.
 		/// </summary>
@@ -130,11 +141,21 @@ namespace ICSharpCode.Decompiler.Documentation
 		/// <exception cref="IOException">Error reading from XML file (or from redirected file)</exception>
 		/// <exception cref="XmlException">Invalid XML file</exception>
 		public XmlDocumentationProvider(string fileName)
+			: this(fileName, OpenFile)
+		{
+		}
+
+		/// <summary>
+		/// Creates a provider backed by a logical XML file source. The callback is invoked whenever
+		/// the provider needs to open the source, including lazy reads and reloads.
+		/// </summary>
+		public XmlDocumentationProvider(string fileName, Func<string, Stream> openFile)
 		{
 			if (fileName == null)
 				throw new ArgumentNullException(nameof(fileName));
+			this.openFile = openFile ?? throw new ArgumentNullException(nameof(openFile));
 
-			using (FileStream fs = new FileStream(fileName, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete))
+			using (Stream fs = OpenRequiredStream(fileName))
 			{
 				using (XmlTextReader xmlReader = new XmlTextReader(fs))
 				{
@@ -152,7 +173,7 @@ namespace ICSharpCode.Decompiler.Documentation
 						if (redirectionTarget != null)
 						{
 							Debug.WriteLine("XmlDoc " + fileName + " is redirecting to " + redirectionTarget);
-							using (FileStream redirectedFs = new FileStream(redirectionTarget, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete))
+							using (Stream redirectedFs = OpenRequiredStream(redirectionTarget))
 							{
 								using (XmlTextReader redirectedXmlReader = new XmlTextReader(redirectedFs))
 								{
@@ -171,6 +192,19 @@ namespace ICSharpCode.Decompiler.Documentation
 					}
 				}
 			}
+
+		}
+
+		Stream OpenRequiredStream(string name)
+		{
+			return openFile(name) ?? throw new FileNotFoundException("XML documentation file not found.", name);
+		}
+
+		static Stream OpenFile(string fileName)
+		{
+			if (!File.Exists(fileName))
+				return null;
+			return new FileStream(fileName, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
 		}
 
 		static string GetRedirectionTarget(string xmlFileName, string target)
@@ -185,7 +219,7 @@ namespace ICSharpCode.Decompiler.Documentation
 				.Replace("%CORSYSDIR%", corSysDir);
 			if (!Path.IsPathRooted(fileName))
 				fileName = Path.Combine(Path.GetDirectoryName(xmlFileName), fileName);
-			return LookupLocalizedXmlDoc(fileName);
+			return XmlDocLoader.LookupLocalizedXmlDoc(fileName);
 		}
 
 		static string AppendDirectorySeparator(string dir)
@@ -196,45 +230,6 @@ namespace ICSharpCode.Decompiler.Documentation
 				return dir + Path.DirectorySeparatorChar;
 		}
 
-		/// <summary>
-		/// Given the assembly file name, looks up the XML documentation file name.
-		/// Returns null if no XML documentation file is found.
-		/// </summary>
-		public static string LookupLocalizedXmlDoc(string fileName)
-		{
-			string xmlFileName = Path.ChangeExtension(fileName, ".xml");
-			string currentCulture = System.Threading.Thread.CurrentThread.CurrentUICulture.TwoLetterISOLanguageName;
-			string localizedXmlDocFile = GetLocalizedName(xmlFileName, currentCulture);
-
-			Debug.WriteLine("Try find XMLDoc @" + localizedXmlDocFile);
-			if (File.Exists(localizedXmlDocFile))
-			{
-				return localizedXmlDocFile;
-			}
-			Debug.WriteLine("Try find XMLDoc @" + xmlFileName);
-			if (File.Exists(xmlFileName))
-			{
-				return xmlFileName;
-			}
-			if (currentCulture != "en")
-			{
-				string englishXmlDocFile = GetLocalizedName(xmlFileName, "en");
-				Debug.WriteLine("Try find XMLDoc @" + englishXmlDocFile);
-				if (File.Exists(englishXmlDocFile))
-				{
-					return englishXmlDocFile;
-				}
-			}
-			return null;
-		}
-
-		static string GetLocalizedName(string fileName, string language)
-		{
-			string localizedXmlDocFile = Path.GetDirectoryName(fileName);
-			localizedXmlDocFile = Path.Combine(localizedXmlDocFile, language);
-			localizedXmlDocFile = Path.Combine(localizedXmlDocFile, Path.GetFileName(fileName));
-			return localizedXmlDocFile;
-		}
 		#endregion
 
 		#region Load / Create Index
@@ -242,7 +237,7 @@ namespace ICSharpCode.Decompiler.Documentation
 		{
 			//lastWriteDate = File.GetLastWriteTimeUtc(fileName);
 			// Open up a second file stream for the line<->position mapping
-			using (FileStream fs = new FileStream(fileName, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete))
+			using (Stream fs = OpenRequiredStream(fileName))
 			{
 				LinePositionMapper linePosMapper = new LinePositionMapper(fs, encoding);
 				List<IndexEntry> indexList = new List<IndexEntry>();
@@ -265,7 +260,7 @@ namespace ICSharpCode.Decompiler.Documentation
 
 		sealed class LinePositionMapper
 		{
-			readonly FileStream fs;
+			readonly Stream fs;
 			readonly Decoder decoder;
 			int currentLine = 1;
 			char prevChar = '\0';
@@ -274,7 +269,7 @@ namespace ICSharpCode.Decompiler.Documentation
 			readonly byte[] input = new byte[1];
 			readonly char[] output = new char[2];
 
-			public LinePositionMapper(FileStream fs, Encoding encoding)
+			public LinePositionMapper(Stream fs, Encoding encoding)
 			{
 				this.decoder = encoding.GetDecoder();
 				this.fs = fs;
@@ -352,7 +347,7 @@ namespace ICSharpCode.Decompiler.Documentation
 		/// <summary>
 		/// Get the documentation for the member with the specified documentation key.
 		/// </summary>
-		public string GetDocumentation(string key)
+		public virtual string GetDocumentation(string key)
 		{
 			if (key == null)
 				throw new ArgumentNullException(nameof(key));
@@ -362,11 +357,22 @@ namespace ICSharpCode.Decompiler.Documentation
 		/// <summary>
 		/// Get the documentation for the specified member.
 		/// </summary>
-		public string GetDocumentation(IEntity entity)
+		public virtual string GetDocumentation(IEntity entity)
 		{
 			if (entity == null)
 				throw new ArgumentNullException(nameof(entity));
-			return GetDocumentation(entity.GetIdString());
+			var module = entity.ParentModule?.MetadataFile;
+			if (module == null || entity.MetadataToken.IsNil)
+				return null;
+			// The member keys depend on the compiler that wrote the xml file (C# vs the
+			// MSVC C++/CLI dialect), so try each candidate form.
+			foreach (var idString in IdStringProvider.GetIdStringCandidates(module, entity.MetadataToken))
+			{
+				string documentation = GetDocumentation(idString);
+				if (documentation != null)
+					return documentation;
+			}
+			return null;
 		}
 
 		string GetDocumentation(string key, bool allowReload)
@@ -420,8 +426,10 @@ namespace ICSharpCode.Decompiler.Documentation
 			try
 			{
 				// Reload the index
-				using (FileStream fs = new FileStream(fileName, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete))
+				using (Stream fs = openFile(fileName))
 				{
+					if (fs == null)
+						throw new FileNotFoundException("XML documentation file not found.", fileName);
 					using (XmlTextReader xmlReader = new XmlTextReader(fs))
 					{
 						xmlReader.XmlResolver = null; // no DTD resolving
@@ -448,8 +456,10 @@ namespace ICSharpCode.Decompiler.Documentation
 		#region Load / Read XML
 		string LoadDocumentation(string key, int positionInFile)
 		{
-			using (FileStream fs = new FileStream(fileName, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete))
+			using (Stream fs = openFile(fileName))
 			{
+				if (fs == null)
+					throw new FileNotFoundException("XML documentation file not found.", fileName);
 				fs.Position = positionInFile;
 				var context = new XmlParserContext(null, null, null, XmlSpace.None) { Encoding = encoding };
 				using (XmlTextReader r = new XmlTextReader(fs, XmlNodeType.Element, context))

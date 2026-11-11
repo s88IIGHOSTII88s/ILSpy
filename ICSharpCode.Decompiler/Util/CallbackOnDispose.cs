@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -16,6 +16,8 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+#nullable enable
+
 using System;
 using System.Threading;
 
@@ -30,7 +32,7 @@ namespace ICSharpCode.Decompiler.Util
 	/// </remarks>
 	public sealed class CallbackOnDispose : IDisposable
 	{
-		Action action;
+		Action? action;
 
 		public CallbackOnDispose(Action action)
 		{
@@ -41,7 +43,7 @@ namespace ICSharpCode.Decompiler.Util
 
 		public void Dispose()
 		{
-			Action a = Interlocked.Exchange(ref action, null);
+			Action? a = Interlocked.Exchange(ref action, null);
 			if (a != null)
 			{
 				a();

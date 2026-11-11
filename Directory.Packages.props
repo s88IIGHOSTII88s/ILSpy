@@ -1,0 +1,77 @@
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <!-- Enabled so the security overrides below pin the vulnerable transitive packages (dragged in by
+         the old Microsoft.DiaSymReader chain) to patched versions without a per-project PackageReference.
+         As a side effect it also aligns other transitive packages that have a PackageVersion entry to
+         their central versions. -->
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+  </PropertyGroup>
+  <PropertyGroup>
+    <RoslynVersion>5.12.0-1.26529.118</RoslynVersion>
+    <NetPackageVersion>10.0.15</NetPackageVersion>
+    <TomsToolboxVersion>2.26.1</TomsToolboxVersion>
+    <AvaloniaVersion>12.1.6</AvaloniaVersion>
+    <DockVersion>12.1.5</DockVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Avalonia (ILSpy port) -->
+    <PackageVersion Include="Avalonia" Version="$(AvaloniaVersion)" />
+    <PackageVersion Include="Avalonia.Desktop" Version="$(AvaloniaVersion)" />
+    <PackageVersion Include="Avalonia.Themes.Simple" Version="$(AvaloniaVersion)" />
+    <PackageVersion Include="Avalonia.Headless.NUnit" Version="$(AvaloniaVersion)" />
+    <PackageVersion Include="Svg.Controls.Skia.Avalonia" Version="12.0.0.13" />
+    <PackageVersion Include="Avalonia.AvaloniaEdit" Version="12.0.0" />
+    <PackageVersion Include="AvaloniaEdit.TextMate" Version="12.0.0" />
+    <PackageVersion Include="Xaml.Behaviors.Avalonia" Version="12.1.5" />
+    <PackageVersion Include="AvaloniaUI.DiagnosticsSupport" Version="2.2.3" />
+    <PackageVersion Include="Dock.Avalonia" Version="$(DockVersion)" />
+    <PackageVersion Include="Dock.Avalonia.Themes.Simple" Version="$(DockVersion)" />
+    <PackageVersion Include="Dock.Controls.Recycling" Version="$(DockVersion)" />
+    <PackageVersion Include="Dock.Model.Mvvm" Version="$(DockVersion)" />
+    <PackageVersion Include="ProDataGrid" Version="12.1.5" />
+    <PackageVersion Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <PackageVersion Include="AwesomeAssertions" Version="9.6.0" />
+    <PackageVersion Include="CliWrap" Version="3.10.5" />
+    <PackageVersion Include="DiffLib" Version="2025.0.0" />
+    <PackageVersion Include="ILCompiler.Reflection.ReadyToRun.Experimental" Version="10.0.0-rtm.25531.102" />
+    <PackageVersion Include="Iced" Version="1.22.0" />
+    <PackageVersion Include="K4os.Compression.LZ4" Version="1.3.8" />
+    <PackageVersion Include="McMaster.Extensions.CommandLineUtils" Version="5.1.0" />
+    <PackageVersion Include="McMaster.Extensions.Hosting.CommandLine" Version="5.1.0" />
+    <PackageVersion Include="Microsoft.CodeAnalysis.Common" Version="$(RoslynVersion)" />
+    <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="$(RoslynVersion)" />
+    <PackageVersion Include="Microsoft.CodeAnalysis.VisualBasic" Version="$(RoslynVersion)" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration" Version="$(NetPackageVersion)" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.Json" Version="$(NetPackageVersion)" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="$(NetPackageVersion)" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="$(NetPackageVersion)" />
+    <PackageVersion Include="Microsoft.NETCore.ILAsm" Version="$(NetPackageVersion)" />
+    <PackageVersion Include="Microsoft.NETCore.ILDAsm" Version="$(NetPackageVersion)" />
+    <PackageVersion Include="Microsoft.Sbom.Targets" Version="4.1.5" />
+    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.404" />
+    <PackageVersion Include="Microsoft.Testing.Extensions.TrxReport" Version="2.5.2" />
+    <PackageVersion Include="Microsoft.Testing.Extensions.VSTestBridge" Version="2.5.2" />
+    <PackageVersion Include="Mono.Cecil" Version="0.11.6" />
+    <PackageVersion Include="NSubstitute" Version="6.2.0" />
+    <PackageVersion Include="NUnit" Version="5.0.0" />
+    <PackageVersion Include="NUnit3TestAdapter" Version="6.3.1" />
+    <PackageVersion Include="coverlet.MTP" Version="10.1.0" />
+    <PackageVersion Include="NuGet.Frameworks" Version="8.0.0" />
+    <PackageVersion Include="NuGet.Protocol" Version="8.0.0" />
+    <PackageVersion Include="PowerShellStandard.Library" Version="5.1.1" />
+    <PackageVersion Include="System.Composition.AttributedModel" Version="$(NetPackageVersion)" />
+    <PackageVersion Include="System.Composition.Hosting" Version="$(NetPackageVersion)" />
+    <PackageVersion Include="System.Composition.TypedParts" Version="$(NetPackageVersion)" />
+    <PackageVersion Include="System.Collections.Immutable" Version="$(NetPackageVersion)" />
+    <PackageVersion Include="System.Memory" Version="4.6.3" />
+    <PackageVersion Include="System.Reflection.Metadata" Version="$(NetPackageVersion)" />
+    <PackageVersion Include="System.Resources.Extensions" Version="$(NetPackageVersion)" />
+    <PackageVersion Include="System.Formats.Nrbf" Version="$(NetPackageVersion)" />
+    <PackageVersion Include="System.Runtime.CompilerServices.Unsafe" Version="6.1.2" />
+    <PackageVersion Include="System.Security.Cryptography.Pkcs" Version="$(NetPackageVersion)" />
+  </ItemGroup>
+  <ItemGroup>
+    <GlobalPackageReference Include="TomsToolbox.Composition.Analyzer" Version="$(TomsToolboxVersion)" />
+  </ItemGroup>
+</Project>

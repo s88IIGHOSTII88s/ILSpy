@@ -2,20 +2,33 @@ bin/
 obj/
 AppPackages/
 BundleArtifacts/
-/ICSharpCode.Decompiler/Properties/AssemblyInfo.cs
-/ILSpy/Properties/AssemblyInfo.cs
-/ILSpy/app.config
 *.user
 /Resharper-ILSpy-Style.xml
 _ReSharper*/
 *.ReSharper
 *.patch
 .vs/
-/ILSpy.AddIn/Packages/*
-/ILSpy.AddIn/source.extension.vsixmanifest
+.idea/
+/ILSpy.AddIn*/Packages/*
+/ILSpy.AddIn*/source.extension.vsixmanifest
 /ICSharpCode.Decompiler.Tests/TestCases/Disassembler/Pretty/*.dll
 /ICSharpCode.Decompiler.Tests/TestCases/Disassembler/Pretty/*.result.il
 /ICSharpCode.Decompiler.Tests/TestCases/Correctness/*.exe
 /ICSharpCode.Decompiler.Tests/TestCases/Correctness/*.exe.config
-/ICSharpCode.Decompiler/ICSharpCode.Decompiler.nuspec
 multitargeting.props
+ILSpy.Installer/wix/
+/VERSION
+/ICSharpCode.Decompiler/Properties/DecompilerVersionInfo.cs
+**/.vscode/
+DecompilerTests.config.json
+*.trx
+report/
+# Claude Code local session/skills directory
+/.claude/
+/.agents/
+/.understand-anything
+# Written by runuitests.ps1 and the CI test steps.
+test-results/
+# Written by nugetfuzz / decompdiff
+decompdiff-report/
+nugetfuzz-report.html

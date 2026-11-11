@@ -1,4 +1,5 @@
-﻿using System;
+using System;
+using System.Threading;
 
 namespace ICSharpCode.Decompiler.Tests.TestCases.Ugly
 {
@@ -96,25 +97,25 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Ugly
 				thisField = this,
 				field1 = i
 			};
-			int field1 = default(int);
-			string field2 = default(string);
+			int field5 = default(int);
+			string field4 = default(string);
 			DisplayClass field3 = default(DisplayClass);
 			while (true)
 			{
 				switch (Rand())
 				{
 					case 1:
-						field1 = Rand();
+						field5 = Rand();
 						continue;
 					case 2:
-						field2 = Rand().ToString();
+						field4 = Rand().ToString();
 						continue;
 					case 3:
 						field3 = displayClass;
 						continue;
 				}
-				Console.WriteLine(field1);
-				Console.WriteLine(field2);
+				Console.WriteLine(field5);
+				Console.WriteLine(field4);
 				Console.WriteLine(field3);
 			}
 		}
@@ -166,13 +167,55 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Ugly
 			Console.WriteLine("{0} {1}", field1, field2);
 		}
 
-//		public void Test9()
-//		{
-//			Program thisField = this;
-//			int field1 = 1;
-//			string field2 = "Hello World!";
-//			thisField = new Program();
-//			Console.WriteLine("{0} {1}", this, thisField);
-//		}
+		public void Test9()
+		{
+			Program thisField = this;
+			int field1 = 1;
+			string field2 = "Hello World!";
+			thisField = new Program();
+			Console.WriteLine("{0} {1}", this, thisField);
+		}
+
+		public void Test10()
+		{
+			Program thisField = this;
+			int field1 = 1;
+			string field2 = "Hello World!";
+			Interlocked.Exchange(ref thisField, new Program());
+			Console.WriteLine("{0} {1}", this, thisField);
+		}
+
+		public void Test11()
+		{
+			int field1 = 1;
+			string field2 = "Hello World!";
+			Console.WriteLine("{0} {1} {2}", this, field1, field2);
+		}
+
+		public void Test12(Program other)
+		{
+			int field1 = 1;
+			string field2 = "Hello World!";
+			other = new Program();
+			Console.WriteLine("{0} {1}", this, other);
+		}
+
+		public void Test13(Program other)
+		{
+			DisplayClass displayClass = new DisplayClass {
+				thisField = other,
+				field1 = 1,
+				field2 = "Hello World!"
+			};
+			Invoke(() => {
+				displayClass.thisField = new Program();
+			});
+			Console.WriteLine("{0} {1}", this, displayClass.thisField);
+		}
+
+		private static void Invoke(Action action)
+		{
+			action();
+		}
 	}
 }

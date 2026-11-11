@@ -1,4 +1,5 @@
-﻿// Copyright (c) 2020 Siegfried Pammer
+#nullable enable
+// Copyright (c) 2020 Siegfried Pammer
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -27,16 +28,20 @@ namespace ICSharpCode.Decompiler.IL
 		public int Index { get; }
 
 		public override StackType ResultType { get; }
+		public IType Type { get; }
 
-		public DeconstructResultInstruction(int index, StackType resultType, ILInstruction argument)
+		public DeconstructResultInstruction(int index, IType type, StackType resultType, ILInstruction argument)
 			: base(OpCode.DeconstructResultInstruction, argument)
 		{
 			Debug.Assert(index >= 0);
 			Index = index;
+			Type = type;
 			ResultType = resultType;
+			Debug.Assert(type.GetStackType() == resultType);
 		}
+		public override IType InferType(ICompilation compilation) => Type;
 
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -47,9 +52,9 @@ namespace ICSharpCode.Decompiler.IL
 			output.Write(')');
 		}
 
-		MatchInstruction FindMatch()
+		MatchInstruction? FindMatch()
 		{
-			for (ILInstruction inst = this; inst != null; inst = inst.Parent)
+			for (ILInstruction? inst = this; inst != null; inst = inst.Parent)
 			{
 				if (inst.Parent is MatchInstruction match && inst != match.TestedOperand)
 					return match;
@@ -60,10 +65,10 @@ namespace ICSharpCode.Decompiler.IL
 		void AdditionalInvariants()
 		{
 			var matchInst = FindMatch();
-			Debug.Assert(matchInst != null && (matchInst.IsDeconstructCall || matchInst.IsDeconstructTuple));
-			Debug.Assert(Argument.MatchLdLoc(matchInst.Variable));
+			DebugAssert(matchInst != null && (matchInst.IsDeconstructCall || matchInst.IsDeconstructTuple));
+			DebugAssert(Argument.MatchLdLoc(matchInst.Variable));
 			var outParamType = matchInst.GetDeconstructResultType(this.Index);
-			Debug.Assert(outParamType.GetStackType() == ResultType);
+			DebugAssert(outParamType.GetStackType() == ResultType);
 		}
 	}
 }

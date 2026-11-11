@@ -1,4 +1,4 @@
-﻿// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -17,18 +17,28 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System;
+using System.Runtime.InteropServices;
+#if !NET40
 using System.Threading.Tasks;
+#endif
 
 namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 {
+	[StructLayout(LayoutKind.Sequential, Size = 1)]
+	internal ref struct RefStructWithDispose
+	{
+		public void Use()
+		{
+		}
+
+		public void Dispose()
+		{
+		}
+	}
+
 	public class UsingVariables
 	{
 		public IDisposable GetDisposable()
-		{
-			return null;
-		}
-
-		public IAsyncDisposable GetAsyncDisposable()
 		{
 			return null;
 		}
@@ -38,10 +48,17 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 
 		}
 
+#if !NET40
+		public IAsyncDisposable GetAsyncDisposable()
+		{
+			return null;
+		}
+
 		private void Use(IAsyncDisposable asyncDisposable)
 		{
 
 		}
+#endif
 
 		public void SimpleUsingVar()
 		{
@@ -83,13 +100,22 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			Use(disposable);
 			Use(disposable2);
 		}
-
+#if !NET40
 		public async Task SimpleUsingVarAsync()
 		{
 			Console.WriteLine("before using");
 			await using IAsyncDisposable asyncDisposable = GetAsyncDisposable();
 			Console.WriteLine("inside using");
 			Use(asyncDisposable);
+		}
+#endif
+
+		public void UsingVarPatternBasedDispose()
+		{
+			Console.WriteLine("before using");
+			using RefStructWithDispose refStructWithDispose = default;
+			Console.WriteLine("inside using");
+			refStructWithDispose.Use();
 		}
 	}
 }

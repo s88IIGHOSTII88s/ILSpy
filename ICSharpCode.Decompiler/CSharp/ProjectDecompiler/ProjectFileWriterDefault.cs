@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2020 Siegfried Pammer
+// Copyright (c) 2020 Siegfried Pammer
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -25,29 +25,33 @@ using System.Xml;
 
 using ICSharpCode.Decompiler.Metadata;
 using ICSharpCode.Decompiler.Solution;
+using ICSharpCode.Decompiler.Util;
 
 namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 {
 	/// <summary>
 	/// A <see cref="IProjectFileWriter"/> implementation that creates the projects in the default format.
 	/// </summary>
-	sealed class ProjectFileWriterDefault : IProjectFileWriter
+	public sealed class ProjectFileWriterDefault : IProjectFileWriter
 	{
 		/// <summary>
-		/// Creates a new instance of the <see cref="ProjectFileWriterDefault"/> class.
+		/// Gets the singleton instance of the <see cref="ProjectFileWriterDefault"/> class.
 		/// </summary>
-		/// <returns>A new instance of the <see cref="ProjectFileWriterDefault"/> class.</returns>
-		public static IProjectFileWriter Create() => new ProjectFileWriterDefault();
+		public static ProjectFileWriterDefault Instance { get; } = new();
+
+		ProjectFileWriterDefault()
+		{
+		}
 
 		/// <inheritdoc />
 		public void Write(
 			TextWriter target,
 			IProjectInfoProvider project,
-			IEnumerable<(string itemType, string fileName)> files,
-			PEFile module)
+			IEnumerable<ProjectItemInfo> files,
+			MetadataFile module)
 		{
 			const string ns = "http://schemas.microsoft.com/developer/msbuild/2003";
-			string platformName = TargetServices.GetPlatformName(module);
+			string platformName = module is PEFile peFile ? TargetServices.GetPlatformName(peFile) : "AnyCPU";
 			var targetFramework = TargetServices.DetectTargetFramework(module);
 			if (targetFramework.Identifier == ".NETFramework" && targetFramework.VersionNumber == 200)
 				targetFramework = TargetServices.DetectTargetFrameworkNET20(module, project.AssemblyResolver, targetFramework);
@@ -79,42 +83,40 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 				w.WriteValue(platformName);
 				w.WriteEndElement(); // </Platform>
 
-				if (module.Reader.PEHeaders.IsDll)
+				string outputType;
+				PEHeaders headers = (module as PEFile)?.Reader.PEHeaders;
+
+				switch (headers?.PEHeader.Subsystem)
 				{
-					w.WriteElementString("OutputType", "Library");
-				}
-				else
-				{
-					switch (module.Reader.PEHeaders.PEHeader.Subsystem)
-					{
-						case Subsystem.WindowsGui:
-							w.WriteElementString("OutputType", "WinExe");
-							break;
-						case Subsystem.WindowsCui:
-							w.WriteElementString("OutputType", "Exe");
-							break;
-						default:
-							w.WriteElementString("OutputType", "Library");
-							break;
-					}
+					case Subsystem.WindowsGui when !headers.IsDll:
+						outputType = "WinExe";
+						break;
+					case Subsystem.WindowsCui when !headers.IsDll:
+						outputType = "Exe";
+						break;
+					default:
+						outputType = "Library";
+						break;
 				}
 
+				w.WriteElementString("OutputType", outputType);
 				w.WriteElementString("LangVersion", project.LanguageVersion.ToString().Replace("CSharp", "").Replace('_', '.'));
+				w.WriteElementString("CheckForOverflowUnderflow", project.CheckForOverflowUnderflow ? "true" : "false");
 
-				w.WriteElementString("AssemblyName", module.Name);
+				w.WriteElementString("AssemblyName", MSBuildEscaping.EscapeAssemblyName(module.Name));
 				if (targetFramework.Identifier != null)
-					w.WriteElementString("TargetFrameworkIdentifier", targetFramework.Identifier);
+					w.WriteElementString("TargetFrameworkIdentifier", MSBuildEscaping.Escape(targetFramework.Identifier));
 				if (targetFramework.VersionString != null)
-					w.WriteElementString("TargetFrameworkVersion", targetFramework.VersionString);
+					w.WriteElementString("TargetFrameworkVersion", MSBuildEscaping.Escape(targetFramework.VersionString));
 				if (targetFramework.Profile != null)
-					w.WriteElementString("TargetFrameworkProfile", targetFramework.Profile);
+					w.WriteElementString("TargetFrameworkProfile", MSBuildEscaping.Escape(targetFramework.Profile));
 				w.WriteElementString("WarningLevel", "4");
 				w.WriteElementString("AllowUnsafeBlocks", "True");
 
 				if (project.StrongNameKeyFile != null)
 				{
 					w.WriteElementString("SignAssembly", "True");
-					w.WriteElementString("AssemblyOriginatorKeyFile", Path.GetFileName(project.StrongNameKeyFile));
+					w.WriteElementString("AssemblyOriginatorKeyFile", MSBuildEscaping.Escape(Path.GetFileName(project.StrongNameKeyFile)));
 				}
 
 				w.WriteEndElement(); // </PropertyGroup>
@@ -122,7 +124,8 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 				w.WriteStartElement("PropertyGroup"); // platform-specific
 				w.WriteAttributeString("Condition", " '$(Platform)' == '" + platformName + "' ");
 				w.WriteElementString("PlatformTarget", platformName);
-				if (targetFramework.VersionNumber > 400 && platformName == "AnyCPU" && (module.Reader.PEHeaders.CorHeader.Flags & CorFlags.Prefers32Bit) == 0)
+				if (targetFramework.VersionNumber > 400 && platformName == "AnyCPU"
+					&& ((module as PEFile)?.Reader.PEHeaders.CorHeader.Flags & CorFlags.Prefers32Bit) == 0)
 				{
 					w.WriteElementString("Prefer32Bit", "false");
 				}
@@ -144,31 +147,42 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 				w.WriteElementString("Optimize", "true");
 				w.WriteEndElement(); // </PropertyGroup> (Release)
 
-
 				w.WriteStartElement("ItemGroup"); // References
-				foreach (var r in module.AssemblyReferences)
+				bool isWpf = module.AssemblyReferences.Any(r => r.Name == "PresentationFramework");
+				var references = isWpf
+					? ProjectFileWriterExtensions.GetWpfReferenceClosure(module, project)
+					: module.AssemblyReferences;
+				foreach (var r in references)
 				{
 					if (r.Name != "mscorlib")
 					{
 						w.WriteStartElement("Reference");
-						w.WriteAttributeString("Include", r.Name);
+						w.WriteAttributeString("Include", MSBuildEscaping.EscapeAssemblyName(r.Name));
 						var asm = project.AssemblyResolver.Resolve(r);
 						if (asm != null && !project.AssemblyReferenceClassifier.IsGacAssembly(r))
 						{
-							w.WriteElementString("HintPath", asm.FileName);
+							w.WriteElementString("HintPath", MSBuildEscaping.Escape(asm.FileName));
 						}
 						w.WriteEndElement();
 					}
 				}
 				w.WriteEndElement(); // </ItemGroup> (References)
 
-				foreach (IGrouping<string, string> gr in from f in files group f.fileName by f.itemType into g orderby g.Key select g)
+				foreach (IGrouping<string, ProjectItemInfo> gr in files.GroupBy(f => f.ItemType).OrderBy(g => g.Key))
 				{
 					w.WriteStartElement("ItemGroup");
-					foreach (string file in gr.OrderBy(f => f, StringComparer.OrdinalIgnoreCase))
+					foreach (var item in gr.OrderBy(f => f.FileName, StringComparer.OrdinalIgnoreCase))
 					{
 						w.WriteStartElement(gr.Key);
-						w.WriteAttributeString("Include", file);
+						w.WriteAttributeString("Include", MSBuildEscaping.Escape(item.FileName));
+						if (item.AdditionalProperties != null)
+						{
+							// Item metadata as attributes is MSBuild 15 syntax. This format is what an
+							// export targets when the toolchain predates that, so the metadata goes where
+							// every non-SDK project keeps it: in child elements.
+							foreach (var (key, value) in item.AdditionalProperties)
+								w.WriteElementString(key, MSBuildEscaping.Escape(value));
+						}
 						w.WriteEndElement();
 					}
 					w.WriteEndElement();

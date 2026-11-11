@@ -1,0 +1,445 @@
+// Copyright (c) 2011 AlphaSierraPapa for the SharpDevelop Team
+// 
+// Permission is hereby granted, free of charge, to any person obtaining a copy of this
+// software and associated documentation files (the "Software"), to deal in the Software
+// without restriction, including without limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
+// to whom the Software is furnished to do so, subject to the following conditions:
+// 
+// The above copyright notice and this permission notice shall be included in all copies or
+// substantial portions of the Software.
+// 
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
+// FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+#nullable enable
+
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.IO.Compression;
+using System.IO.MemoryMappedFiles;
+using System.Linq;
+using System.Reflection;
+using System.Threading.Tasks;
+
+using ICSharpCode.Decompiler;
+using ICSharpCode.Decompiler.Metadata;
+using ICSharpCode.ILSpyX.Instrumentation;
+
+namespace ICSharpCode.ILSpyX
+{
+	/// <summary>
+	/// NuGet package or .NET bundle:
+	/// </summary>
+	public class LoadedPackage
+	{
+		public enum PackageKind
+		{
+			Zip,
+			Bundle,
+		}
+
+		/// <summary>
+		/// Gets the LoadedAssembly instance representing this bundle.
+		/// </summary>
+		internal LoadedAssembly? LoadedAssembly { get; set; }
+
+		public PackageKind Kind { get; }
+
+		public SingleFileBundle.Header BundleHeader { get; set; }
+
+		/// <summary>
+		/// List of all entries, including those in sub-directories within the package.
+		/// </summary>
+		public IReadOnlyList<PackageEntry> Entries { get; }
+
+		public PackageFolder RootFolder { get; }
+
+		public LoadedPackage(PackageKind kind, IEnumerable<PackageEntry> entries)
+		{
+			this.Kind = kind;
+			this.Entries = entries.ToArray();
+			var topLevelEntries = new List<PackageEntry>();
+			var folders = new Dictionary<string, PackageFolder>();
+			var rootFolder = new PackageFolder(this, null, "");
+			folders.Add("", rootFolder);
+			foreach (var entry in this.Entries)
+			{
+				var (dirname, filename) = SplitName(entry.Name);
+				if (!string.IsNullOrEmpty(filename))
+				{
+					GetFolder(dirname).Entries.Add(new FolderEntry(filename, entry));
+				}
+			}
+			this.RootFolder = rootFolder;
+
+			static (string, string) SplitName(string filename)
+			{
+				int pos = filename.LastIndexOfAny(new char[] { '/', '\\' });
+				if (pos == -1)
+					return ("", filename); // file in root
+				else
+					return (filename.Substring(0, pos), filename.Substring(pos + 1));
+			}
+
+			PackageFolder GetFolder(string name)
+			{
+				if (folders.TryGetValue(name, out var result))
+					return result;
+				var (dirname, basename) = SplitName(name);
+				PackageFolder parent = GetFolder(dirname);
+				result = new PackageFolder(this, parent, basename);
+				parent.Folders.Add(result);
+				folders.Add(name, result);
+				return result;
+			}
+		}
+
+		public static LoadedPackage FromZipFile(string file)
+		{
+			Debug.WriteLine($"LoadedPackage.FromZipFile({file})");
+			using var archive = ZipFile.OpenRead(file);
+			var package = new LoadedPackage(PackageKind.Zip,
+				archive.Entries.Select(entry => new ZipFileEntry(file, entry)));
+			ILSpyXEventSource.Log.PackageOpened(file, "zip", package.Entries.Count);
+			return package;
+		}
+
+		/// <summary>
+		/// Load a .NET single-file bundle.
+		/// </summary>
+		public static LoadedPackage? FromBundle(string fileName)
+		{
+			using var memoryMappedFile = MemoryMappedFile.CreateFromFile(fileName, FileMode.Open, null, 0, MemoryMappedFileAccess.Read);
+			var view = memoryMappedFile.CreateViewAccessor(0, 0, MemoryMappedFileAccess.Read);
+			try
+			{
+				if (!SingleFileBundle.IsBundle(view, out long bundleHeaderOffset))
+					return null;
+				var manifest = SingleFileBundle.ReadManifest(view, bundleHeaderOffset);
+				var entries = manifest.Entries.Select(e => new BundleEntry(fileName, view, e)).ToList();
+				var result = new LoadedPackage(PackageKind.Bundle, entries);
+				result.BundleHeader = manifest;
+				view = null; // don't dispose the view, we're still using it in the bundle entries
+				ILSpyXEventSource.Log.PackageOpened(fileName, "bundle", entries.Count);
+				return result;
+			}
+			catch (InvalidDataException)
+			{
+				return null;
+			}
+			finally
+			{
+				view?.Dispose();
+			}
+		}
+
+		/// <summary>
+		/// Entry inside a package folder. Effectively renames the entry.
+		/// </summary>
+		sealed class FolderEntry : PackageEntry
+		{
+			readonly PackageEntry originalEntry;
+			public override string Name { get; }
+			public override string FullName => originalEntry.Name;
+
+			public FolderEntry(string name, PackageEntry originalEntry)
+			{
+				this.Name = name;
+				this.originalEntry = originalEntry;
+			}
+
+			public override ManifestResourceAttributes Attributes => originalEntry.Attributes;
+			public override string PackageQualifiedFileName => originalEntry.PackageQualifiedFileName;
+			public override ResourceType ResourceType => originalEntry.ResourceType;
+			public override Stream? TryOpenStream() => originalEntry.TryOpenStream();
+			public override long? TryGetLength() => originalEntry.TryGetLength();
+		}
+
+		sealed class ZipFileEntry : PackageEntry
+		{
+			readonly string zipFile;
+			public override string Name { get; }
+			public override string PackageQualifiedFileName => $"zip://{zipFile};{Name}";
+
+			public override string FullName => Name;
+
+			public ZipFileEntry(string zipFile, ZipArchiveEntry entry)
+			{
+				this.zipFile = zipFile;
+				this.Name = entry.FullName;
+			}
+
+			public override Stream? TryOpenStream()
+			{
+				Debug.WriteLine("Decompress " + Name);
+				bool trace = ILSpyXEventSource.Log.IsPackageExtractionTracingEnabled();
+				long traceStart = trace ? Stopwatch.GetTimestamp() : 0;
+				using var archive = ZipFile.OpenRead(zipFile);
+				var entry = archive.GetEntry(Name);
+				if (entry == null)
+					return null;
+				var memoryStream = new MemoryStream();
+				using (var s = entry.Open())
+				{
+					s.CopyTo(memoryStream);
+				}
+				memoryStream.Position = 0;
+				if (trace)
+					ILSpyXEventSource.Log.PackageEntryExtracted(Name, memoryStream.Length, ILSpyXEventSource.ElapsedMilliseconds(traceStart));
+				return memoryStream;
+			}
+
+			public override long? TryGetLength()
+			{
+				Debug.WriteLine("TryGetLength " + Name);
+				using var archive = ZipFile.OpenRead(zipFile);
+				var entry = archive.GetEntry(Name);
+				if (entry == null)
+					return null;
+				return entry.Length;
+			}
+		}
+
+		sealed class BundleEntry : PackageEntry
+		{
+			readonly string bundleFile;
+			readonly MemoryMappedViewAccessor view;
+			readonly SingleFileBundle.Entry entry;
+
+			public BundleEntry(string bundleFile, MemoryMappedViewAccessor view, SingleFileBundle.Entry entry)
+			{
+				this.bundleFile = bundleFile;
+				this.view = view;
+				this.entry = entry;
+			}
+
+			public override string Name => entry.RelativePath;
+			public override string FullName => Name;
+			public override string PackageQualifiedFileName => $"bundle://{bundleFile};{Name}";
+
+			public override Stream TryOpenStream()
+			{
+				Debug.WriteLine("Open bundle member " + Name);
+				bool trace = ILSpyXEventSource.Log.IsPackageExtractionTracingEnabled();
+				long traceStart = trace ? Stopwatch.GetTimestamp() : 0;
+
+				if (entry.CompressedSize == 0)
+				{
+					var stream = new UnmanagedMemoryStream(view.SafeMemoryMappedViewHandle, entry.Offset, entry.Size);
+					if (trace)
+						ILSpyXEventSource.Log.PackageEntryExtracted(Name, entry.Size, ILSpyXEventSource.ElapsedMilliseconds(traceStart));
+					return stream;
+				}
+				else
+				{
+					// entry.Size comes straight from the manifest and is not trusted: it must never
+					// size an allocation, and decompression must not run past it. A size that does
+					// not fit a single in-memory buffer cannot be a real entry either.
+					if (entry.Size < 0 || entry.Size > int.MaxValue)
+					{
+						throw new InvalidDataException($"Corrupted single-file entry '{entry.RelativePath}'. Declared decompressed size '{entry.Size}' is not valid.");
+					}
+					Stream compressedStream = new UnmanagedMemoryStream(view.SafeMemoryMappedViewHandle, entry.Offset, entry.CompressedSize);
+					using var deflateStream = new DeflateStream(compressedStream, CompressionMode.Decompress);
+					// Grows only with the bytes that actually come out of the deflate stream. Reading
+					// one byte past the declared size is enough to prove the entry corrupt, so a
+					// decompression bomb stops there instead of being inflated in full.
+					Stream decompressedStream = new MemoryStream();
+					byte[] buffer = new byte[81920];
+					long remaining = entry.Size + 1;
+					int read;
+					while (remaining > 0 && (read = deflateStream.Read(buffer, 0, (int)Math.Min(buffer.Length, remaining))) > 0)
+					{
+						decompressedStream.Write(buffer, 0, read);
+						remaining -= read;
+					}
+					if (decompressedStream.Length != entry.Size)
+					{
+						throw new InvalidDataException($"Corrupted single-file entry '{entry.RelativePath}'. Declared decompressed size '{entry.Size}' is not the same as actual decompressed size '{decompressedStream.Length}'.");
+					}
+
+					decompressedStream.Seek(0, SeekOrigin.Begin);
+					if (trace)
+						ILSpyXEventSource.Log.PackageEntryExtracted(Name, entry.Size, ILSpyXEventSource.ElapsedMilliseconds(traceStart));
+					return decompressedStream;
+				}
+			}
+
+			public override long? TryGetLength()
+			{
+				return entry.Size;
+			}
+		}
+	}
+
+	public abstract class PackageEntry : Resource
+	{
+		/// <summary>
+		/// Gets the file name of the entry (may include path components, relative to the package root).
+		/// </summary>
+		public abstract override string Name { get; }
+
+		/// <summary>
+		/// Gets the full file name including the full file name of the package (prefixed with e.g., bundle:// or zip://).
+		/// </summary>
+		public abstract string PackageQualifiedFileName { get; }
+
+		/// <summary>
+		/// Gets the full name of the file name relative to the package root.
+		/// </summary>
+		public abstract string FullName { get; }
+	}
+
+	public sealed class PackageFolder : IAssemblyResolver
+	{
+		/// <inheritdoc/>
+		public IDisposable? BeginSnapshot() => null;
+
+		/// <summary>
+		/// Gets the short name of the folder.
+		/// </summary>
+		public string Name { get; }
+
+		readonly LoadedPackage package;
+		readonly PackageFolder? parent;
+
+		internal PackageFolder(LoadedPackage package, PackageFolder? parent, string name)
+		{
+			this.package = package;
+			this.parent = parent;
+			this.Name = name;
+		}
+
+		public PackageFolder? Parent => parent;
+		public List<PackageFolder> Folders { get; } = new List<PackageFolder>();
+		public List<PackageEntry> Entries { get; } = new List<PackageEntry>();
+
+		public MetadataFile? Resolve(IAssemblyReference reference)
+		{
+			var asm = ResolveFileName(reference.Name + ".dll");
+			if (asm != null)
+			{
+				return asm.GetMetadataFileOrNull();
+			}
+			return parent?.Resolve(reference);
+		}
+
+		public Task<MetadataFile?> ResolveAsync(IAssemblyReference reference)
+		{
+			var asm = ResolveFileName(reference.Name + ".dll");
+			if (asm != null)
+			{
+				return asm.GetMetadataFileOrNullAsync();
+			}
+			if (parent != null)
+			{
+				return parent.ResolveAsync(reference);
+			}
+			return Task.FromResult<MetadataFile?>(null);
+		}
+
+		public MetadataFile? ResolveModule(MetadataFile mainModule, string moduleName)
+		{
+			var asm = ResolveFileName(moduleName + ".dll");
+			if (asm != null)
+			{
+				return asm.GetMetadataFileOrNull();
+			}
+			return parent?.ResolveModule(mainModule, moduleName);
+		}
+
+		public Task<MetadataFile?> ResolveModuleAsync(MetadataFile mainModule, string moduleName)
+		{
+			var asm = ResolveFileName(moduleName + ".dll");
+			if (asm != null)
+			{
+				return asm.GetMetadataFileOrNullAsync();
+			}
+			if (parent != null)
+			{
+				return parent.ResolveModuleAsync(mainModule, moduleName);
+			}
+			return Task.FromResult<MetadataFile?>(null);
+		}
+
+		// Keyed by entry name, ordinal: an assembly-reference lookup is case-insensitive, but two
+		// entries whose names differ only in case are two distinct files (archive entry names are
+		// case-sensitive) and must not share one LoadedAssembly.
+		readonly Dictionary<string, LoadedAssembly> assemblies = new Dictionary<string, LoadedAssembly>(StringComparer.Ordinal);
+
+		public LoadedAssembly? ResolveFileName(string name)
+		{
+			var entry = Entries.FirstOrDefault(e => string.Equals(name, e.Name, StringComparison.Ordinal))
+				?? Entries.FirstOrDefault(e => string.Equals(name, e.Name, StringComparison.OrdinalIgnoreCase));
+			return entry == null ? null : ResolveEntry(entry);
+		}
+
+		/// <summary>
+		/// The <see cref="LoadedAssembly"/> for one of this folder's entries, created on first use.
+		/// Creating it starts reading the entry out of the package, so call this only for entries
+		/// that are about to be inspected.
+		/// </summary>
+		public LoadedAssembly? ResolveEntry(PackageEntry entry)
+		{
+			ArgumentNullException.ThrowIfNull(entry);
+			if (package.LoadedAssembly == null)
+				return null;
+			lock (assemblies)
+			{
+				if (assemblies.TryGetValue(entry.Name, out var asm))
+					return asm;
+				// FullName is the package-relative path ("lib/net10.0/Foo.dll"), which is what makes
+				// the copies of one assembly in a multi-target package tellable apart wherever the
+				// file name is surfaced. ShortName/Text stay the bare file name either way.
+				asm = new LoadedAssembly(
+					package.LoadedAssembly, entry.FullName,
+					fileLoaders: package.LoadedAssembly.AssemblyList.LoaderRegistry,
+					assemblyResolver: this,
+					packageFolder: this,
+					packageEntry: entry,
+					stream: Task.Run(entry.TryOpenStream),
+					applyWinRTProjections: package.LoadedAssembly.AssemblyList.ApplyWinRTProjections,
+					useDebugSymbols: package.LoadedAssembly.AssemblyList.UseDebugSymbols
+				);
+				assemblies.Add(entry.Name, asm);
+				return asm;
+			}
+		}
+
+		/// <summary>
+		/// Whether this folder has already resolved <paramref name="assembly"/> from one of its
+		/// entries. Consults the resolution cache only -- nothing is loaded or extracted.
+		/// </summary>
+		public bool HasResolved(LoadedAssembly assembly)
+		{
+			lock (assemblies)
+			{
+				return assemblies.ContainsValue(assembly);
+			}
+		}
+
+		/// <summary>
+		/// Finds an associated file (e.g., XMLDoc or PDB) in this folder for an assembly entry.
+		/// The assembly name may be a package-relative path.
+		/// </summary>
+		public PackageEntry? FindAssociatedEntry(string assemblyName, string extension)
+		{
+			if (string.IsNullOrEmpty(assemblyName) || string.IsNullOrEmpty(extension) || extension[0] != '.')
+				return null;
+			string fileName = Path.GetFileName(assemblyName);
+			int dot = fileName.LastIndexOf('.');
+			if (dot <= 0)
+				return null;
+			string associatedFile = string.Concat(fileName.AsSpan(0, dot), extension);
+			return Entries.FirstOrDefault(e => string.Equals(e.Name, associatedFile, StringComparison.Ordinal))
+				?? Entries.FirstOrDefault(e => string.Equals(e.Name, associatedFile, StringComparison.OrdinalIgnoreCase));
+		}
+	}
+}

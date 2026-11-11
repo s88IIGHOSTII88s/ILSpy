@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2018 Siegfried Pammer
+// Copyright (c) 2018 Siegfried Pammer
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -60,7 +60,8 @@ namespace ICSharpCode.Decompiler.Metadata
 		}
 
 		static readonly string[] LookupPaths = new string[] {
-			 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".nuget", "packages")
+			Environment.GetEnvironmentVariable("NUGET_PACKAGES"),
+			Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".nuget", "packages")
 		};
 
 		static readonly string[] RuntimePacks = new[] {
@@ -76,6 +77,12 @@ namespace ICSharpCode.Decompiler.Metadata
 		readonly Version targetFrameworkVersion;
 		readonly string dotnetBasePath = FindDotNetExeDirectory();
 		readonly string preferredRuntimePack;
+
+		/// <summary>
+		/// The resolver this path finder belongs to, which holds any open scope. Null when nobody
+		/// owns it, and then every scan below reads the file system.
+		/// </summary>
+		internal UniversalAssemblyResolver Owner { get; set; }
 
 		public DotNetCorePathFinder(TargetFrameworkIdentifier targetFramework, Version targetFrameworkVersion,
 			string preferredRuntimePack)
@@ -107,15 +114,23 @@ namespace ICSharpCode.Decompiler.Metadata
 			{
 				packages = LoadPackageInfos(depsJsonFileName, targetFrameworkIdString).ToArray();
 
+				// Every runtime component of a package resolves to the same folder, so without
+				// this the same directory is probed once per assembly the package contains, for
+				// every reference that is looked up.
+				var knownPackageBasePaths = new HashSet<string>();
 				foreach (var path in LookupPaths)
 				{
+					if (string.IsNullOrWhiteSpace(path))
+					{
+						continue;
+					}
 					foreach (var p in packages)
 					{
 						foreach (var item in p.RuntimeComponents)
 						{
 							var itemPath = Path.GetDirectoryName(item);
 							var fullPath = Path.Combine(path, p.Name, p.Version, itemPath).ToLowerInvariant();
-							if (Directory.Exists(fullPath))
+							if (knownPackageBasePaths.Add(fullPath) && Directory.Exists(fullPath))
 								packageBasePaths.Add(fullPath);
 						}
 					}
@@ -141,13 +156,15 @@ namespace ICSharpCode.Decompiler.Metadata
 		{
 			foreach (var basePath in searchPaths.Concat(packageBasePaths))
 			{
-				if (File.Exists(Path.Combine(basePath, name.Name + ".dll")))
+				var file = Path.Combine(basePath, name.Name + ".dll");
+				if (File.Exists(file))
 				{
-					return Path.Combine(basePath, name.Name + ".dll");
+					return file;
 				}
-				else if (File.Exists(Path.Combine(basePath, name.Name + ".exe")))
+				file = Path.Combine(basePath, name.Name + ".exe");
+				if (File.Exists(file))
 				{
-					return Path.Combine(basePath, name.Name + ".exe");
+					return file;
 				}
 			}
 
@@ -168,10 +185,16 @@ namespace ICSharpCode.Decompiler.Metadata
 					identifier = "NETStandard.Library";
 					identifierExt = "netstandard" + version.Major + "." + version.Minor;
 					break;
+				case TargetFrameworkIdentifier.NET:
+					identifier = "Microsoft.NETCore.App";
+					identifierExt = "net" + version.Major + "." + version.Minor;
+					break;
 				default:
 					throw new NotSupportedException();
 			}
-			return Path.Combine(dotnetBasePath, "packs", identifier + ".Ref", version.ToString(), "ref", identifierExt);
+			string basePath = Path.Combine(dotnetBasePath, "packs", identifier + ".Ref");
+			string versionFolder = GetClosestVersionFolder(basePath, version);
+			return Path.Combine(basePath, versionFolder, "ref", identifierExt);
 		}
 
 		static IEnumerable<DotNetCorePackageInfo> LoadPackageInfos(string depsJsonFileName, string targetFramework)
@@ -212,7 +235,9 @@ namespace ICSharpCode.Decompiler.Metadata
 
 			if (preferredRuntimePack != null)
 			{
-				runtimePacks = new[] { preferredRuntimePack }.Concat(runtimePacks);
+				// The preferred pack is usually one of the defaults as well; listing it twice means
+				// scanning its directory twice for every reference that is not in it.
+				runtimePacks = new[] { preferredRuntimePack }.Concat(RuntimePacks.Where(p => p != preferredRuntimePack));
 			}
 
 			foreach (string pack in runtimePacks)
@@ -221,14 +246,18 @@ namespace ICSharpCode.Decompiler.Metadata
 				string basePath = Path.Combine(dotnetBasePath, "shared", pack);
 				if (!Directory.Exists(basePath))
 					continue;
-				var closestVersion = GetClosestVersionFolder(basePath, targetFrameworkVersion);
-				if (File.Exists(Path.Combine(basePath, closestVersion, name.Name + ".dll")))
+				var closestVersion = Owner != null
+					? Owner.GetOrAddVersionFolder(basePath, p => GetClosestVersionFolder(p, targetFrameworkVersion))
+					: GetClosestVersionFolder(basePath, targetFrameworkVersion);
+				var file = Path.Combine(basePath, closestVersion, name.Name + ".dll");
+				if (File.Exists(file))
 				{
-					return Path.Combine(basePath, closestVersion, name.Name + ".dll");
+					return file;
 				}
-				else if (File.Exists(Path.Combine(basePath, closestVersion, name.Name + ".exe")))
+				file = Path.Combine(basePath, closestVersion, name.Name + ".exe");
+				if (File.Exists(file))
 				{
-					return Path.Combine(basePath, closestVersion, name.Name + ".exe");
+					return file;
 				}
 			}
 			runtimePack = null;
@@ -238,21 +267,24 @@ namespace ICSharpCode.Decompiler.Metadata
 		static string GetClosestVersionFolder(string basePath, Version version)
 		{
 			var foundVersions = new DirectoryInfo(basePath).GetDirectories()
-				.Select(d => ConvertToVersion(d.Name))
+				.Select(ConvertToVersion)
 				.Where(v => v.version != null);
-			foreach (var folder in foundVersions.OrderBy(v => v.Item1))
+			foreach (var folder in foundVersions.OrderBy(v => v.version))
 			{
-				if (folder.version >= version)
-					return folder.directoryName;
+				if (folder.version >= version
+					&& folder.directory.EnumerateFiles("*.dll", SearchOption.AllDirectories).Any())
+				{
+					return folder.directory.Name;
+				}
 			}
 			return version.ToString();
 		}
 
-		internal static (Version version, string directoryName) ConvertToVersion(string name)
+		internal static (Version version, DirectoryInfo directory) ConvertToVersion(DirectoryInfo directory)
 		{
 			string RemoveTrailingVersionInfo()
 			{
-				string shortName = name;
+				string shortName = directory.Name;
 				int dashIndex = shortName.IndexOf('-');
 				if (dashIndex > 0)
 				{
@@ -263,7 +295,7 @@ namespace ICSharpCode.Decompiler.Metadata
 
 			try
 			{
-				return (new Version(RemoveTrailingVersionInfo()), name);
+				return (new Version(RemoveTrailingVersionInfo()), directory);
 			}
 			catch (Exception ex)
 			{
@@ -274,8 +306,61 @@ namespace ICSharpCode.Decompiler.Metadata
 
 		public static string FindDotNetExeDirectory()
 		{
+			return FindDotNetExeDirectory(CandidateDotNetDirectories(Environment.GetEnvironmentVariable));
+		}
+
+		/// <summary>
+		/// Where to look for the dotnet executable, in the order the .NET host uses when it starts a
+		/// framework-dependent app: DOTNET_ROOT (optionally suffixed with the process architecture),
+		/// then the default install locations; PATH, which the host never consults, comes last. A
+		/// single-file or Native AOT app resolves framework facades through this, so it has to land
+		/// on the installation a framework-dependent build of it would run on, including on a machine
+		/// where dotnet is installed but not on PATH.
+		/// </summary>
+		internal static IEnumerable<string> CandidateDotNetDirectories(Func<string, string> getEnvironmentVariable)
+		{
+			foreach (var name in new[] { "DOTNET_ROOT_" + RuntimeInformation.ProcessArchitecture.ToString().ToUpperInvariant(), "DOTNET_ROOT" })
+			{
+				string root = getEnvironmentVariable(name);
+				if (!string.IsNullOrEmpty(root))
+					yield return root;
+			}
+			if (Environment.OSVersion.Platform == PlatformID.Unix)
+			{
+				string installLocation = null;
+				try
+				{
+					if (File.Exists("/etc/dotnet/install_location"))
+						installLocation = File.ReadLines("/etc/dotnet/install_location").FirstOrDefault()?.Trim();
+				}
+				catch (IOException)
+				{
+				}
+				catch (UnauthorizedAccessException)
+				{
+				}
+				if (!string.IsNullOrEmpty(installLocation))
+					yield return installLocation;
+				yield return "/usr/share/dotnet";
+				yield return "/usr/lib/dotnet";
+				yield return "/usr/local/share/dotnet";
+			}
+			else
+			{
+				yield return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "dotnet");
+			}
+			string path = getEnvironmentVariable("PATH");
+			if (path != null)
+			{
+				foreach (var item in path.Split(Path.PathSeparator))
+					yield return item;
+			}
+		}
+
+		internal static string FindDotNetExeDirectory(IEnumerable<string> candidateDirectories)
+		{
 			string dotnetExeName = (Environment.OSVersion.Platform == PlatformID.Unix) ? "dotnet" : "dotnet.exe";
-			foreach (var item in Environment.GetEnvironmentVariable("PATH").Split(Path.PathSeparator))
+			foreach (var item in candidateDirectories)
 			{
 				try
 				{
@@ -286,9 +371,7 @@ namespace ICSharpCode.Decompiler.Metadata
 					{
 						if ((new FileInfo(fileName).Attributes & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint)
 						{
-							var sb = new StringBuilder();
-							realpath(fileName, sb);
-							fileName = sb.ToString();
+							fileName = GetRealPath(fileName, Encoding.Default);
 							if (!File.Exists(fileName))
 								continue;
 						}
@@ -300,7 +383,36 @@ namespace ICSharpCode.Decompiler.Metadata
 			return null;
 		}
 
-		[DllImport("libc")]
-		static extern void realpath(string path, StringBuilder resolvedPath);
+		static unsafe string GetRealPath(string path, Encoding encoding)
+		{
+			var bytes = encoding.GetBytes(path);
+			fixed (byte* input = bytes)
+			{
+
+				byte* output = NativeMethods.GetRealPath(input, null);
+				if (output == null)
+				{
+					return null;
+				}
+				int len = 0;
+				for (byte* c = output; *c != 0; c++)
+				{
+					len++;
+				}
+				byte[] result = new byte[len];
+				Marshal.Copy((IntPtr)output, result, 0, result.Length);
+				NativeMethods.Free(output);
+				return encoding.GetString(result);
+			}
+		}
+
+		static class NativeMethods
+		{
+			[DllImport("libc", EntryPoint = "realpath")]
+			internal static extern unsafe byte* GetRealPath(byte* path, byte* resolvedPath);
+
+			[DllImport("libc", EntryPoint = "free")]
+			internal static extern unsafe void Free(void* ptr);
+		}
 	}
 }

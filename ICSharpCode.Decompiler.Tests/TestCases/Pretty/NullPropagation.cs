@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2018 Daniel Grunwald
+// Copyright (c) 2018 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -32,11 +32,17 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			public readonly MyStruct ReadonlyStructField;
 			public string Text;
 			public MyClass Field;
+			public bool? NullableBool;
 			public MyClass Property { get; set; }
 			public MyClass this[int index] => null;
 			public MyClass Method(int arg)
 			{
 				return null;
+			}
+
+			public bool GetBool()
+			{
+				return false;
 			}
 
 			public void Done()
@@ -50,7 +56,11 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			public readonly int ReadonlyIntVal;
 			public MyClass Field;
 			public MyStruct? Property1 => null;
+#if CS71
+			public MyStruct Property2 => default;
+#else
 			public MyStruct Property2 => default(MyStruct);
+#endif
 			public MyStruct? this[int index] => null;
 			public MyStruct? Method1(int arg)
 			{
@@ -58,7 +68,16 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			}
 			public MyStruct Method2(int arg)
 			{
+#if CS71
+				return default;
+#else
 				return default(MyStruct);
+#endif
+			}
+
+			public bool GetBool()
+			{
+				return false;
 			}
 
 			public void Done()
@@ -161,6 +180,19 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			GetMyClass()?[GetInt()].Done();
 		}
 
+		public void CallGetBool()
+		{
+			GetMyClass()?.GetBool();
+			GetMyClass()?.Field?.GetBool();
+			GetMyClass()?.Field.GetBool();
+			GetMyClass()?.Property?.GetBool();
+			GetMyClass()?.Property.GetBool();
+			GetMyClass()?.Method(GetInt())?.GetBool();
+			GetMyClass()?.Method(GetInt()).GetBool();
+			GetMyClass()?[GetInt()]?.GetBool();
+			GetMyClass()?[GetInt()].GetBool();
+		}
+
 		public void CallDoneStruct()
 		{
 			GetMyStruct()?.Done();
@@ -171,6 +203,18 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			GetMyStruct()?.Method1(GetInt())?.Done();
 			GetMyStruct()?.Method2(GetInt()).Done();
 			GetMyStruct()?[GetInt()]?.Done();
+		}
+
+		public void CallGetBoolStruct()
+		{
+			GetMyStruct()?.GetBool();
+			GetMyStruct()?.Field?.GetBool();
+			GetMyStruct()?.Field.GetBool();
+			GetMyStruct()?.Property1?.GetBool();
+			GetMyStruct()?.Property2.GetBool();
+			GetMyStruct()?.Method1(GetInt())?.GetBool();
+			GetMyStruct()?.Method2(GetInt()).GetBool();
+			GetMyStruct()?[GetInt()]?.GetBool();
 		}
 
 		public void RequiredParentheses()
@@ -312,9 +356,40 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			Console.WriteLine(setsOfNumbers?[1]?[1].ToString() == null);
 		}
 
+		private static byte[] GetBytes()
+		{
+			return null;
+		}
+
+		private static void ArrayLengthWithFallback()
+		{
+			Console.WriteLine(GetBytes()?.Length ?? 0);
+			Console.WriteLine(GetBytes()?.LongLength ?? 0);
+		}
+
 		private static dynamic DynamicNullProp(dynamic a)
 		{
 			return a?.b.c(1)?.d[10];
+		}
+
+		private static string Issue3181()
+		{
+#if EXPECTED_OUTPUT
+			return ((int?)null)?.ToString();
+#else
+			int? x = null;
+			return x?.ToString();
+#endif
+		}
+
+		private static bool Issue3702(MyClass c)
+		{
+			return c?.NullableBool.GetValueOrDefault() ?? false;
+		}
+
+		private static string Issue3702ToString(MyClass c)
+		{
+			return c?.NullableBool.GetValueOrDefault().ToString();
 		}
 	}
 }

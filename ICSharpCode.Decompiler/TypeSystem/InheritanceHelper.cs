@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -20,6 +20,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
+#nullable enable
+
 namespace ICSharpCode.Decompiler.TypeSystem
 {
 	/// <summary>
@@ -34,7 +36,7 @@ namespace ICSharpCode.Decompiler.TypeSystem
 		/// <summary>
 		/// Gets the base member that has the same signature.
 		/// </summary>
-		public static IMember GetBaseMember(IMember member)
+		public static IMember? GetBaseMember(IMember member)
 		{
 			return GetBaseMembers(member, false).FirstOrDefault();
 		}
@@ -109,7 +111,7 @@ namespace ICSharpCode.Decompiler.TypeSystem
 		/// <summary>
 		/// Finds the member declared in 'derivedType' that has the same signature (could override) 'baseMember'.
 		/// </summary>
-		public static IMember GetDerivedMember(IMember baseMember, ITypeDefinition derivedType)
+		public static IMember? GetDerivedMember(IMember baseMember, ITypeDefinition derivedType)
 		{
 			if (baseMember == null)
 				throw new ArgumentNullException(nameof(baseMember));
@@ -120,9 +122,8 @@ namespace ICSharpCode.Decompiler.TypeSystem
 				throw new ArgumentException("baseMember and derivedType must be from the same compilation");
 
 			baseMember = baseMember.MemberDefinition;
-			bool includeInterfaces = baseMember.DeclaringTypeDefinition.Kind == TypeKind.Interface;
-			IMethod method = baseMember as IMethod;
-			if (method != null)
+			bool includeInterfaces = baseMember.DeclaringTypeDefinition?.Kind == TypeKind.Interface;
+			if (baseMember is IMethod method)
 			{
 				foreach (IMethod derivedMethod in derivedType.Methods)
 				{
@@ -137,8 +138,7 @@ namespace ICSharpCode.Decompiler.TypeSystem
 					}
 				}
 			}
-			IProperty property = baseMember as IProperty;
-			if (property != null)
+			if (baseMember is IProperty property)
 			{
 				foreach (IProperty derivedProperty in derivedType.Properties)
 				{
@@ -175,7 +175,7 @@ namespace ICSharpCode.Decompiler.TypeSystem
 		{
 			foreach (var baseType in typeDef.GetNonInterfaceBaseTypes().Reverse())
 			{
-				ITypeDefinition baseTypeDef = baseType.GetDefinition();
+				ITypeDefinition? baseTypeDef = baseType.GetDefinition();
 				if (baseTypeDef == null)
 					continue;
 				foreach (var attr in baseTypeDef.GetAttributes())
@@ -185,10 +185,24 @@ namespace ICSharpCode.Decompiler.TypeSystem
 			}
 		}
 
+		internal static IAttribute? GetAttribute(ITypeDefinition typeDef, KnownAttribute attributeType)
+		{
+			foreach (var baseType in typeDef.GetNonInterfaceBaseTypes().Reverse())
+			{
+				ITypeDefinition? baseTypeDef = baseType.GetDefinition();
+				if (baseTypeDef == null)
+					continue;
+				var attr = baseTypeDef.GetAttribute(attributeType);
+				if (attr != null)
+					return attr;
+			}
+			return null;
+		}
+
 		internal static IEnumerable<IAttribute> GetAttributes(IMember member)
 		{
 			HashSet<IMember> visitedMembers = new HashSet<IMember>();
-			do
+			while (true)
 			{
 				member = member.MemberDefinition; // it's sufficient to look at the definitions
 				if (!visitedMembers.Add(member))
@@ -200,7 +214,37 @@ namespace ICSharpCode.Decompiler.TypeSystem
 				{
 					yield return attr;
 				}
-			} while (member.IsOverride && (member = InheritanceHelper.GetBaseMember(member)) != null);
+				if (!member.IsOverride)
+					break;
+				var baseMember = GetBaseMember(member);
+				if (baseMember == null)
+					break;
+				member = baseMember;
+			}
+		}
+
+		internal static IAttribute? GetAttribute(IMember member, KnownAttribute attributeType)
+		{
+			HashSet<IMember> visitedMembers = new HashSet<IMember>();
+			while (true)
+			{
+				member = member.MemberDefinition; // it's sufficient to look at the definitions
+				if (!visitedMembers.Add(member))
+				{
+					// abort if we seem to be in an infinite loop (cyclic inheritance)
+					break;
+				}
+				var attr = member.GetAttribute(attributeType);
+				if (attr != null)
+					return attr;
+				if (!member.IsOverride)
+					break;
+				var baseMember = GetBaseMember(member);
+				if (baseMember == null)
+					break;
+				member = baseMember;
+			}
+			return null;
 		}
 		#endregion
 	}

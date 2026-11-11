@@ -1,4 +1,5 @@
-﻿// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
+#nullable enable
+// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -68,19 +69,20 @@ namespace ICSharpCode.Decompiler.Util
 			this.keyEqualityComparer = keyEqualityComparer;
 		}
 
-		public int Compare(TElement x, TElement y)
+		public int Compare(TElement? x, TElement? y)
 		{
-			return keyComparer.Compare(keySelector(x), keySelector(y));
+			return keyComparer.Compare(keySelector(x!), keySelector(y!));
 		}
 
-		public bool Equals(TElement x, TElement y)
+		public bool Equals(TElement? x, TElement? y)
 		{
-			return keyEqualityComparer.Equals(keySelector(x), keySelector(y));
+			return keyEqualityComparer.Equals(keySelector(x!), keySelector(y!));
 		}
 
 		public int GetHashCode(TElement obj)
 		{
-			return keyEqualityComparer.GetHashCode(keySelector(obj));
+			var key = keySelector(obj)!;
+			return keyEqualityComparer.GetHashCode(key);
 		}
 	}
 }

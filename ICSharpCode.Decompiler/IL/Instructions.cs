@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2014-2020 Daniel Grunwald
+// Copyright (c) 2014-2020 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -16,9 +16,11 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+#nullable enable
+
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 
 using ICSharpCode.Decompiler.TypeSystem;
@@ -120,6 +122,8 @@ namespace ICSharpCode.Decompiler.IL
 		NullableRewrap,
 		/// <summary>Loads a constant string.</summary>
 		LdStr,
+		/// <summary>Loads a constant byte string (as ReadOnlySpan&lt;byte&gt;).</summary>
+		LdStrUtf8,
 		/// <summary>Loads a constant 32-bit integer.</summary>
 		LdcI4,
 		/// <summary>Loads a constant 64-bit integer.</summary>
@@ -160,6 +164,8 @@ namespace ICSharpCode.Decompiler.IL
 		IsInst,
 		/// <summary>Indirect load (ref/pointer dereference).</summary>
 		LdObj,
+		/// <summary>If argument is a ref to a reference type, loads the object reference, stores it in a temporary, and evaluates to the address of that temporary (address.of(ldobj(arg))). Otherwise, returns the argument ref as-is.<para>This instruction represents the memory-load semantics of callvirt with a generic type as receiver (where the IL always takes a ref, but only methods on value types expect one, for method on reference types there's an implicit ldobj, which this instruction makes explicit in order to preserve the order-of-evaluation).</para></summary>
+		LdObjIfRef,
 		/// <summary>Indirect store (store to ref/pointer).
 		/// Evaluates to the value that was stored (when using type byte/short: evaluates to the truncated value, sign/zero extended back to I4 based on type.GetSign())</summary>
 		StObj,
@@ -185,13 +191,15 @@ namespace ICSharpCode.Decompiler.IL
 		LdLen,
 		/// <summary>Load address of array element.</summary>
 		LdElema,
+		/// <summary>Load address of inline array element.</summary>
+		LdElemaInlineArray,
 		/// <summary>Retrieves a pinnable reference for the input object.
-		/// The input must be an object reference (O).
+		/// The input must be an object reference (Obj).
 		/// If the input is an array/string, evaluates to a reference to the first element/character, or to a null reference if the array is null or empty.
 		/// Otherwise, uses the GetPinnableReference method to get the reference, or evaluates to a null reference if the input is null.
 		/// </summary>
 		GetPinnableReference,
-		/// <summary>Maps a string value to an integer. This is used in switch(string).</summary>
+		/// <summary>Maps a string value to an integer. This is used in switch(string).The input can be a `string` or a `ReadOnlySpan&lt;char&gt;`.</summary>
 		StringToInt,
 		/// <summary>ILAst representation of Expression.Convert.</summary>
 		ExpressionTreeCast,
@@ -304,8 +312,9 @@ namespace ICSharpCode.Decompiler.IL
 			this.Argument = argument;
 		}
 		public static readonly SlotInfo ArgumentSlot = new SlotInfo("Argument", canInlineInto: true);
-		ILInstruction argument;
+		ILInstruction argument = null!;
 		public ILInstruction Argument {
+			[DebuggerStepThrough]
 			get { return this.argument; }
 			set {
 				ValidateChild(value);
@@ -362,7 +371,7 @@ namespace ICSharpCode.Decompiler.IL
 				return InstructionFlags.None;
 			}
 		}
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -383,8 +392,9 @@ namespace ICSharpCode.Decompiler.IL
 			this.Right = right;
 		}
 		public static readonly SlotInfo LeftSlot = new SlotInfo("Left", canInlineInto: true);
-		ILInstruction left;
+		ILInstruction left = null!;
 		public ILInstruction Left {
+			[DebuggerStepThrough]
 			get { return this.left; }
 			set {
 				ValidateChild(value);
@@ -392,8 +402,9 @@ namespace ICSharpCode.Decompiler.IL
 			}
 		}
 		public static readonly SlotInfo RightSlot = new SlotInfo("Right", canInlineInto: true);
-		ILInstruction right;
+		ILInstruction right = null!;
 		public ILInstruction Right {
+			[DebuggerStepThrough]
 			get { return this.right; }
 			set {
 				ValidateChild(value);
@@ -458,7 +469,7 @@ namespace ICSharpCode.Decompiler.IL
 				return InstructionFlags.None;
 			}
 		}
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -475,11 +486,6 @@ namespace ICSharpCode.Decompiler.IL
 	/// <summary>Instruction with a list of arguments.</summary>
 	public abstract partial class CallInstruction : ILInstruction
 	{
-		protected CallInstruction(OpCode opCode, params ILInstruction[] arguments) : base(opCode)
-		{
-			this.Arguments = new InstructionCollection<ILInstruction>(this, 0);
-			this.Arguments.AddRange(arguments);
-		}
 		public static readonly SlotInfo ArgumentsSlot = new SlotInfo("Arguments", canInlineInto: true);
 		public InstructionCollection<ILInstruction> Arguments { get; private set; }
 		protected sealed override int GetChildCount()
@@ -537,7 +543,8 @@ namespace ICSharpCode.Decompiler.IL.Patterns
 		protected PatternInstruction(OpCode opCode) : base(opCode)
 		{
 		}
-		public override StackType ResultType { get { return StackType.Unknown; } }
+		public override StackType ResultType => (SpecialType.UnknownType).GetStackType();
+		public override IType InferType(ICompilation compilation) => SpecialType.UnknownType;
 	}
 }
 namespace ICSharpCode.Decompiler.IL
@@ -546,8 +553,9 @@ namespace ICSharpCode.Decompiler.IL
 	public abstract partial class CompoundAssignmentInstruction : ILInstruction
 	{
 		public static readonly SlotInfo TargetSlot = new SlotInfo("Target", canInlineInto: true);
-		ILInstruction target;
+		ILInstruction target = null!;
 		public ILInstruction Target {
+			[DebuggerStepThrough]
 			get { return this.target; }
 			set {
 				ValidateChild(value);
@@ -555,8 +563,9 @@ namespace ICSharpCode.Decompiler.IL
 			}
 		}
 		public static readonly SlotInfo ValueSlot = new SlotInfo("Value", canInlineInto: true);
-		ILInstruction value;
+		ILInstruction value = null!;
 		public ILInstruction Value {
+			[DebuggerStepThrough]
 			get { return this.value; }
 			set {
 				ValidateChild(value);
@@ -621,7 +630,7 @@ namespace ICSharpCode.Decompiler.IL
 				return InstructionFlags.None;
 			}
 		}
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -683,7 +692,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitInvalidBranch(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as InvalidBranch;
 			return o != null;
@@ -720,7 +729,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitInvalidExpression(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as InvalidExpression;
 			return o != null;
@@ -735,7 +744,8 @@ namespace ICSharpCode.Decompiler.IL
 		public Nop() : base(OpCode.Nop)
 		{
 		}
-		public override StackType ResultType { get { return StackType.Void; } }
+		public override StackType ResultType => StackType.Void;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Void);
 		public override void AcceptVisitor(ILVisitor visitor)
 		{
 			visitor.VisitNop(this);
@@ -748,7 +758,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitNop(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as Nop;
 			return o != null;
@@ -761,8 +771,9 @@ namespace ICSharpCode.Decompiler.IL
 	public sealed partial class ILFunction : ILInstruction
 	{
 		public static readonly SlotInfo BodySlot = new SlotInfo("Body");
-		ILInstruction body;
+		ILInstruction body = null!;
 		public ILInstruction Body {
+			[DebuggerStepThrough]
 			get { return this.body; }
 			set {
 				ValidateChild(value);
@@ -816,7 +827,8 @@ namespace ICSharpCode.Decompiler.IL
 			clone.CloneVariables();
 			return clone;
 		}
-		public override StackType ResultType { get { return DelegateType?.GetStackType() ?? StackType.O; } }
+		public override StackType ResultType => (DelegateType ?? SpecialType.UnknownType).GetStackType();
+		public override IType InferType(ICompilation compilation) => DelegateType ?? SpecialType.UnknownType;
 		public override void AcceptVisitor(ILVisitor visitor)
 		{
 			visitor.VisitILFunction(this);
@@ -829,7 +841,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitILFunction(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as ILFunction;
 			return o != null && this.body.PerformMatch(o.body, ref match) && Patterns.ListMatch.DoMatch(this.LocalFunctions, o.LocalFunctions, ref match);
@@ -841,7 +853,7 @@ namespace ICSharpCode.Decompiler.IL
 	/// <summary>A container of IL blocks.</summary>
 	public sealed partial class BlockContainer : ILInstruction
 	{
-		public override StackType ResultType { get { return this.ExpectedResultType; } }
+
 		public override void AcceptVisitor(ILVisitor visitor)
 		{
 			visitor.VisitBlockContainer(this);
@@ -854,7 +866,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitBlockContainer(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as BlockContainer;
 			return o != null && Patterns.ListMatch.DoMatch(this.Blocks, o.Blocks, ref match);
@@ -879,7 +891,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitBlock(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as Block;
 			return o != null && this.Kind == o.Kind && Patterns.ListMatch.DoMatch(this.Instructions, o.Instructions, ref match) && this.FinalInstruction.PerformMatch(o.FinalInstruction, ref match);
@@ -893,17 +905,17 @@ namespace ICSharpCode.Decompiler.IL
 	{
 		public PinnedRegion(ILVariable variable, ILInstruction init, ILInstruction body) : base(OpCode.PinnedRegion)
 		{
-			Debug.Assert(variable != null);
-			this.variable = variable;
+			this.variable = variable ?? throw new ArgumentNullException(nameof(variable));
 			this.Init = init;
 			this.Body = body;
 		}
-		public override StackType ResultType { get { return StackType.Void; } }
+		public override StackType ResultType => StackType.Void;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Void);
 		ILVariable variable;
 		public ILVariable Variable {
 			get { return variable; }
 			set {
-				Debug.Assert(value != null);
+				DebugAssert(value != null);
 				if (IsConnected)
 					variable.RemoveStoreInstruction(this);
 				variable = value;
@@ -932,8 +944,9 @@ namespace ICSharpCode.Decompiler.IL
 		}
 
 		public static readonly SlotInfo InitSlot = new SlotInfo("Init", canInlineInto: true);
-		ILInstruction init;
+		ILInstruction init = null!;
 		public ILInstruction Init {
+			[DebuggerStepThrough]
 			get { return this.init; }
 			set {
 				ValidateChild(value);
@@ -941,8 +954,9 @@ namespace ICSharpCode.Decompiler.IL
 			}
 		}
 		public static readonly SlotInfo BodySlot = new SlotInfo("Body");
-		ILInstruction body;
+		ILInstruction body = null!;
 		public ILInstruction Body {
+			[DebuggerStepThrough]
 			get { return this.body; }
 			set {
 				ValidateChild(value);
@@ -1007,7 +1021,7 @@ namespace ICSharpCode.Decompiler.IL
 				return InstructionFlags.MayWriteLocals;
 			}
 		}
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -1031,17 +1045,17 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitPinnedRegion(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as PinnedRegion;
 			return o != null && variable == o.variable && this.init.PerformMatch(o.init, ref match) && this.body.PerformMatch(o.body, ref match);
 		}
-		internal override void CheckInvariant(ILPhase phase)
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
 		{
-			base.CheckInvariant(phase);
-			Debug.Assert(phase <= ILPhase.InILReader || this.IsDescendantOf(variable.Function));
-			Debug.Assert(phase <= ILPhase.InILReader || variable.Function.Variables[variable.IndexInFunction] == variable);
-			Debug.Assert(Variable.Kind == VariableKind.PinnedRegionLocal);
+			base.CheckInvariant(phase, compilation);
+			DebugAssert(phase <= ILPhase.InILReader || this.IsDescendantOf(variable.Function!));
+			DebugAssert(phase <= ILPhase.InILReader || variable.Function!.Variables[variable.IndexInFunction] == variable);
+			DebugAssert(Variable.Kind == VariableKind.PinnedRegionLocal);
 		}
 	}
 }
@@ -1063,7 +1077,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitBinaryNumericInstruction(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as BinaryNumericInstruction;
 			return o != null && this.Left.PerformMatch(o.Left, ref match) && this.Right.PerformMatch(o.Right, ref match) && CheckForOverflow == o.CheckForOverflow && Sign == o.Sign && Operator == o.Operator && IsLifted == o.IsLifted;
@@ -1081,7 +1095,8 @@ namespace ICSharpCode.Decompiler.IL
 			get { return type; }
 			set { type = value; InvalidateFlags(); }
 		}
-		public override StackType ResultType { get { return type.GetStackType(); } }
+		public override StackType ResultType => (this.type).GetStackType();
+		public override IType InferType(ICompilation compilation) => this.type;
 		public override void AcceptVisitor(ILVisitor visitor)
 		{
 			visitor.VisitNumericCompoundAssign(this);
@@ -1094,7 +1109,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitNumericCompoundAssign(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as NumericCompoundAssign;
 			return o != null && type.Equals(o.type) && CheckForOverflow == o.CheckForOverflow && Sign == o.Sign && Operator == o.Operator && this.EvalMode == o.EvalMode && this.TargetKind == o.TargetKind && Target.PerformMatch(o.Target, ref match) && Value.PerformMatch(o.Value, ref match);
@@ -1128,7 +1143,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitUserDefinedCompoundAssign(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as UserDefinedCompoundAssign;
 			return o != null && this.Method.Equals(o.Method) && this.EvalMode == o.EvalMode && this.TargetKind == o.TargetKind && Target.PerformMatch(o.Target, ref match) && Value.PerformMatch(o.Value, ref match);
@@ -1140,7 +1155,8 @@ namespace ICSharpCode.Decompiler.IL
 	/// <summary>Common instruction for dynamic compound assignments.</summary>
 	public sealed partial class DynamicCompoundAssign : CompoundAssignmentInstruction
 	{
-		public override StackType ResultType { get { return StackType.O; } }
+		public override StackType ResultType => StackType.Obj;
+		public override IType InferType(ICompilation compilation) => SpecialType.Dynamic;
 		protected override InstructionFlags ComputeFlags()
 		{
 			return base.ComputeFlags() | InstructionFlags.MayThrow | InstructionFlags.SideEffect;
@@ -1162,7 +1178,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitDynamicCompoundAssign(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as DynamicCompoundAssign;
 			return o != null && this.EvalMode == o.EvalMode && this.TargetKind == o.TargetKind && Target.PerformMatch(o.Target, ref match) && Value.PerformMatch(o.Value, ref match);
@@ -1187,7 +1203,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitBitNot(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as BitNot;
 			return o != null && this.Argument.PerformMatch(o.Argument, ref match) && IsLifted == o.IsLifted && UnderlyingResultType == o.UnderlyingResultType;
@@ -1202,7 +1218,8 @@ namespace ICSharpCode.Decompiler.IL
 		public Arglist() : base(OpCode.Arglist)
 		{
 		}
-		public override StackType ResultType { get { return StackType.O; } }
+		public override StackType ResultType => StackType.VT;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.RuntimeArgumentHandle);
 		public override void AcceptVisitor(ILVisitor visitor)
 		{
 			visitor.VisitArglist(this);
@@ -1215,7 +1232,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitArglist(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as Arglist;
 			return o != null;
@@ -1227,7 +1244,8 @@ namespace ICSharpCode.Decompiler.IL
 	/// <summary>Unconditional branch. <c>goto target;</c></summary>
 	public sealed partial class Branch : SimpleInstruction
 	{
-		public override StackType ResultType { get { return StackType.Void; } }
+		public override StackType ResultType => StackType.Void;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Void);
 		protected override InstructionFlags ComputeFlags()
 		{
 			return InstructionFlags.EndPointUnreachable | InstructionFlags.MayBranch;
@@ -1249,7 +1267,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitBranch(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as Branch;
 			return o != null && this.TargetBlock == o.TargetBlock;
@@ -1262,8 +1280,9 @@ namespace ICSharpCode.Decompiler.IL
 	public sealed partial class Leave : ILInstruction
 	{
 		public static readonly SlotInfo ValueSlot = new SlotInfo("Value", canInlineInto: true);
-		ILInstruction value;
+		ILInstruction value = null!;
 		public ILInstruction Value {
+			[DebuggerStepThrough]
 			get { return this.value; }
 			set {
 				ValidateChild(value);
@@ -1311,7 +1330,8 @@ namespace ICSharpCode.Decompiler.IL
 			clone.Value = this.value.Clone();
 			return clone;
 		}
-		public override StackType ResultType { get { return StackType.Void; } }
+		public override StackType ResultType => StackType.Void;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Void);
 		public override void AcceptVisitor(ILVisitor visitor)
 		{
 			visitor.VisitLeave(this);
@@ -1324,7 +1344,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitLeave(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as Leave;
 			return o != null && this.value.PerformMatch(o.value, ref match) && this.TargetContainer == o.TargetContainer;
@@ -1337,8 +1357,9 @@ namespace ICSharpCode.Decompiler.IL
 	public sealed partial class IfInstruction : ILInstruction
 	{
 		public static readonly SlotInfo ConditionSlot = new SlotInfo("Condition", canInlineInto: true);
-		ILInstruction condition;
+		ILInstruction condition = null!;
 		public ILInstruction Condition {
+			[DebuggerStepThrough]
 			get { return this.condition; }
 			set {
 				ValidateChild(value);
@@ -1346,8 +1367,9 @@ namespace ICSharpCode.Decompiler.IL
 			}
 		}
 		public static readonly SlotInfo TrueInstSlot = new SlotInfo("TrueInst");
-		ILInstruction trueInst;
+		ILInstruction trueInst = null!;
 		public ILInstruction TrueInst {
+			[DebuggerStepThrough]
 			get { return this.trueInst; }
 			set {
 				ValidateChild(value);
@@ -1355,8 +1377,9 @@ namespace ICSharpCode.Decompiler.IL
 			}
 		}
 		public static readonly SlotInfo FalseInstSlot = new SlotInfo("FalseInst");
-		ILInstruction falseInst;
+		ILInstruction falseInst = null!;
 		public ILInstruction FalseInst {
+			[DebuggerStepThrough]
 			get { return this.falseInst; }
 			set {
 				ValidateChild(value);
@@ -1432,7 +1455,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitIfInstruction(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as IfInstruction;
 			return o != null && this.condition.PerformMatch(o.condition, ref match) && this.trueInst.PerformMatch(o.trueInst, ref match) && this.falseInst.PerformMatch(o.falseInst, ref match);
@@ -1445,8 +1468,9 @@ namespace ICSharpCode.Decompiler.IL
 	public sealed partial class NullCoalescingInstruction : ILInstruction
 	{
 		public static readonly SlotInfo ValueInstSlot = new SlotInfo("ValueInst", canInlineInto: true);
-		ILInstruction valueInst;
+		ILInstruction valueInst = null!;
 		public ILInstruction ValueInst {
+			[DebuggerStepThrough]
 			get { return this.valueInst; }
 			set {
 				ValidateChild(value);
@@ -1454,8 +1478,9 @@ namespace ICSharpCode.Decompiler.IL
 			}
 		}
 		public static readonly SlotInfo FallbackInstSlot = new SlotInfo("FallbackInst");
-		ILInstruction fallbackInst;
+		ILInstruction fallbackInst = null!;
 		public ILInstruction FallbackInst {
+			[DebuggerStepThrough]
 			get { return this.fallbackInst; }
 			set {
 				ValidateChild(value);
@@ -1523,7 +1548,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitNullCoalescingInstruction(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as NullCoalescingInstruction;
 			return o != null && this.valueInst.PerformMatch(o.valueInst, ref match) && this.fallbackInst.PerformMatch(o.fallbackInst, ref match);
@@ -1548,7 +1573,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitSwitchInstruction(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as SwitchInstruction;
 			return o != null && IsLifted == o.IsLifted && Value.PerformMatch(o.Value, ref match) && Patterns.ListMatch.DoMatch(this.Sections, o.Sections, ref match);
@@ -1561,8 +1586,9 @@ namespace ICSharpCode.Decompiler.IL
 	public sealed partial class SwitchSection : ILInstruction
 	{
 		public static readonly SlotInfo BodySlot = new SlotInfo("Body");
-		ILInstruction body;
+		ILInstruction body = null!;
 		public ILInstruction Body {
+			[DebuggerStepThrough]
 			get { return this.body; }
 			set {
 				ValidateChild(value);
@@ -1610,7 +1636,8 @@ namespace ICSharpCode.Decompiler.IL
 			clone.Body = this.body.Clone();
 			return clone;
 		}
-		public override StackType ResultType { get { return StackType.Void; } }
+		public override StackType ResultType => StackType.Void;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Void);
 		public override void AcceptVisitor(ILVisitor visitor)
 		{
 			visitor.VisitSwitchSection(this);
@@ -1623,7 +1650,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitSwitchSection(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as SwitchSection;
 			return o != null && this.body.PerformMatch(o.body, ref match) && this.Labels.SetEquals(o.Labels) && this.HasNullLabel == o.HasNullLabel;
@@ -1648,7 +1675,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitTryCatch(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as TryCatch;
 			return o != null && TryBlock.PerformMatch(o.TryBlock, ref match) && Patterns.ListMatch.DoMatch(Handlers, o.Handlers, ref match);
@@ -1664,12 +1691,12 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			this.Filter = filter;
 			this.Body = body;
-			Debug.Assert(variable != null);
-			this.variable = variable;
+			this.variable = variable ?? throw new ArgumentNullException(nameof(variable));
 		}
 		public static readonly SlotInfo FilterSlot = new SlotInfo("Filter");
-		ILInstruction filter;
+		ILInstruction filter = null!;
 		public ILInstruction Filter {
+			[DebuggerStepThrough]
 			get { return this.filter; }
 			set {
 				ValidateChild(value);
@@ -1677,8 +1704,9 @@ namespace ICSharpCode.Decompiler.IL
 			}
 		}
 		public static readonly SlotInfo BodySlot = new SlotInfo("Body");
-		ILInstruction body;
+		ILInstruction body = null!;
 		public ILInstruction Body {
+			[DebuggerStepThrough]
 			get { return this.body; }
 			set {
 				ValidateChild(value);
@@ -1738,7 +1766,7 @@ namespace ICSharpCode.Decompiler.IL
 		public ILVariable Variable {
 			get { return variable; }
 			set {
-				Debug.Assert(value != null);
+				DebugAssert(value != null);
 				if (IsConnected)
 					variable.RemoveStoreInstruction(this);
 				variable = value;
@@ -1766,6 +1794,8 @@ namespace ICSharpCode.Decompiler.IL
 			base.Disconnected();
 		}
 
+		public override StackType ResultType => StackType.Void;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Void);
 		public override void AcceptVisitor(ILVisitor visitor)
 		{
 			visitor.VisitTryCatchHandler(this);
@@ -1778,7 +1808,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitTryCatchHandler(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as TryCatchHandler;
 			return o != null && this.filter.PerformMatch(o.filter, ref match) && this.body.PerformMatch(o.body, ref match) && variable == o.variable;
@@ -1803,7 +1833,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitTryFinally(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as TryFinally;
 			return o != null && TryBlock.PerformMatch(o.TryBlock, ref match) && finallyBlock.PerformMatch(o.finallyBlock, ref match);
@@ -1828,7 +1858,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitTryFault(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as TryFault;
 			return o != null && TryBlock.PerformMatch(o.TryBlock, ref match) && faultBlock.PerformMatch(o.faultBlock, ref match);
@@ -1846,8 +1876,9 @@ namespace ICSharpCode.Decompiler.IL
 			this.Body = body;
 		}
 		public static readonly SlotInfo OnExpressionSlot = new SlotInfo("OnExpression", canInlineInto: true);
-		ILInstruction onExpression;
+		ILInstruction onExpression = null!;
 		public ILInstruction OnExpression {
+			[DebuggerStepThrough]
 			get { return this.onExpression; }
 			set {
 				ValidateChild(value);
@@ -1855,8 +1886,9 @@ namespace ICSharpCode.Decompiler.IL
 			}
 		}
 		public static readonly SlotInfo BodySlot = new SlotInfo("Body");
-		ILInstruction body;
+		ILInstruction body = null!;
 		public ILInstruction Body {
+			[DebuggerStepThrough]
 			get { return this.body; }
 			set {
 				ValidateChild(value);
@@ -1912,7 +1944,8 @@ namespace ICSharpCode.Decompiler.IL
 			clone.Body = this.body.Clone();
 			return clone;
 		}
-		public override StackType ResultType { get { return StackType.Void; } }
+		public override StackType ResultType => StackType.Void;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Void);
 		protected override InstructionFlags ComputeFlags()
 		{
 			return onExpression.Flags | body.Flags | InstructionFlags.ControlFlow | InstructionFlags.SideEffect;
@@ -1934,15 +1967,15 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitLockInstruction(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as LockInstruction;
 			return o != null && this.onExpression.PerformMatch(o.onExpression, ref match) && this.body.PerformMatch(o.body, ref match);
 		}
-		internal override void CheckInvariant(ILPhase phase)
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
 		{
-			base.CheckInvariant(phase);
-			Debug.Assert(onExpression.ResultType == StackType.O);
+			base.CheckInvariant(phase, compilation);
+			Debug.Assert(onExpression.ResultType == StackType.Obj);
 		}
 	}
 }
@@ -1953,8 +1986,7 @@ namespace ICSharpCode.Decompiler.IL
 	{
 		public UsingInstruction(ILVariable variable, ILInstruction resourceExpression, ILInstruction body) : base(OpCode.UsingInstruction)
 		{
-			Debug.Assert(variable != null);
-			this.variable = variable;
+			this.variable = variable ?? throw new ArgumentNullException(nameof(variable));
 			this.ResourceExpression = resourceExpression;
 			this.Body = body;
 		}
@@ -1962,7 +1994,7 @@ namespace ICSharpCode.Decompiler.IL
 		public ILVariable Variable {
 			get { return variable; }
 			set {
-				Debug.Assert(value != null);
+				DebugAssert(value != null);
 				if (IsConnected)
 					variable.RemoveStoreInstruction(this);
 				variable = value;
@@ -1991,8 +2023,9 @@ namespace ICSharpCode.Decompiler.IL
 		}
 
 		public static readonly SlotInfo ResourceExpressionSlot = new SlotInfo("ResourceExpression", canInlineInto: true);
-		ILInstruction resourceExpression;
+		ILInstruction resourceExpression = null!;
 		public ILInstruction ResourceExpression {
+			[DebuggerStepThrough]
 			get { return this.resourceExpression; }
 			set {
 				ValidateChild(value);
@@ -2000,8 +2033,9 @@ namespace ICSharpCode.Decompiler.IL
 			}
 		}
 		public static readonly SlotInfo BodySlot = new SlotInfo("Body");
-		ILInstruction body;
+		ILInstruction body = null!;
 		public ILInstruction Body {
+			[DebuggerStepThrough]
 			get { return this.body; }
 			set {
 				ValidateChild(value);
@@ -2057,7 +2091,8 @@ namespace ICSharpCode.Decompiler.IL
 			clone.Body = this.body.Clone();
 			return clone;
 		}
-		public override StackType ResultType { get { return StackType.Void; } }
+		public override StackType ResultType => StackType.Void;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Void);
 		protected override InstructionFlags ComputeFlags()
 		{
 			return InstructionFlags.MayWriteLocals | resourceExpression.Flags | body.Flags | InstructionFlags.ControlFlow | InstructionFlags.SideEffect;
@@ -2079,17 +2114,17 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitUsingInstruction(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as UsingInstruction;
 			return o != null && variable == o.variable && this.resourceExpression.PerformMatch(o.resourceExpression, ref match) && this.body.PerformMatch(o.body, ref match);
 		}
-		internal override void CheckInvariant(ILPhase phase)
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
 		{
-			base.CheckInvariant(phase);
-			Debug.Assert(phase <= ILPhase.InILReader || this.IsDescendantOf(variable.Function));
-			Debug.Assert(phase <= ILPhase.InILReader || variable.Function.Variables[variable.IndexInFunction] == variable);
-			Debug.Assert(resourceExpression.ResultType == StackType.O);
+			base.CheckInvariant(phase, compilation);
+			DebugAssert(phase <= ILPhase.InILReader || this.IsDescendantOf(variable.Function!));
+			DebugAssert(phase <= ILPhase.InILReader || variable.Function!.Variables[variable.IndexInFunction] == variable);
+			Debug.Assert(resourceExpression.ResultType == StackType.Obj || resourceExpression.ResultType == StackType.VT);
 		}
 	}
 }
@@ -2101,7 +2136,8 @@ namespace ICSharpCode.Decompiler.IL
 		public DebugBreak() : base(OpCode.DebugBreak)
 		{
 		}
-		public override StackType ResultType { get { return StackType.Void; } }
+		public override StackType ResultType => StackType.Void;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Void);
 		protected override InstructionFlags ComputeFlags()
 		{
 			return InstructionFlags.SideEffect;
@@ -2123,7 +2159,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitDebugBreak(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as DebugBreak;
 			return o != null;
@@ -2148,7 +2184,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitComp(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as Comp;
 			return o != null && this.Left.PerformMatch(o.Left, ref match) && this.Right.PerformMatch(o.Right, ref match) && this.Kind == o.Kind && this.Sign == o.Sign && this.LiftingKind == o.LiftingKind;
@@ -2219,7 +2255,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitCallIndirect(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as CallIndirect;
 			return o != null && EqualSignature(o) && Patterns.ListMatch.DoMatch(this.Arguments, o.Arguments, ref match) && this.FunctionPointer.PerformMatch(o.FunctionPointer, ref match);
@@ -2234,7 +2270,8 @@ namespace ICSharpCode.Decompiler.IL
 		public Ckfinite(ILInstruction argument) : base(OpCode.Ckfinite, argument)
 		{
 		}
-		public override StackType ResultType { get { return StackType.Void; } }
+		public override StackType ResultType => StackType.Void;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Void);
 		protected override InstructionFlags ComputeFlags()
 		{
 			return base.ComputeFlags() | InstructionFlags.MayThrow;
@@ -2256,7 +2293,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitCkfinite(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as Ckfinite;
 			return o != null && this.Argument.PerformMatch(o.Argument, ref match);
@@ -2281,7 +2318,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitConv(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as Conv;
 			return o != null && this.Argument.PerformMatch(o.Argument, ref match) && CheckForOverflow == o.CheckForOverflow && Kind == o.Kind && InputSign == o.InputSign && TargetType == o.TargetType && IsLifted == o.IsLifted;
@@ -2295,14 +2332,13 @@ namespace ICSharpCode.Decompiler.IL
 	{
 		public LdLoc(ILVariable variable) : base(OpCode.LdLoc)
 		{
-			Debug.Assert(variable != null);
-			this.variable = variable;
+			this.variable = variable ?? throw new ArgumentNullException(nameof(variable));
 		}
 		ILVariable variable;
 		public ILVariable Variable {
 			get { return variable; }
 			set {
-				Debug.Assert(value != null);
+				DebugAssert(value != null);
 				if (IsConnected)
 					variable.RemoveLoadInstruction(this);
 				variable = value;
@@ -2330,7 +2366,8 @@ namespace ICSharpCode.Decompiler.IL
 			base.Disconnected();
 		}
 
-		public override StackType ResultType { get { return variable.StackType; } }
+		public override StackType ResultType => variable.StackType;
+		public override IType InferType(ICompilation compilation) => variable.Type;
 		protected override InstructionFlags ComputeFlags()
 		{
 			return InstructionFlags.MayReadLocals;
@@ -2340,7 +2377,7 @@ namespace ICSharpCode.Decompiler.IL
 				return InstructionFlags.MayReadLocals;
 			}
 		}
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -2359,16 +2396,16 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitLdLoc(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as LdLoc;
 			return o != null && variable == o.variable;
 		}
-		internal override void CheckInvariant(ILPhase phase)
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
 		{
-			base.CheckInvariant(phase);
-			Debug.Assert(phase <= ILPhase.InILReader || this.IsDescendantOf(variable.Function));
-			Debug.Assert(phase <= ILPhase.InILReader || variable.Function.Variables[variable.IndexInFunction] == variable);
+			base.CheckInvariant(phase, compilation);
+			DebugAssert(phase <= ILPhase.InILReader || this.IsDescendantOf(variable.Function!));
+			DebugAssert(phase <= ILPhase.InILReader || variable.Function!.Variables[variable.IndexInFunction] == variable);
 		}
 	}
 }
@@ -2379,15 +2416,15 @@ namespace ICSharpCode.Decompiler.IL
 	{
 		public LdLoca(ILVariable variable) : base(OpCode.LdLoca)
 		{
-			Debug.Assert(variable != null);
-			this.variable = variable;
+			this.variable = variable ?? throw new ArgumentNullException(nameof(variable));
 		}
-		public override StackType ResultType { get { return StackType.Ref; } }
+		public override StackType ResultType => StackType.Ref;
+		public override IType InferType(ICompilation compilation) => new ByReferenceType(variable.Type);
 		ILVariable variable;
 		public ILVariable Variable {
 			get { return variable; }
 			set {
-				Debug.Assert(value != null);
+				DebugAssert(value != null);
 				if (IsConnected)
 					variable.RemoveAddressInstruction(this);
 				variable = value;
@@ -2415,7 +2452,7 @@ namespace ICSharpCode.Decompiler.IL
 			base.Disconnected();
 		}
 
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -2434,16 +2471,16 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitLdLoca(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as LdLoca;
 			return o != null && variable == o.variable;
 		}
-		internal override void CheckInvariant(ILPhase phase)
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
 		{
-			base.CheckInvariant(phase);
-			Debug.Assert(phase <= ILPhase.InILReader || this.IsDescendantOf(variable.Function));
-			Debug.Assert(phase <= ILPhase.InILReader || variable.Function.Variables[variable.IndexInFunction] == variable);
+			base.CheckInvariant(phase, compilation);
+			DebugAssert(phase <= ILPhase.InILReader || this.IsDescendantOf(variable.Function!));
+			DebugAssert(phase <= ILPhase.InILReader || variable.Function!.Variables[variable.IndexInFunction] == variable);
 		}
 	}
 }
@@ -2455,15 +2492,14 @@ namespace ICSharpCode.Decompiler.IL
 	{
 		public StLoc(ILVariable variable, ILInstruction value) : base(OpCode.StLoc)
 		{
-			Debug.Assert(variable != null);
-			this.variable = variable;
+			this.variable = variable ?? throw new ArgumentNullException(nameof(variable));
 			this.Value = value;
 		}
 		ILVariable variable;
 		public ILVariable Variable {
 			get { return variable; }
 			set {
-				Debug.Assert(value != null);
+				DebugAssert(value != null);
 				if (IsConnected)
 					variable.RemoveStoreInstruction(this);
 				variable = value;
@@ -2492,8 +2528,9 @@ namespace ICSharpCode.Decompiler.IL
 		}
 
 		public static readonly SlotInfo ValueSlot = new SlotInfo("Value", canInlineInto: true);
-		ILInstruction value;
+		ILInstruction value = null!;
 		public ILInstruction Value {
+			[DebuggerStepThrough]
 			get { return this.value; }
 			set {
 				ValidateChild(value);
@@ -2541,7 +2578,8 @@ namespace ICSharpCode.Decompiler.IL
 			clone.Value = this.value.Clone();
 			return clone;
 		}
-		public override StackType ResultType { get { return variable.StackType; } }
+		public override StackType ResultType => variable.StackType;
+		public override IType InferType(ICompilation compilation) => variable.Type;
 		protected override InstructionFlags ComputeFlags()
 		{
 			return InstructionFlags.MayWriteLocals | value.Flags;
@@ -2551,7 +2589,7 @@ namespace ICSharpCode.Decompiler.IL
 				return InstructionFlags.MayWriteLocals;
 			}
 		}
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -2573,7 +2611,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitStLoc(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as StLoc;
 			return o != null && variable == o.variable && this.value.PerformMatch(o.value, ref match);
@@ -2591,8 +2629,9 @@ namespace ICSharpCode.Decompiler.IL
 			this.type = type;
 		}
 		public static readonly SlotInfo ValueSlot = new SlotInfo("Value", canInlineInto: true);
-		ILInstruction value;
+		ILInstruction value = null!;
 		public ILInstruction Value {
+			[DebuggerStepThrough]
 			get { return this.value; }
 			set {
 				ValidateChild(value);
@@ -2640,7 +2679,8 @@ namespace ICSharpCode.Decompiler.IL
 			clone.Value = this.value.Clone();
 			return clone;
 		}
-		public override StackType ResultType { get { return StackType.Ref; } }
+		public override StackType ResultType => StackType.Ref;
+		public override IType InferType(ICompilation compilation) => new ByReferenceType(type);
 		IType type;
 		/// <summary>Returns the type operand.</summary>
 		public IType Type {
@@ -2656,7 +2696,7 @@ namespace ICSharpCode.Decompiler.IL
 				return InstructionFlags.None;
 			}
 		}
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -2678,7 +2718,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitAddressOf(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as AddressOf;
 			return o != null && this.value.PerformMatch(o.value, ref match) && type.Equals(o.type);
@@ -2693,7 +2733,7 @@ namespace ICSharpCode.Decompiler.IL
 		public ThreeValuedBoolAnd(ILInstruction left, ILInstruction right) : base(OpCode.ThreeValuedBoolAnd, left, right)
 		{
 		}
-		public override StackType ResultType { get { return StackType.O; } }
+
 		public override void AcceptVisitor(ILVisitor visitor)
 		{
 			visitor.VisitThreeValuedBoolAnd(this);
@@ -2706,7 +2746,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitThreeValuedBoolAnd(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as ThreeValuedBoolAnd;
 			return o != null && this.Left.PerformMatch(o.Left, ref match) && this.Right.PerformMatch(o.Right, ref match);
@@ -2721,7 +2761,7 @@ namespace ICSharpCode.Decompiler.IL
 		public ThreeValuedBoolOr(ILInstruction left, ILInstruction right) : base(OpCode.ThreeValuedBoolOr, left, right)
 		{
 		}
-		public override StackType ResultType { get { return StackType.O; } }
+
 		public override void AcceptVisitor(ILVisitor visitor)
 		{
 			visitor.VisitThreeValuedBoolOr(this);
@@ -2734,7 +2774,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitThreeValuedBoolOr(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as ThreeValuedBoolOr;
 			return o != null && this.Left.PerformMatch(o.Left, ref match) && this.Right.PerformMatch(o.Right, ref match);
@@ -2774,7 +2814,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitNullableUnwrap(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as NullableUnwrap;
 			return o != null && this.Argument.PerformMatch(o.Argument, ref match);
@@ -2787,10 +2827,26 @@ namespace ICSharpCode.Decompiler.IL
 	/// If the input evaluates normally, evaluates to the input value (wrapped in Nullable&lt;T&gt; if the input is a non-nullable value type).If a nullable.unwrap instruction encounters a null input and jumps to the (endpoint of the) nullable.rewrap instruction,the nullable.rewrap instruction evaluates to null.</summary>
 	public sealed partial class NullableRewrap : UnaryInstruction
 	{
-		public NullableRewrap(ILInstruction argument) : base(OpCode.NullableRewrap, argument)
+		public NullableRewrap(ILInstruction argument, IType type) : base(OpCode.NullableRewrap, argument)
 		{
+			this.type = type;
 		}
-
+		IType type;
+		/// <summary>Returns the type operand.</summary>
+		public IType Type {
+			get { return type; }
+			set { type = value; InvalidateFlags(); }
+		}
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
+		{
+			WriteILRange(output, options);
+			output.Write(OpCode);
+			output.Write(' ');
+			type.WriteTo(output);
+			output.Write('(');
+			Argument.WriteTo(output, options);
+			output.Write(')');
+		}
 		public override void AcceptVisitor(ILVisitor visitor)
 		{
 			visitor.VisitNullableRewrap(this);
@@ -2803,10 +2859,10 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitNullableRewrap(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as NullableRewrap;
-			return o != null && this.Argument.PerformMatch(o.Argument, ref match);
+			return o != null && this.Argument.PerformMatch(o.Argument, ref match) && type.Equals(o.type);
 		}
 	}
 }
@@ -2820,8 +2876,9 @@ namespace ICSharpCode.Decompiler.IL
 			this.Value = value;
 		}
 		public readonly string Value;
-		public override StackType ResultType { get { return StackType.O; } }
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		public override StackType ResultType => StackType.Obj;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.String);
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -2840,9 +2897,47 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitLdStr(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as LdStr;
+			return o != null && this.Value == o.Value;
+		}
+	}
+}
+namespace ICSharpCode.Decompiler.IL
+{
+	/// <summary>Loads a constant byte string (as ReadOnlySpan&lt;byte&gt;).</summary>
+	public sealed partial class LdStrUtf8 : SimpleInstruction
+	{
+		public LdStrUtf8(string value) : base(OpCode.LdStrUtf8)
+		{
+			this.Value = value;
+		}
+		public readonly string Value;
+		public override StackType ResultType => StackType.VT;
+		public override IType InferType(ICompilation compilation) => new ParameterizedType(compilation.FindType(KnownTypeCode.ReadOnlySpanOfT), compilation.FindType(KnownTypeCode.Byte));
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
+		{
+			WriteILRange(output, options);
+			output.Write(OpCode);
+			output.Write(' ');
+			Disassembler.DisassemblerHelpers.WriteOperand(output, Value);
+		}
+		public override void AcceptVisitor(ILVisitor visitor)
+		{
+			visitor.VisitLdStrUtf8(this);
+		}
+		public override T AcceptVisitor<T>(ILVisitor<T> visitor)
+		{
+			return visitor.VisitLdStrUtf8(this);
+		}
+		public override T AcceptVisitor<C, T>(ILVisitor<C, T> visitor, C context)
+		{
+			return visitor.VisitLdStrUtf8(this, context);
+		}
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
+		{
+			var o = other as LdStrUtf8;
 			return o != null && this.Value == o.Value;
 		}
 	}
@@ -2857,8 +2952,9 @@ namespace ICSharpCode.Decompiler.IL
 			this.Value = value;
 		}
 		public readonly int Value;
-		public override StackType ResultType { get { return StackType.I4; } }
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		public override StackType ResultType => StackType.I4;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Int32);
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -2877,7 +2973,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitLdcI4(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as LdcI4;
 			return o != null && this.Value == o.Value;
@@ -2894,8 +2990,9 @@ namespace ICSharpCode.Decompiler.IL
 			this.Value = value;
 		}
 		public readonly long Value;
-		public override StackType ResultType { get { return StackType.I8; } }
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		public override StackType ResultType => StackType.I8;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Int64);
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -2914,7 +3011,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitLdcI8(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as LdcI8;
 			return o != null && this.Value == o.Value;
@@ -2931,8 +3028,9 @@ namespace ICSharpCode.Decompiler.IL
 			this.Value = value;
 		}
 		public readonly float Value;
-		public override StackType ResultType { get { return StackType.F4; } }
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		public override StackType ResultType => StackType.F4;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Single);
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -2951,7 +3049,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitLdcF4(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as LdcF4;
 			return o != null && this.Value == o.Value;
@@ -2968,8 +3066,9 @@ namespace ICSharpCode.Decompiler.IL
 			this.Value = value;
 		}
 		public readonly double Value;
-		public override StackType ResultType { get { return StackType.F8; } }
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		public override StackType ResultType => StackType.F8;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Double);
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -2988,7 +3087,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitLdcF8(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as LdcF8;
 			return o != null && this.Value == o.Value;
@@ -3005,8 +3104,9 @@ namespace ICSharpCode.Decompiler.IL
 			this.Value = value;
 		}
 		public readonly decimal Value;
-		public override StackType ResultType { get { return StackType.O; } }
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		public override StackType ResultType => StackType.VT;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Decimal);
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -3025,7 +3125,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitLdcDecimal(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as LdcDecimal;
 			return o != null && this.Value == o.Value;
@@ -3040,7 +3140,8 @@ namespace ICSharpCode.Decompiler.IL
 		public LdNull() : base(OpCode.LdNull)
 		{
 		}
-		public override StackType ResultType { get { return StackType.O; } }
+		public override StackType ResultType => StackType.Obj;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Object);
 		public override void AcceptVisitor(ILVisitor visitor)
 		{
 			visitor.VisitLdNull(this);
@@ -3053,7 +3154,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitLdNull(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as LdNull;
 			return o != null;
@@ -3071,9 +3172,10 @@ namespace ICSharpCode.Decompiler.IL
 		}
 		readonly IMethod method;
 		/// <summary>Returns the method operand.</summary>
-		public IMethod Method { get { return method; } }
-		public override StackType ResultType { get { return StackType.I; } }
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		public IMethod Method => method;
+		public override StackType ResultType => StackType.I;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.IntPtr);
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -3095,7 +3197,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitLdFtn(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as LdFtn;
 			return o != null && object.Equals(method, o.method);
@@ -3113,8 +3215,9 @@ namespace ICSharpCode.Decompiler.IL
 		}
 		readonly IMethod method;
 		/// <summary>Returns the method operand.</summary>
-		public IMethod Method { get { return method; } }
-		public override StackType ResultType { get { return StackType.I; } }
+		public IMethod Method => method;
+		public override StackType ResultType => StackType.I;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.IntPtr);
 		protected override InstructionFlags ComputeFlags()
 		{
 			return base.ComputeFlags() | InstructionFlags.MayThrow;
@@ -3124,7 +3227,7 @@ namespace ICSharpCode.Decompiler.IL
 				return base.DirectFlags | InstructionFlags.MayThrow;
 			}
 		}
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -3149,7 +3252,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitLdVirtFtn(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as LdVirtFtn;
 			return o != null && this.Argument.PerformMatch(o.Argument, ref match) && object.Equals(method, o.method);
@@ -3174,8 +3277,9 @@ namespace ICSharpCode.Decompiler.IL
 		}
 		readonly IMethod method;
 		/// <summary>Returns the method operand.</summary>
-		public IMethod Method { get { return method; } }
-		public override StackType ResultType { get { return StackType.O; } }
+		public IMethod Method => method;
+		public override StackType ResultType => StackType.Obj;
+		public override IType InferType(ICompilation compilation) => this.type;
 		protected override InstructionFlags ComputeFlags()
 		{
 			return base.ComputeFlags() | InstructionFlags.MayThrow;
@@ -3185,7 +3289,7 @@ namespace ICSharpCode.Decompiler.IL
 				return base.DirectFlags | InstructionFlags.MayThrow;
 			}
 		}
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -3212,7 +3316,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitLdVirtDelegate(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as LdVirtDelegate;
 			return o != null && this.Argument.PerformMatch(o.Argument, ref match) && type.Equals(o.type) && object.Equals(method, o.method);
@@ -3234,8 +3338,9 @@ namespace ICSharpCode.Decompiler.IL
 			get { return type; }
 			set { type = value; InvalidateFlags(); }
 		}
-		public override StackType ResultType { get { return StackType.O; } }
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		public override StackType ResultType => StackType.VT;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.RuntimeTypeHandle);
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -3254,7 +3359,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitLdTypeToken(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as LdTypeToken;
 			return o != null && type.Equals(o.type);
@@ -3273,8 +3378,9 @@ namespace ICSharpCode.Decompiler.IL
 		readonly IMember member;
 		/// <summary>Returns the token operand.</summary>
 		public IMember Member { get { return member; } }
-		public override StackType ResultType { get { return StackType.O; } }
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		public override StackType ResultType => StackType.VT;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(member is IField ? KnownTypeCode.RuntimeFieldHandle : KnownTypeCode.RuntimeMethodHandle);
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -3293,7 +3399,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitLdMemberToken(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as LdMemberToken;
 			return o != null && member.Equals(o.member);
@@ -3308,7 +3414,8 @@ namespace ICSharpCode.Decompiler.IL
 		public LocAlloc(ILInstruction argument) : base(OpCode.LocAlloc, argument)
 		{
 		}
-		public override StackType ResultType { get { return StackType.I; } }
+		public override StackType ResultType => StackType.I;
+		public override IType InferType(ICompilation compilation) => new PointerType(compilation.FindType(KnownTypeCode.Void));
 		protected override InstructionFlags ComputeFlags()
 		{
 			return base.ComputeFlags() | InstructionFlags.MayThrow;
@@ -3330,7 +3437,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitLocAlloc(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as LocAlloc;
 			return o != null && this.Argument.PerformMatch(o.Argument, ref match);
@@ -3352,7 +3459,8 @@ namespace ICSharpCode.Decompiler.IL
 			get { return type; }
 			set { type = value; InvalidateFlags(); }
 		}
-		public override StackType ResultType { get { return StackType.O; } }
+		public override StackType ResultType => StackType.VT;
+		public override IType InferType(ICompilation compilation) => this.type;
 		protected override InstructionFlags ComputeFlags()
 		{
 			return base.ComputeFlags() | InstructionFlags.MayThrow;
@@ -3362,7 +3470,7 @@ namespace ICSharpCode.Decompiler.IL
 				return base.DirectFlags | InstructionFlags.MayThrow;
 			}
 		}
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -3384,7 +3492,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitLocAllocSpan(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as LocAllocSpan;
 			return o != null && this.Argument.PerformMatch(o.Argument, ref match) && type.Equals(o.type);
@@ -3403,8 +3511,9 @@ namespace ICSharpCode.Decompiler.IL
 			this.Size = size;
 		}
 		public static readonly SlotInfo DestAddressSlot = new SlotInfo("DestAddress", canInlineInto: true);
-		ILInstruction destAddress;
+		ILInstruction destAddress = null!;
 		public ILInstruction DestAddress {
+			[DebuggerStepThrough]
 			get { return this.destAddress; }
 			set {
 				ValidateChild(value);
@@ -3412,8 +3521,9 @@ namespace ICSharpCode.Decompiler.IL
 			}
 		}
 		public static readonly SlotInfo SourceAddressSlot = new SlotInfo("SourceAddress", canInlineInto: true);
-		ILInstruction sourceAddress;
+		ILInstruction sourceAddress = null!;
 		public ILInstruction SourceAddress {
+			[DebuggerStepThrough]
 			get { return this.sourceAddress; }
 			set {
 				ValidateChild(value);
@@ -3421,8 +3531,9 @@ namespace ICSharpCode.Decompiler.IL
 			}
 		}
 		public static readonly SlotInfo SizeSlot = new SlotInfo("Size", canInlineInto: true);
-		ILInstruction size;
+		ILInstruction size = null!;
 		public ILInstruction Size {
+			[DebuggerStepThrough]
 			get { return this.size; }
 			set {
 				ValidateChild(value);
@@ -3490,7 +3601,8 @@ namespace ICSharpCode.Decompiler.IL
 		public bool IsVolatile { get; set; }
 		/// <summary>Returns the alignment specified by the 'unaligned' prefix; or 0 if there was no 'unaligned' prefix.</summary>
 		public byte UnalignedPrefix { get; set; }
-		public override StackType ResultType { get { return StackType.Void; } }
+		public override StackType ResultType => StackType.Void;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Void);
 		protected override InstructionFlags ComputeFlags()
 		{
 			return destAddress.Flags | sourceAddress.Flags | size.Flags | InstructionFlags.MayThrow | InstructionFlags.SideEffect;
@@ -3500,7 +3612,7 @@ namespace ICSharpCode.Decompiler.IL
 				return InstructionFlags.MayThrow | InstructionFlags.SideEffect;
 			}
 		}
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			if (IsVolatile)
@@ -3528,14 +3640,14 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitCpblk(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as Cpblk;
 			return o != null && this.destAddress.PerformMatch(o.destAddress, ref match) && this.sourceAddress.PerformMatch(o.sourceAddress, ref match) && this.size.PerformMatch(o.size, ref match) && IsVolatile == o.IsVolatile && UnalignedPrefix == o.UnalignedPrefix;
 		}
-		internal override void CheckInvariant(ILPhase phase)
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
 		{
-			base.CheckInvariant(phase);
+			base.CheckInvariant(phase, compilation);
 			Debug.Assert(destAddress.ResultType == StackType.I || destAddress.ResultType == StackType.Ref);
 			Debug.Assert(sourceAddress.ResultType == StackType.I || sourceAddress.ResultType == StackType.Ref);
 			Debug.Assert(size.ResultType == StackType.I4);
@@ -3554,8 +3666,9 @@ namespace ICSharpCode.Decompiler.IL
 			this.Size = size;
 		}
 		public static readonly SlotInfo AddressSlot = new SlotInfo("Address", canInlineInto: true);
-		ILInstruction address;
+		ILInstruction address = null!;
 		public ILInstruction Address {
+			[DebuggerStepThrough]
 			get { return this.address; }
 			set {
 				ValidateChild(value);
@@ -3563,8 +3676,9 @@ namespace ICSharpCode.Decompiler.IL
 			}
 		}
 		public static readonly SlotInfo ValueSlot = new SlotInfo("Value", canInlineInto: true);
-		ILInstruction value;
+		ILInstruction value = null!;
 		public ILInstruction Value {
+			[DebuggerStepThrough]
 			get { return this.value; }
 			set {
 				ValidateChild(value);
@@ -3572,8 +3686,9 @@ namespace ICSharpCode.Decompiler.IL
 			}
 		}
 		public static readonly SlotInfo SizeSlot = new SlotInfo("Size", canInlineInto: true);
-		ILInstruction size;
+		ILInstruction size = null!;
 		public ILInstruction Size {
+			[DebuggerStepThrough]
 			get { return this.size; }
 			set {
 				ValidateChild(value);
@@ -3641,7 +3756,8 @@ namespace ICSharpCode.Decompiler.IL
 		public bool IsVolatile { get; set; }
 		/// <summary>Returns the alignment specified by the 'unaligned' prefix; or 0 if there was no 'unaligned' prefix.</summary>
 		public byte UnalignedPrefix { get; set; }
-		public override StackType ResultType { get { return StackType.Void; } }
+		public override StackType ResultType => StackType.Void;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Void);
 		protected override InstructionFlags ComputeFlags()
 		{
 			return address.Flags | value.Flags | size.Flags | InstructionFlags.MayThrow | InstructionFlags.SideEffect;
@@ -3651,7 +3767,7 @@ namespace ICSharpCode.Decompiler.IL
 				return InstructionFlags.MayThrow | InstructionFlags.SideEffect;
 			}
 		}
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			if (IsVolatile)
@@ -3679,14 +3795,14 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitInitblk(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as Initblk;
 			return o != null && this.address.PerformMatch(o.address, ref match) && this.value.PerformMatch(o.value, ref match) && this.size.PerformMatch(o.size, ref match) && IsVolatile == o.IsVolatile && UnalignedPrefix == o.UnalignedPrefix;
 		}
-		internal override void CheckInvariant(ILPhase phase)
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
 		{
-			base.CheckInvariant(phase);
+			base.CheckInvariant(phase, compilation);
 			Debug.Assert(address.ResultType == StackType.I || address.ResultType == StackType.Ref);
 			Debug.Assert(value.ResultType == StackType.I4);
 			Debug.Assert(size.ResultType == StackType.I4);
@@ -3698,14 +3814,15 @@ namespace ICSharpCode.Decompiler.IL
 	/// <summary>Load address of instance field</summary>
 	public sealed partial class LdFlda : ILInstruction, IInstructionWithFieldOperand
 	{
-		public LdFlda(ILInstruction target, IField field) : base(OpCode.LdFlda)
+		public LdFlda(ILInstruction target, IField @field) : base(OpCode.LdFlda)
 		{
 			this.Target = target;
-			this.field = field;
+			this.@field = @field;
 		}
 		public static readonly SlotInfo TargetSlot = new SlotInfo("Target", canInlineInto: true);
-		ILInstruction target;
+		ILInstruction target = null!;
 		public ILInstruction Target {
+			[DebuggerStepThrough]
 			get { return this.target; }
 			set {
 				ValidateChild(value);
@@ -3754,10 +3871,11 @@ namespace ICSharpCode.Decompiler.IL
 			return clone;
 		}
 		public bool DelayExceptions; // NullReferenceException/IndexOutOfBoundsException only occurs when the reference is dereferenced
-		readonly IField field;
+		readonly IField @field;
 		/// <summary>Returns the field operand.</summary>
-		public IField Field { get { return field; } }
-		public override StackType ResultType { get { return target.ResultType.IsIntegerType() ? StackType.I : StackType.Ref; } }
+		public IField Field { get { return @field; } }
+		public override StackType ResultType => target.ResultType.IsIntegerType() ? StackType.I : StackType.Ref;
+		public override IType InferType(ICompilation compilation) => target.ResultType.IsIntegerType() ? new PointerType(field.Type) : new ByReferenceType(field.Type);
 		protected override InstructionFlags ComputeFlags()
 		{
 			return target.Flags | (DelayExceptions ? InstructionFlags.None : InstructionFlags.MayThrow);
@@ -3767,14 +3885,14 @@ namespace ICSharpCode.Decompiler.IL
 				return (DelayExceptions ? InstructionFlags.None : InstructionFlags.MayThrow);
 			}
 		}
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			if (DelayExceptions)
 				output.Write("delayex.");
 			output.Write(OpCode);
 			output.Write(' ');
-			field.WriteTo(output);
+			@field.WriteTo(output);
 			output.Write('(');
 			this.target.WriteTo(output, options);
 			output.Write(')');
@@ -3791,10 +3909,10 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitLdFlda(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as LdFlda;
-			return o != null && this.target.PerformMatch(o.target, ref match) && DelayExceptions == o.DelayExceptions && field.Equals(o.field);
+			return o != null && this.target.PerformMatch(o.target, ref match) && DelayExceptions == o.DelayExceptions && @field.Equals(o.@field);
 		}
 	}
 }
@@ -3803,20 +3921,21 @@ namespace ICSharpCode.Decompiler.IL
 	/// <summary>Load static field address</summary>
 	public sealed partial class LdsFlda : SimpleInstruction, IInstructionWithFieldOperand
 	{
-		public LdsFlda(IField field) : base(OpCode.LdsFlda)
+		public LdsFlda(IField @field) : base(OpCode.LdsFlda)
 		{
-			this.field = field;
+			this.@field = @field;
 		}
-		public override StackType ResultType { get { return StackType.Ref; } }
-		readonly IField field;
+		public override StackType ResultType => StackType.Ref;
+		public override IType InferType(ICompilation compilation) => new ByReferenceType(field.Type);
+		readonly IField @field;
 		/// <summary>Returns the field operand.</summary>
-		public IField Field { get { return field; } }
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		public IField Field { get { return @field; } }
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
 			output.Write(' ');
-			field.WriteTo(output);
+			@field.WriteTo(output);
 		}
 		public override void AcceptVisitor(ILVisitor visitor)
 		{
@@ -3830,10 +3949,10 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitLdsFlda(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as LdsFlda;
-			return o != null && field.Equals(o.field);
+			return o != null && @field.Equals(o.@field);
 		}
 	}
 }
@@ -3852,7 +3971,8 @@ namespace ICSharpCode.Decompiler.IL
 			get { return type; }
 			set { type = value; InvalidateFlags(); }
 		}
-		public override StackType ResultType { get { return type.GetStackType(); } }
+		public override StackType ResultType => (this.type).GetStackType();
+		public override IType InferType(ICompilation compilation) => this.type;
 		protected override InstructionFlags ComputeFlags()
 		{
 			return base.ComputeFlags() | InstructionFlags.MayThrow;
@@ -3862,7 +3982,7 @@ namespace ICSharpCode.Decompiler.IL
 				return base.DirectFlags | InstructionFlags.MayThrow;
 			}
 		}
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -3884,7 +4004,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitCastClass(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as CastClass;
 			return o != null && this.Argument.PerformMatch(o.Argument, ref match) && type.Equals(o.type);
@@ -3906,8 +4026,9 @@ namespace ICSharpCode.Decompiler.IL
 			get { return type; }
 			set { type = value; InvalidateFlags(); }
 		}
-		public override StackType ResultType { get { return StackType.O; } }
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		public override StackType ResultType => StackType.Obj;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Object);
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -3929,7 +4050,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitIsInst(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as IsInst;
 			return o != null && this.Argument.PerformMatch(o.Argument, ref match) && type.Equals(o.type);
@@ -3947,8 +4068,9 @@ namespace ICSharpCode.Decompiler.IL
 			this.type = type;
 		}
 		public static readonly SlotInfo TargetSlot = new SlotInfo("Target", canInlineInto: true);
-		ILInstruction target;
+		ILInstruction target = null!;
 		public ILInstruction Target {
+			[DebuggerStepThrough]
 			get { return this.target; }
 			set {
 				ValidateChild(value);
@@ -4006,7 +4128,8 @@ namespace ICSharpCode.Decompiler.IL
 		public bool IsVolatile { get; set; }
 		/// <summary>Returns the alignment specified by the 'unaligned' prefix; or 0 if there was no 'unaligned' prefix.</summary>
 		public byte UnalignedPrefix { get; set; }
-		public override StackType ResultType { get { return type.GetStackType(); } }
+		public override StackType ResultType => (this.type).GetStackType();
+		public override IType InferType(ICompilation compilation) => this.type;
 		protected override InstructionFlags ComputeFlags()
 		{
 			return target.Flags | InstructionFlags.SideEffect | InstructionFlags.MayThrow;
@@ -4042,14 +4165,126 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitLdObj(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as LdObj;
 			return o != null && this.target.PerformMatch(o.target, ref match) && type.Equals(o.type) && IsVolatile == o.IsVolatile && UnalignedPrefix == o.UnalignedPrefix;
 		}
-		internal override void CheckInvariant(ILPhase phase)
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
 		{
-			base.CheckInvariant(phase);
+			base.CheckInvariant(phase, compilation);
+			Debug.Assert(target.ResultType == StackType.Ref || target.ResultType == StackType.I);
+		}
+	}
+}
+namespace ICSharpCode.Decompiler.IL
+{
+	/// <summary>If argument is a ref to a reference type, loads the object reference, stores it in a temporary, and evaluates to the address of that temporary (address.of(ldobj(arg))). Otherwise, returns the argument ref as-is.<para>This instruction represents the memory-load semantics of callvirt with a generic type as receiver (where the IL always takes a ref, but only methods on value types expect one, for method on reference types there's an implicit ldobj, which this instruction makes explicit in order to preserve the order-of-evaluation).</para></summary>
+	public sealed partial class LdObjIfRef : ILInstruction
+	{
+		public LdObjIfRef(ILInstruction target, IType type) : base(OpCode.LdObjIfRef)
+		{
+			this.Target = target;
+			this.type = type;
+		}
+		public static readonly SlotInfo TargetSlot = new SlotInfo("Target", canInlineInto: true);
+		ILInstruction target = null!;
+		public ILInstruction Target {
+			[DebuggerStepThrough]
+			get { return this.target; }
+			set {
+				ValidateChild(value);
+				SetChildInstruction(ref this.target, value, 0);
+			}
+		}
+		protected sealed override int GetChildCount()
+		{
+			return 1;
+		}
+		protected sealed override ILInstruction GetChild(int index)
+		{
+			switch (index)
+			{
+				case 0:
+					return this.target;
+				default:
+					throw new IndexOutOfRangeException();
+			}
+		}
+		protected sealed override void SetChild(int index, ILInstruction value)
+		{
+			switch (index)
+			{
+				case 0:
+					this.Target = value;
+					break;
+				default:
+					throw new IndexOutOfRangeException();
+			}
+		}
+		protected sealed override SlotInfo GetChildSlot(int index)
+		{
+			switch (index)
+			{
+				case 0:
+					return TargetSlot;
+				default:
+					throw new IndexOutOfRangeException();
+			}
+		}
+		public sealed override ILInstruction Clone()
+		{
+			var clone = (LdObjIfRef)ShallowClone();
+			clone.Target = this.target.Clone();
+			return clone;
+		}
+		IType type;
+		/// <summary>Returns the type operand.</summary>
+		public IType Type {
+			get { return type; }
+			set { type = value; InvalidateFlags(); }
+		}
+		public override StackType ResultType => StackType.Ref;
+		public override IType InferType(ICompilation compilation) => new ByReferenceType(this.type);
+		protected override InstructionFlags ComputeFlags()
+		{
+			return target.Flags | InstructionFlags.SideEffect | InstructionFlags.MayThrow;
+		}
+		public override InstructionFlags DirectFlags {
+			get {
+				return InstructionFlags.SideEffect | InstructionFlags.MayThrow;
+			}
+		}
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
+		{
+			WriteILRange(output, options);
+			output.Write(OpCode);
+			output.Write(' ');
+			type.WriteTo(output);
+			output.Write('(');
+			this.target.WriteTo(output, options);
+			output.Write(')');
+		}
+		public override void AcceptVisitor(ILVisitor visitor)
+		{
+			visitor.VisitLdObjIfRef(this);
+		}
+		public override T AcceptVisitor<T>(ILVisitor<T> visitor)
+		{
+			return visitor.VisitLdObjIfRef(this);
+		}
+		public override T AcceptVisitor<C, T>(ILVisitor<C, T> visitor, C context)
+		{
+			return visitor.VisitLdObjIfRef(this, context);
+		}
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
+		{
+			var o = other as LdObjIfRef;
+			return o != null && this.target.PerformMatch(o.target, ref match) && type.Equals(o.type);
+		}
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
+		{
+			base.CheckInvariant(phase, compilation);
 			Debug.Assert(target.ResultType == StackType.Ref || target.ResultType == StackType.I);
 		}
 	}
@@ -4067,8 +4302,9 @@ namespace ICSharpCode.Decompiler.IL
 			this.type = type;
 		}
 		public static readonly SlotInfo TargetSlot = new SlotInfo("Target", canInlineInto: true);
-		ILInstruction target;
+		ILInstruction target = null!;
 		public ILInstruction Target {
+			[DebuggerStepThrough]
 			get { return this.target; }
 			set {
 				ValidateChild(value);
@@ -4076,8 +4312,9 @@ namespace ICSharpCode.Decompiler.IL
 			}
 		}
 		public static readonly SlotInfo ValueSlot = new SlotInfo("Value", canInlineInto: true);
-		ILInstruction value;
+		ILInstruction value = null!;
 		public ILInstruction Value {
+			[DebuggerStepThrough]
 			get { return this.value; }
 			set {
 				ValidateChild(value);
@@ -4143,7 +4380,8 @@ namespace ICSharpCode.Decompiler.IL
 		public bool IsVolatile { get; set; }
 		/// <summary>Returns the alignment specified by the 'unaligned' prefix; or 0 if there was no 'unaligned' prefix.</summary>
 		public byte UnalignedPrefix { get; set; }
-		public override StackType ResultType { get { return UnalignedPrefix == 0 ? type.GetStackType() : StackType.Void; } }
+		public override StackType ResultType => UnalignedPrefix == 0 ? type.GetStackType() : StackType.Void;
+		public override IType InferType(ICompilation compilation) => UnalignedPrefix == 0 ? type : compilation.FindType(KnownTypeCode.Void);
 		protected override InstructionFlags ComputeFlags()
 		{
 			return target.Flags | value.Flags | InstructionFlags.SideEffect | InstructionFlags.MayThrow;
@@ -4181,14 +4419,14 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitStObj(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as StObj;
 			return o != null && this.target.PerformMatch(o.target, ref match) && this.value.PerformMatch(o.value, ref match) && type.Equals(o.type) && IsVolatile == o.IsVolatile && UnalignedPrefix == o.UnalignedPrefix;
 		}
-		internal override void CheckInvariant(ILPhase phase)
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
 		{
-			base.CheckInvariant(phase);
+			base.CheckInvariant(phase, compilation);
 			Debug.Assert(target.ResultType == StackType.Ref || target.ResultType == StackType.I);
 			Debug.Assert(value.ResultType == type.GetStackType());
 			CheckTargetSlot();
@@ -4210,17 +4448,9 @@ namespace ICSharpCode.Decompiler.IL
 			get { return type; }
 			set { type = value; InvalidateFlags(); }
 		}
-		public override StackType ResultType { get { return StackType.O; } }
-		protected override InstructionFlags ComputeFlags()
-		{
-			return base.ComputeFlags() | InstructionFlags.SideEffect | InstructionFlags.MayThrow;
-		}
-		public override InstructionFlags DirectFlags {
-			get {
-				return base.DirectFlags | InstructionFlags.SideEffect | InstructionFlags.MayThrow;
-			}
-		}
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		public override StackType ResultType => StackType.Obj;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Object);
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -4242,7 +4472,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitBox(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as Box;
 			return o != null && this.Argument.PerformMatch(o.Argument, ref match) && type.Equals(o.type);
@@ -4264,7 +4494,8 @@ namespace ICSharpCode.Decompiler.IL
 			get { return type; }
 			set { type = value; InvalidateFlags(); }
 		}
-		public override StackType ResultType { get { return StackType.Ref; } }
+		public override StackType ResultType => StackType.Ref;
+		public override IType InferType(ICompilation compilation) => new ByReferenceType(this.type);
 		protected override InstructionFlags ComputeFlags()
 		{
 			return base.ComputeFlags() | InstructionFlags.MayThrow;
@@ -4274,7 +4505,7 @@ namespace ICSharpCode.Decompiler.IL
 				return base.DirectFlags | InstructionFlags.MayThrow;
 			}
 		}
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -4296,7 +4527,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitUnbox(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as Unbox;
 			return o != null && this.Argument.PerformMatch(o.Argument, ref match) && type.Equals(o.type);
@@ -4318,7 +4549,8 @@ namespace ICSharpCode.Decompiler.IL
 			get { return type; }
 			set { type = value; InvalidateFlags(); }
 		}
-		public override StackType ResultType { get { return type.GetStackType(); } }
+		public override StackType ResultType => (this.type).GetStackType();
+		public override IType InferType(ICompilation compilation) => this.type;
 		protected override InstructionFlags ComputeFlags()
 		{
 			return base.ComputeFlags() | InstructionFlags.SideEffect | InstructionFlags.MayThrow;
@@ -4328,7 +4560,7 @@ namespace ICSharpCode.Decompiler.IL
 				return base.DirectFlags | InstructionFlags.SideEffect | InstructionFlags.MayThrow;
 			}
 		}
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -4350,7 +4582,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitUnboxAny(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as UnboxAny;
 			return o != null && this.Argument.PerformMatch(o.Argument, ref match) && type.Equals(o.type);
@@ -4365,7 +4597,8 @@ namespace ICSharpCode.Decompiler.IL
 		public NewObj(IMethod method) : base(OpCode.NewObj, method)
 		{
 		}
-		public override StackType ResultType { get { return Method.DeclaringType.GetStackType(); } }
+		public override StackType ResultType => (Method.DeclaringType).GetStackType();
+		public override IType InferType(ICompilation compilation) => Method.DeclaringType;
 		public override void AcceptVisitor(ILVisitor visitor)
 		{
 			visitor.VisitNewObj(this);
@@ -4435,7 +4668,8 @@ namespace ICSharpCode.Decompiler.IL
 			clone.Indices.AddRange(this.Indices.Select(arg => (ILInstruction)arg.Clone()));
 			return clone;
 		}
-		public override StackType ResultType { get { return StackType.O; } }
+		public override StackType ResultType => StackType.Obj;
+		public override IType InferType(ICompilation compilation) => new ArrayType(compilation, this.Type, this.Indices.Count);
 		protected override InstructionFlags ComputeFlags()
 		{
 			return Indices.Aggregate(InstructionFlags.None, (f, arg) => f | arg.Flags) | InstructionFlags.MayThrow;
@@ -4445,7 +4679,7 @@ namespace ICSharpCode.Decompiler.IL
 				return InstructionFlags.MayThrow;
 			}
 		}
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -4475,7 +4709,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitNewArr(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as NewArr;
 			return o != null && type.Equals(o.type) && Patterns.ListMatch.DoMatch(this.Indices, o.Indices, ref match);
@@ -4497,8 +4731,9 @@ namespace ICSharpCode.Decompiler.IL
 			get { return type; }
 			set { type = value; InvalidateFlags(); }
 		}
-		public override StackType ResultType { get { return type.GetStackType(); } }
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		public override StackType ResultType => (this.type).GetStackType();
+		public override IType InferType(ICompilation compilation) => this.type;
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -4517,7 +4752,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitDefaultValue(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as DefaultValue;
 			return o != null && type.Equals(o.type);
@@ -4532,7 +4767,8 @@ namespace ICSharpCode.Decompiler.IL
 		public Throw(ILInstruction argument) : base(OpCode.Throw, argument)
 		{
 		}
-		public override StackType ResultType { get { return this.resultType; } }
+		public override StackType ResultType => StackType.Void;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Void);
 		protected override InstructionFlags ComputeFlags()
 		{
 			return base.ComputeFlags() | InstructionFlags.MayThrow | InstructionFlags.EndPointUnreachable;
@@ -4554,7 +4790,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitThrow(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as Throw;
 			return o != null && this.Argument.PerformMatch(o.Argument, ref match);
@@ -4569,7 +4805,8 @@ namespace ICSharpCode.Decompiler.IL
 		public Rethrow() : base(OpCode.Rethrow)
 		{
 		}
-		public override StackType ResultType { get { return StackType.Void; } }
+		public override StackType ResultType => StackType.Void;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Void);
 		protected override InstructionFlags ComputeFlags()
 		{
 			return InstructionFlags.MayThrow | InstructionFlags.EndPointUnreachable;
@@ -4591,7 +4828,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitRethrow(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as Rethrow;
 			return o != null;
@@ -4613,8 +4850,9 @@ namespace ICSharpCode.Decompiler.IL
 			get { return type; }
 			set { type = value; InvalidateFlags(); }
 		}
-		public override StackType ResultType { get { return StackType.I4; } }
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		public override StackType ResultType => StackType.I4;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Int32);
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -4633,7 +4871,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitSizeOf(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as SizeOf;
 			return o != null && type.Equals(o.type);
@@ -4646,8 +4884,9 @@ namespace ICSharpCode.Decompiler.IL
 	public sealed partial class LdLen : ILInstruction
 	{
 		public static readonly SlotInfo ArraySlot = new SlotInfo("Array", canInlineInto: true);
-		ILInstruction array;
+		ILInstruction array = null!;
 		public ILInstruction Array {
+			[DebuggerStepThrough]
 			get { return this.array; }
 			set {
 				ValidateChild(value);
@@ -4716,15 +4955,15 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitLdLen(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as LdLen;
 			return o != null && this.array.PerformMatch(o.array, ref match);
 		}
-		internal override void CheckInvariant(ILPhase phase)
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
 		{
-			base.CheckInvariant(phase);
-			Debug.Assert(array.ResultType == StackType.O);
+			base.CheckInvariant(phase, compilation);
+			Debug.Assert(array.ResultType == StackType.Obj);
 		}
 	}
 }
@@ -4747,8 +4986,9 @@ namespace ICSharpCode.Decompiler.IL
 			set { type = value; InvalidateFlags(); }
 		}
 		public static readonly SlotInfo ArraySlot = new SlotInfo("Array", canInlineInto: true);
-		ILInstruction array;
+		ILInstruction array = null!;
 		public ILInstruction Array {
+			[DebuggerStepThrough]
 			get { return this.array; }
 			set {
 				ValidateChild(value);
@@ -4803,7 +5043,8 @@ namespace ICSharpCode.Decompiler.IL
 		}
 		public bool WithSystemIndex;
 		public bool DelayExceptions; // NullReferenceException/IndexOutOfBoundsException only occurs when the reference is dereferenced
-		public override StackType ResultType { get { return StackType.Ref; } }
+		public override StackType ResultType => StackType.Ref;
+		public override IType InferType(ICompilation compilation) => new ByReferenceType(this.Type);
 		/// <summary>Gets whether the 'readonly' prefix was applied to this instruction.</summary>
 		public bool IsReadOnly { get; set; }
 		protected override InstructionFlags ComputeFlags()
@@ -4815,7 +5056,7 @@ namespace ICSharpCode.Decompiler.IL
 				return (DelayExceptions ? InstructionFlags.None : InstructionFlags.MayThrow);
 			}
 		}
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			if (WithSystemIndex)
@@ -4848,7 +5089,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitLdElema(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as LdElema;
 			return o != null && type.Equals(o.type) && this.array.PerformMatch(o.array, ref match) && Patterns.ListMatch.DoMatch(this.Indices, o.Indices, ref match) && this.WithSystemIndex == o.WithSystemIndex && DelayExceptions == o.DelayExceptions && IsReadOnly == o.IsReadOnly;
@@ -4857,21 +5098,146 @@ namespace ICSharpCode.Decompiler.IL
 }
 namespace ICSharpCode.Decompiler.IL
 {
+	/// <summary>Load address of inline array element.</summary>
+	public sealed partial class LdElemaInlineArray : ILInstruction
+	{
+		public LdElemaInlineArray(IType type, ILInstruction array, params ILInstruction[] indices) : base(OpCode.LdElemaInlineArray)
+		{
+			this.type = type;
+			this.Array = array;
+			this.Indices = new InstructionCollection<ILInstruction>(this, 1);
+			this.Indices.AddRange(indices);
+		}
+		IType type;
+		/// <summary>Returns the type operand.</summary>
+		public IType Type {
+			get { return type; }
+			set { type = value; InvalidateFlags(); }
+		}
+		public static readonly SlotInfo ArraySlot = new SlotInfo("Array", canInlineInto: true);
+		ILInstruction array = null!;
+		public ILInstruction Array {
+			[DebuggerStepThrough]
+			get { return this.array; }
+			set {
+				ValidateChild(value);
+				SetChildInstruction(ref this.array, value, 0);
+			}
+		}
+		public static readonly SlotInfo IndicesSlot = new SlotInfo("Indices", canInlineInto: true);
+		public InstructionCollection<ILInstruction> Indices { get; private set; }
+		protected sealed override int GetChildCount()
+		{
+			return 1 + Indices.Count;
+		}
+		protected sealed override ILInstruction GetChild(int index)
+		{
+			switch (index)
+			{
+				case 0:
+					return this.array;
+				default:
+					return this.Indices[index - 1];
+			}
+		}
+		protected sealed override void SetChild(int index, ILInstruction value)
+		{
+			switch (index)
+			{
+				case 0:
+					this.Array = value;
+					break;
+				default:
+					this.Indices[index - 1] = (ILInstruction)value;
+					break;
+			}
+		}
+		protected sealed override SlotInfo GetChildSlot(int index)
+		{
+			switch (index)
+			{
+				case 0:
+					return ArraySlot;
+				default:
+					return IndicesSlot;
+			}
+		}
+		public sealed override ILInstruction Clone()
+		{
+			var clone = (LdElemaInlineArray)ShallowClone();
+			clone.Array = this.array.Clone();
+			clone.Indices = new InstructionCollection<ILInstruction>(clone, 1);
+			clone.Indices.AddRange(this.Indices.Select(arg => (ILInstruction)arg.Clone()));
+			return clone;
+		}
+		public override StackType ResultType => StackType.Ref;
+		public override IType InferType(ICompilation compilation) => new ByReferenceType(this.Type);
+		/// <summary>Gets whether the 'readonly' prefix was applied to this instruction.</summary>
+		public bool IsReadOnly { get; set; }
+		protected override InstructionFlags ComputeFlags()
+		{
+			return array.Flags | Indices.Aggregate(InstructionFlags.None, (f, arg) => f | arg.Flags) | InstructionFlags.MayThrow;
+		}
+		public override InstructionFlags DirectFlags {
+			get {
+				return InstructionFlags.MayThrow;
+			}
+		}
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
+		{
+			WriteILRange(output, options);
+			if (IsReadOnly)
+				output.Write("readonly.");
+			output.Write(OpCode);
+			output.Write(' ');
+			type.WriteTo(output);
+			output.Write('(');
+			this.array.WriteTo(output, options);
+			foreach (var indices in Indices)
+			{
+				output.Write(", ");
+				indices.WriteTo(output, options);
+			}
+			output.Write(')');
+		}
+		public override void AcceptVisitor(ILVisitor visitor)
+		{
+			visitor.VisitLdElemaInlineArray(this);
+		}
+		public override T AcceptVisitor<T>(ILVisitor<T> visitor)
+		{
+			return visitor.VisitLdElemaInlineArray(this);
+		}
+		public override T AcceptVisitor<C, T>(ILVisitor<C, T> visitor, C context)
+		{
+			return visitor.VisitLdElemaInlineArray(this, context);
+		}
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
+		{
+			var o = other as LdElemaInlineArray;
+			return o != null && type.Equals(o.type) && this.array.PerformMatch(o.array, ref match) && Patterns.ListMatch.DoMatch(this.Indices, o.Indices, ref match) && IsReadOnly == o.IsReadOnly;
+		}
+	}
+}
+namespace ICSharpCode.Decompiler.IL
+{
 	/// <summary>Retrieves a pinnable reference for the input object.
-	/// The input must be an object reference (O).
+	/// The input must be an object reference (Obj).
 	/// If the input is an array/string, evaluates to a reference to the first element/character, or to a null reference if the array is null or empty.
 	/// Otherwise, uses the GetPinnableReference method to get the reference, or evaluates to a null reference if the input is null.
 	/// </summary>
 	public sealed partial class GetPinnableReference : ILInstruction, IInstructionWithMethodOperand
 	{
-		public GetPinnableReference(ILInstruction argument, IMethod method) : base(OpCode.GetPinnableReference)
+		public GetPinnableReference(ILInstruction argument, IType type, IMethod? method) : base(OpCode.GetPinnableReference)
 		{
 			this.Argument = argument;
+			this.type = type;
 			this.method = method;
 		}
 		public static readonly SlotInfo ArgumentSlot = new SlotInfo("Argument", canInlineInto: true);
-		ILInstruction argument;
+		ILInstruction argument = null!;
 		public ILInstruction Argument {
+			[DebuggerStepThrough]
 			get { return this.argument; }
 			set {
 				ValidateChild(value);
@@ -4919,10 +5285,17 @@ namespace ICSharpCode.Decompiler.IL
 			clone.Argument = this.argument.Clone();
 			return clone;
 		}
-		public override StackType ResultType { get { return StackType.Ref; } }
-		readonly IMethod method;
+		IType type;
+		/// <summary>Returns the type operand.</summary>
+		public IType Type {
+			get { return type; }
+			set { type = value; InvalidateFlags(); }
+		}
+		public override StackType ResultType => StackType.Ref;
+		public override IType InferType(ICompilation compilation) => new ByReferenceType(this.Type);
+		readonly IMethod? method;
 		/// <summary>Returns the method operand.</summary>
-		public IMethod Method { get { return method; } }
+		public IMethod? Method => method;
 		protected override InstructionFlags ComputeFlags()
 		{
 			return argument.Flags;
@@ -4932,10 +5305,12 @@ namespace ICSharpCode.Decompiler.IL
 				return InstructionFlags.None;
 			}
 		}
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
+			output.Write(' ');
+			type.WriteTo(output);
 			if (method != null)
 			{
 				output.Write(' ');
@@ -4957,26 +5332,27 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitGetPinnableReference(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as GetPinnableReference;
-			return o != null && this.argument.PerformMatch(o.argument, ref match) && object.Equals(method, o.method);
+			return o != null && this.argument.PerformMatch(o.argument, ref match) && type.Equals(o.type) && object.Equals(method, o.method);
 		}
-		internal override void CheckInvariant(ILPhase phase)
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
 		{
-			base.CheckInvariant(phase);
-			Debug.Assert(argument.ResultType == StackType.O);
+			base.CheckInvariant(phase, compilation);
+			Debug.Assert(argument.ResultType == StackType.Obj);
 		}
 	}
 }
 namespace ICSharpCode.Decompiler.IL
 {
-	/// <summary>Maps a string value to an integer. This is used in switch(string).</summary>
+	/// <summary>Maps a string value to an integer. This is used in switch(string).The input can be a `string` or a `ReadOnlySpan&lt;char&gt;`.</summary>
 	public sealed partial class StringToInt : ILInstruction
 	{
 		public static readonly SlotInfo ArgumentSlot = new SlotInfo("Argument", canInlineInto: true);
-		ILInstruction argument;
+		ILInstruction argument = null!;
 		public ILInstruction Argument {
+			[DebuggerStepThrough]
 			get { return this.argument; }
 			set {
 				ValidateChild(value);
@@ -5024,7 +5400,8 @@ namespace ICSharpCode.Decompiler.IL
 			clone.Argument = this.argument.Clone();
 			return clone;
 		}
-		public override StackType ResultType { get { return StackType.I4; } }
+		public override StackType ResultType => StackType.I4;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Int32);
 		protected override InstructionFlags ComputeFlags()
 		{
 			return argument.Flags;
@@ -5046,15 +5423,15 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitStringToInt(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as StringToInt;
 			return o != null && this.argument.PerformMatch(o.argument, ref match);
 		}
-		internal override void CheckInvariant(ILPhase phase)
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
 		{
-			base.CheckInvariant(phase);
-			Debug.Assert(argument.ResultType == StackType.O);
+			base.CheckInvariant(phase, compilation);
+			Debug.Assert(argument.ResultType == StackType.Obj || argument.ResultType == StackType.VT);
 		}
 	}
 }
@@ -5069,7 +5446,8 @@ namespace ICSharpCode.Decompiler.IL
 			get { return type; }
 			set { type = value; InvalidateFlags(); }
 		}
-		public override StackType ResultType { get { return type.GetStackType(); } }
+		public override StackType ResultType => (this.type).GetStackType();
+		public override IType InferType(ICompilation compilation) => this.type;
 		protected override InstructionFlags ComputeFlags()
 		{
 			return base.ComputeFlags() | InstructionFlags.MayThrow;
@@ -5091,7 +5469,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitExpressionTreeCast(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as ExpressionTreeCast;
 			return o != null && this.Argument.PerformMatch(o.Argument, ref match) && type.Equals(o.type) && this.IsChecked == o.IsChecked;
@@ -5111,11 +5489,13 @@ namespace ICSharpCode.Decompiler.IL
 		}
 		readonly IMethod method;
 		/// <summary>Returns the method operand.</summary>
-		public IMethod Method { get { return method; } }
-		public override StackType ResultType { get { return StackType.O; } }
+		public IMethod Method => method;
+		public override StackType ResultType => (method.ReturnType).GetStackType();
+		public override IType InferType(ICompilation compilation) => method.ReturnType;
 		public static readonly SlotInfo LeftSlot = new SlotInfo("Left", canInlineInto: true);
-		ILInstruction left;
+		ILInstruction left = null!;
 		public ILInstruction Left {
+			[DebuggerStepThrough]
 			get { return this.left; }
 			set {
 				ValidateChild(value);
@@ -5123,8 +5503,9 @@ namespace ICSharpCode.Decompiler.IL
 			}
 		}
 		public static readonly SlotInfo RightSlot = new SlotInfo("Right");
-		ILInstruction right;
+		ILInstruction right = null!;
 		public ILInstruction Right {
+			[DebuggerStepThrough]
 			get { return this.right; }
 			set {
 				ValidateChild(value);
@@ -5180,7 +5561,7 @@ namespace ICSharpCode.Decompiler.IL
 			clone.Right = this.right.Clone();
 			return clone;
 		}
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -5207,7 +5588,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitUserDefinedLogicOperator(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as UserDefinedLogicOperator;
 			return o != null && object.Equals(method, o.method) && this.left.PerformMatch(o.left, ref match) && this.right.PerformMatch(o.right, ref match);
@@ -5220,8 +5601,9 @@ namespace ICSharpCode.Decompiler.IL
 	public sealed partial class DynamicLogicOperatorInstruction : DynamicInstruction
 	{
 		public static readonly SlotInfo LeftSlot = new SlotInfo("Left", canInlineInto: true);
-		ILInstruction left;
+		ILInstruction left = null!;
 		public ILInstruction Left {
+			[DebuggerStepThrough]
 			get { return this.left; }
 			set {
 				ValidateChild(value);
@@ -5229,8 +5611,9 @@ namespace ICSharpCode.Decompiler.IL
 			}
 		}
 		public static readonly SlotInfo RightSlot = new SlotInfo("Right");
-		ILInstruction right;
+		ILInstruction right = null!;
 		public ILInstruction Right {
+			[DebuggerStepThrough]
 			get { return this.right; }
 			set {
 				ValidateChild(value);
@@ -5298,7 +5681,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitDynamicLogicOperatorInstruction(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as DynamicLogicOperatorInstruction;
 			return o != null && this.left.PerformMatch(o.left, ref match) && this.right.PerformMatch(o.right, ref match);
@@ -5311,8 +5694,9 @@ namespace ICSharpCode.Decompiler.IL
 	public sealed partial class DynamicBinaryOperatorInstruction : DynamicInstruction
 	{
 		public static readonly SlotInfo LeftSlot = new SlotInfo("Left", canInlineInto: true);
-		ILInstruction left;
+		ILInstruction left = null!;
 		public ILInstruction Left {
+			[DebuggerStepThrough]
 			get { return this.left; }
 			set {
 				ValidateChild(value);
@@ -5320,8 +5704,9 @@ namespace ICSharpCode.Decompiler.IL
 			}
 		}
 		public static readonly SlotInfo RightSlot = new SlotInfo("Right", canInlineInto: true);
-		ILInstruction right;
+		ILInstruction right = null!;
 		public ILInstruction Right {
+			[DebuggerStepThrough]
 			get { return this.right; }
 			set {
 				ValidateChild(value);
@@ -5398,7 +5783,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitDynamicBinaryOperatorInstruction(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as DynamicBinaryOperatorInstruction;
 			return o != null && this.left.PerformMatch(o.left, ref match) && this.right.PerformMatch(o.right, ref match);
@@ -5411,8 +5796,9 @@ namespace ICSharpCode.Decompiler.IL
 	public sealed partial class DynamicUnaryOperatorInstruction : DynamicInstruction
 	{
 		public static readonly SlotInfo OperandSlot = new SlotInfo("Operand", canInlineInto: true);
-		ILInstruction operand;
+		ILInstruction operand = null!;
 		public ILInstruction Operand {
+			[DebuggerStepThrough]
 			get { return this.operand; }
 			set {
 				ValidateChild(value);
@@ -5481,7 +5867,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitDynamicUnaryOperatorInstruction(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as DynamicUnaryOperatorInstruction;
 			return o != null && this.operand.PerformMatch(o.operand, ref match);
@@ -5500,8 +5886,9 @@ namespace ICSharpCode.Decompiler.IL
 			set { type = value; InvalidateFlags(); }
 		}
 		public static readonly SlotInfo ArgumentSlot = new SlotInfo("Argument", canInlineInto: true);
-		ILInstruction argument;
+		ILInstruction argument = null!;
 		public ILInstruction Argument {
+			[DebuggerStepThrough]
 			get { return this.argument; }
 			set {
 				ValidateChild(value);
@@ -5570,15 +5957,15 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitDynamicConvertInstruction(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as DynamicConvertInstruction;
 			return o != null && type.Equals(o.type) && this.argument.PerformMatch(o.argument, ref match);
 		}
-		internal override void CheckInvariant(ILPhase phase)
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
 		{
-			base.CheckInvariant(phase);
-			Debug.Assert(argument.ResultType == StackType.O);
+			base.CheckInvariant(phase, compilation);
+			Debug.Assert(argument.ResultType == StackType.Obj);
 		}
 	}
 }
@@ -5588,8 +5975,9 @@ namespace ICSharpCode.Decompiler.IL
 	public sealed partial class DynamicGetMemberInstruction : DynamicInstruction
 	{
 		public static readonly SlotInfo TargetSlot = new SlotInfo("Target", canInlineInto: true);
-		ILInstruction target;
+		ILInstruction target = null!;
 		public ILInstruction Target {
+			[DebuggerStepThrough]
 			get { return this.target; }
 			set {
 				ValidateChild(value);
@@ -5658,15 +6046,15 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitDynamicGetMemberInstruction(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as DynamicGetMemberInstruction;
 			return o != null && this.target.PerformMatch(o.target, ref match);
 		}
-		internal override void CheckInvariant(ILPhase phase)
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
 		{
-			base.CheckInvariant(phase);
-			Debug.Assert(target.ResultType == StackType.O);
+			base.CheckInvariant(phase, compilation);
+			Debug.Assert(target.ResultType == StackType.Obj);
 		}
 	}
 }
@@ -5676,8 +6064,9 @@ namespace ICSharpCode.Decompiler.IL
 	public sealed partial class DynamicSetMemberInstruction : DynamicInstruction
 	{
 		public static readonly SlotInfo TargetSlot = new SlotInfo("Target", canInlineInto: true);
-		ILInstruction target;
+		ILInstruction target = null!;
 		public ILInstruction Target {
+			[DebuggerStepThrough]
 			get { return this.target; }
 			set {
 				ValidateChild(value);
@@ -5685,8 +6074,9 @@ namespace ICSharpCode.Decompiler.IL
 			}
 		}
 		public static readonly SlotInfo ValueSlot = new SlotInfo("Value", canInlineInto: true);
-		ILInstruction value;
+		ILInstruction value = null!;
 		public ILInstruction Value {
+			[DebuggerStepThrough]
 			get { return this.value; }
 			set {
 				ValidateChild(value);
@@ -5763,15 +6153,15 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitDynamicSetMemberInstruction(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as DynamicSetMemberInstruction;
 			return o != null && this.target.PerformMatch(o.target, ref match) && this.value.PerformMatch(o.value, ref match);
 		}
-		internal override void CheckInvariant(ILPhase phase)
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
 		{
-			base.CheckInvariant(phase);
-			Debug.Assert(target.ResultType == StackType.O);
+			base.CheckInvariant(phase, compilation);
+			Debug.Assert(target.ResultType == StackType.Obj);
 		}
 	}
 }
@@ -5839,7 +6229,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitDynamicGetIndexInstruction(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as DynamicGetIndexInstruction;
 			return o != null && Patterns.ListMatch.DoMatch(this.Arguments, o.Arguments, ref match);
@@ -5910,7 +6300,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitDynamicSetIndexInstruction(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as DynamicSetIndexInstruction;
 			return o != null && Patterns.ListMatch.DoMatch(this.Arguments, o.Arguments, ref match);
@@ -5981,7 +6371,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitDynamicInvokeMemberInstruction(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as DynamicInvokeMemberInstruction;
 			return o != null && Patterns.ListMatch.DoMatch(this.Arguments, o.Arguments, ref match);
@@ -6052,7 +6442,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitDynamicInvokeConstructorInstruction(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as DynamicInvokeConstructorInstruction;
 			return o != null && Patterns.ListMatch.DoMatch(this.Arguments, o.Arguments, ref match);
@@ -6123,7 +6513,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitDynamicInvokeInstruction(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as DynamicInvokeInstruction;
 			return o != null && Patterns.ListMatch.DoMatch(this.Arguments, o.Arguments, ref match);
@@ -6136,8 +6526,9 @@ namespace ICSharpCode.Decompiler.IL
 	public sealed partial class DynamicIsEventInstruction : DynamicInstruction
 	{
 		public static readonly SlotInfo ArgumentSlot = new SlotInfo("Argument", canInlineInto: true);
-		ILInstruction argument;
+		ILInstruction argument = null!;
 		public ILInstruction Argument {
+			[DebuggerStepThrough]
 			get { return this.argument; }
 			set {
 				ValidateChild(value);
@@ -6206,15 +6597,15 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitDynamicIsEventInstruction(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as DynamicIsEventInstruction;
 			return o != null && this.argument.PerformMatch(o.argument, ref match);
 		}
-		internal override void CheckInvariant(ILPhase phase)
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
 		{
-			base.CheckInvariant(phase);
-			Debug.Assert(argument.ResultType == StackType.O);
+			base.CheckInvariant(phase, compilation);
+			Debug.Assert(argument.ResultType == StackType.Obj);
 		}
 	}
 }
@@ -6223,10 +6614,9 @@ namespace ICSharpCode.Decompiler.IL
 	/// <summary>ILAst representation of C# patterns</summary>
 	public sealed partial class MatchInstruction : ILInstruction, IStoreInstruction, IInstructionWithMethodOperand
 	{
-		public MatchInstruction(ILVariable variable, IMethod method, ILInstruction testedOperand, params ILInstruction[] subPatterns) : base(OpCode.MatchInstruction)
+		public MatchInstruction(ILVariable variable, IMethod? method, ILInstruction testedOperand, params ILInstruction[] subPatterns) : base(OpCode.MatchInstruction)
 		{
-			Debug.Assert(variable != null);
-			this.variable = variable;
+			this.variable = variable ?? throw new ArgumentNullException(nameof(variable));
 			this.method = method;
 			this.TestedOperand = testedOperand;
 			this.SubPatterns = new InstructionCollection<ILInstruction>(this, 1);
@@ -6236,7 +6626,7 @@ namespace ICSharpCode.Decompiler.IL
 		public ILVariable Variable {
 			get { return variable; }
 			set {
-				Debug.Assert(value != null);
+				DebugAssert(value != null);
 				if (IsConnected)
 					variable.RemoveStoreInstruction(this);
 				variable = value;
@@ -6264,16 +6654,17 @@ namespace ICSharpCode.Decompiler.IL
 			base.Disconnected();
 		}
 
-		readonly IMethod method;
+		readonly IMethod? method;
 		/// <summary>Returns the method operand.</summary>
-		public IMethod Method { get { return method; } }
+		public IMethod? Method => method;
 		public bool IsDeconstructCall;
 		public bool IsDeconstructTuple;
 		public bool CheckType;
 		public bool CheckNotNull;
 		public static readonly SlotInfo TestedOperandSlot = new SlotInfo("TestedOperand", canInlineInto: true);
-		ILInstruction testedOperand;
+		ILInstruction testedOperand = null!;
 		public ILInstruction TestedOperand {
+			[DebuggerStepThrough]
 			get { return this.testedOperand; }
 			set {
 				ValidateChild(value);
@@ -6326,7 +6717,8 @@ namespace ICSharpCode.Decompiler.IL
 			clone.SubPatterns.AddRange(this.SubPatterns.Select(arg => (ILInstruction)arg.Clone()));
 			return clone;
 		}
-		public override StackType ResultType { get { return StackType.I4; } }
+		public override StackType ResultType => StackType.I4;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Boolean);
 		protected override InstructionFlags ComputeFlags()
 		{
 			return InstructionFlags.MayWriteLocals | testedOperand.Flags | SubPatterns.Aggregate(InstructionFlags.None, (f, arg) => f | arg.Flags) | InstructionFlags.SideEffect | InstructionFlags.MayThrow | InstructionFlags.ControlFlow;
@@ -6348,16 +6740,16 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitMatchInstruction(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as MatchInstruction;
 			return o != null && variable == o.variable && object.Equals(method, o.method) && this.IsDeconstructCall == o.IsDeconstructCall && this.IsDeconstructTuple == o.IsDeconstructTuple && this.CheckType == o.CheckType && this.CheckNotNull == o.CheckNotNull && this.testedOperand.PerformMatch(o.testedOperand, ref match) && Patterns.ListMatch.DoMatch(this.SubPatterns, o.SubPatterns, ref match);
 		}
-		internal override void CheckInvariant(ILPhase phase)
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
 		{
-			base.CheckInvariant(phase);
-			Debug.Assert(phase <= ILPhase.InILReader || this.IsDescendantOf(variable.Function));
-			Debug.Assert(phase <= ILPhase.InILReader || variable.Function.Variables[variable.IndexInFunction] == variable);
+			base.CheckInvariant(phase, compilation);
+			DebugAssert(phase <= ILPhase.InILReader || this.IsDescendantOf(variable.Function!));
+			DebugAssert(phase <= ILPhase.InILReader || variable.Function!.Variables[variable.IndexInFunction] == variable);
 			AdditionalInvariants();
 		}
 	}
@@ -6377,8 +6769,9 @@ namespace ICSharpCode.Decompiler.IL
 			get { return type; }
 			set { type = value; InvalidateFlags(); }
 		}
-		public override StackType ResultType { get { return StackType.O; } }
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		public override StackType ResultType => StackType.VT;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.TypedReference);
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -6400,7 +6793,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitMakeRefAny(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as MakeRefAny;
 			return o != null && this.Argument.PerformMatch(o.Argument, ref match) && type.Equals(o.type);
@@ -6415,7 +6808,8 @@ namespace ICSharpCode.Decompiler.IL
 		public RefAnyType(ILInstruction argument) : base(OpCode.RefAnyType, argument)
 		{
 		}
-		public override StackType ResultType { get { return StackType.O; } }
+		public override StackType ResultType => StackType.VT;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.RuntimeTypeHandle);
 		public override void AcceptVisitor(ILVisitor visitor)
 		{
 			visitor.VisitRefAnyType(this);
@@ -6428,7 +6822,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitRefAnyType(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as RefAnyType;
 			return o != null && this.Argument.PerformMatch(o.Argument, ref match);
@@ -6450,7 +6844,8 @@ namespace ICSharpCode.Decompiler.IL
 			get { return type; }
 			set { type = value; InvalidateFlags(); }
 		}
-		public override StackType ResultType { get { return StackType.Ref; } }
+		public override StackType ResultType => StackType.Ref;
+		public override IType InferType(ICompilation compilation) => new ByReferenceType(type);
 		protected override InstructionFlags ComputeFlags()
 		{
 			return base.ComputeFlags() | InstructionFlags.MayThrow;
@@ -6460,7 +6855,7 @@ namespace ICSharpCode.Decompiler.IL
 				return base.DirectFlags | InstructionFlags.MayThrow;
 			}
 		}
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -6482,7 +6877,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitRefAnyValue(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as RefAnyValue;
 			return o != null && this.Argument.PerformMatch(o.Argument, ref match) && type.Equals(o.type);
@@ -6499,8 +6894,9 @@ namespace ICSharpCode.Decompiler.IL
 			this.Value = value;
 		}
 		public static readonly SlotInfo ValueSlot = new SlotInfo("Value", canInlineInto: true);
-		ILInstruction value;
+		ILInstruction value = null!;
 		public ILInstruction Value {
+			[DebuggerStepThrough]
 			get { return this.value; }
 			set {
 				ValidateChild(value);
@@ -6548,7 +6944,8 @@ namespace ICSharpCode.Decompiler.IL
 			clone.Value = this.value.Clone();
 			return clone;
 		}
-		public override StackType ResultType { get { return StackType.Void; } }
+		public override StackType ResultType => StackType.Void;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Void);
 		protected override InstructionFlags ComputeFlags()
 		{
 			return InstructionFlags.MayBranch | InstructionFlags.SideEffect | value.Flags;
@@ -6558,7 +6955,7 @@ namespace ICSharpCode.Decompiler.IL
 				return InstructionFlags.MayBranch | InstructionFlags.SideEffect;
 			}
 		}
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -6578,7 +6975,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitYieldReturn(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as YieldReturn;
 			return o != null && this.value.PerformMatch(o.value, ref match);
@@ -6595,8 +6992,9 @@ namespace ICSharpCode.Decompiler.IL
 			this.Value = value;
 		}
 		public static readonly SlotInfo ValueSlot = new SlotInfo("Value", canInlineInto: true);
-		ILInstruction value;
+		ILInstruction value = null!;
 		public ILInstruction Value {
+			[DebuggerStepThrough]
 			get { return this.value; }
 			set {
 				ValidateChild(value);
@@ -6644,7 +7042,8 @@ namespace ICSharpCode.Decompiler.IL
 			clone.Value = this.value.Clone();
 			return clone;
 		}
-		public override StackType ResultType { get { return GetResultMethod?.ReturnType.GetStackType() ?? StackType.Unknown; } }
+		public override StackType ResultType => (GetResultMethod?.ReturnType ?? SpecialType.UnknownType).GetStackType();
+		public override IType InferType(ICompilation compilation) => GetResultMethod?.ReturnType ?? SpecialType.UnknownType;
 		protected override InstructionFlags ComputeFlags()
 		{
 			return InstructionFlags.SideEffect | value.Flags;
@@ -6654,7 +7053,7 @@ namespace ICSharpCode.Decompiler.IL
 				return InstructionFlags.SideEffect;
 			}
 		}
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -6674,7 +7073,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitAwait(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as Await;
 			return o != null && this.value.PerformMatch(o.value, ref match);
@@ -6686,7 +7085,8 @@ namespace ICSharpCode.Decompiler.IL
 	/// <summary>Deconstruction statement</summary>
 	public sealed partial class DeconstructInstruction : ILInstruction
 	{
-		public override StackType ResultType { get { return StackType.Void; } }
+		public override StackType ResultType => StackType.Void;
+		public override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Void);
 		public override void AcceptVisitor(ILVisitor visitor)
 		{
 			visitor.VisitDeconstructInstruction(this);
@@ -6699,7 +7099,7 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitDeconstructInstruction(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as DeconstructInstruction;
 			return o != null;
@@ -6724,14 +7124,14 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return visitor.VisitDeconstructResultInstruction(this, context);
 		}
-		protected internal override bool PerformMatch(ILInstruction other, ref Patterns.Match match)
+		protected internal override bool PerformMatch(ILInstruction? other, ref Patterns.Match match)
 		{
 			var o = other as DeconstructResultInstruction;
 			return o != null && this.Argument.PerformMatch(o.Argument, ref match);
 		}
-		internal override void CheckInvariant(ILPhase phase)
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
 		{
-			base.CheckInvariant(phase);
+			base.CheckInvariant(phase, compilation);
 			AdditionalInvariants();
 		}
 	}
@@ -6774,7 +7174,7 @@ namespace ICSharpCode.Decompiler.IL.Patterns
 			var clone = (AnyNode)ShallowClone();
 			return clone;
 		}
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -6958,6 +7358,10 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			Default(inst);
 		}
+		protected internal virtual void VisitLdStrUtf8(LdStrUtf8 inst)
+		{
+			Default(inst);
+		}
 		protected internal virtual void VisitLdcI4(LdcI4 inst)
 		{
 			Default(inst);
@@ -7038,6 +7442,10 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			Default(inst);
 		}
+		protected internal virtual void VisitLdObjIfRef(LdObjIfRef inst)
+		{
+			Default(inst);
+		}
 		protected internal virtual void VisitStObj(StObj inst)
 		{
 			Default(inst);
@@ -7083,6 +7491,10 @@ namespace ICSharpCode.Decompiler.IL
 			Default(inst);
 		}
 		protected internal virtual void VisitLdElema(LdElema inst)
+		{
+			Default(inst);
+		}
+		protected internal virtual void VisitLdElemaInlineArray(LdElemaInlineArray inst)
 		{
 			Default(inst);
 		}
@@ -7356,6 +7768,10 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return Default(inst);
 		}
+		protected internal virtual T VisitLdStrUtf8(LdStrUtf8 inst)
+		{
+			return Default(inst);
+		}
 		protected internal virtual T VisitLdcI4(LdcI4 inst)
 		{
 			return Default(inst);
@@ -7436,6 +7852,10 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return Default(inst);
 		}
+		protected internal virtual T VisitLdObjIfRef(LdObjIfRef inst)
+		{
+			return Default(inst);
+		}
 		protected internal virtual T VisitStObj(StObj inst)
 		{
 			return Default(inst);
@@ -7481,6 +7901,10 @@ namespace ICSharpCode.Decompiler.IL
 			return Default(inst);
 		}
 		protected internal virtual T VisitLdElema(LdElema inst)
+		{
+			return Default(inst);
+		}
+		protected internal virtual T VisitLdElemaInlineArray(LdElemaInlineArray inst)
 		{
 			return Default(inst);
 		}
@@ -7754,6 +8178,10 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return Default(inst, context);
 		}
+		protected internal virtual T VisitLdStrUtf8(LdStrUtf8 inst, C context)
+		{
+			return Default(inst, context);
+		}
 		protected internal virtual T VisitLdcI4(LdcI4 inst, C context)
 		{
 			return Default(inst, context);
@@ -7834,6 +8262,10 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			return Default(inst, context);
 		}
+		protected internal virtual T VisitLdObjIfRef(LdObjIfRef inst, C context)
+		{
+			return Default(inst, context);
+		}
 		protected internal virtual T VisitStObj(StObj inst, C context)
 		{
 			return Default(inst, context);
@@ -7879,6 +8311,10 @@ namespace ICSharpCode.Decompiler.IL
 			return Default(inst, context);
 		}
 		protected internal virtual T VisitLdElema(LdElema inst, C context)
+		{
+			return Default(inst, context);
+		}
+		protected internal virtual T VisitLdElemaInlineArray(LdElemaInlineArray inst, C context)
 		{
 			return Default(inst, context);
 		}
@@ -8024,6 +8460,7 @@ namespace ICSharpCode.Decompiler.IL
 			"nullable.unwrap",
 			"nullable.rewrap",
 			"ldstr",
+			"ldstr.utf8",
 			"ldc.i4",
 			"ldc.i8",
 			"ldc.f4",
@@ -8044,6 +8481,7 @@ namespace ICSharpCode.Decompiler.IL
 			"castclass",
 			"isinst",
 			"ldobj",
+			"ldobj.if.ref",
 			"stobj",
 			"box",
 			"unbox",
@@ -8056,6 +8494,7 @@ namespace ICSharpCode.Decompiler.IL
 			"sizeof",
 			"ldlen",
 			"ldelema",
+			"ldelema.inlinearray",
 			"get.pinnable.reference",
 			"string.to.int",
 			"expression.tree.cast",
@@ -8113,7 +8552,7 @@ namespace ICSharpCode.Decompiler.IL
 			}
 			return false;
 		}
-		public bool MatchPinnedRegion(out ILVariable variable, out ILInstruction init, out ILInstruction body)
+		public bool MatchPinnedRegion([NotNullWhen(true)] out ILVariable? variable, [NotNullWhen(true)] out ILInstruction? init, [NotNullWhen(true)] out ILInstruction? body)
 		{
 			var inst = this as PinnedRegion;
 			if (inst != null)
@@ -8137,7 +8576,7 @@ namespace ICSharpCode.Decompiler.IL
 			}
 			return false;
 		}
-		public bool MatchTryCatchHandler(out ILInstruction filter, out ILInstruction body, out ILVariable variable)
+		public bool MatchTryCatchHandler([NotNullWhen(true)] out ILInstruction? filter, [NotNullWhen(true)] out ILInstruction? body, [NotNullWhen(true)] out ILVariable? variable)
 		{
 			var inst = this as TryCatchHandler;
 			if (inst != null)
@@ -8152,7 +8591,7 @@ namespace ICSharpCode.Decompiler.IL
 			variable = default(ILVariable);
 			return false;
 		}
-		public bool MatchLockInstruction(out ILInstruction onExpression, out ILInstruction body)
+		public bool MatchLockInstruction([NotNullWhen(true)] out ILInstruction? onExpression, [NotNullWhen(true)] out ILInstruction? body)
 		{
 			var inst = this as LockInstruction;
 			if (inst != null)
@@ -8165,7 +8604,7 @@ namespace ICSharpCode.Decompiler.IL
 			body = default(ILInstruction);
 			return false;
 		}
-		public bool MatchUsingInstruction(out ILVariable variable, out ILInstruction resourceExpression, out ILInstruction body)
+		public bool MatchUsingInstruction([NotNullWhen(true)] out ILVariable? variable, [NotNullWhen(true)] out ILInstruction? resourceExpression, [NotNullWhen(true)] out ILInstruction? body)
 		{
 			var inst = this as UsingInstruction;
 			if (inst != null)
@@ -8189,7 +8628,7 @@ namespace ICSharpCode.Decompiler.IL
 			}
 			return false;
 		}
-		public bool MatchCkfinite(out ILInstruction argument)
+		public bool MatchCkfinite([NotNullWhen(true)] out ILInstruction? argument)
 		{
 			var inst = this as Ckfinite;
 			if (inst != null)
@@ -8200,7 +8639,7 @@ namespace ICSharpCode.Decompiler.IL
 			argument = default(ILInstruction);
 			return false;
 		}
-		public bool MatchLdLoc(out ILVariable variable)
+		public bool MatchLdLoc([NotNullWhen(true)] out ILVariable? variable)
 		{
 			var inst = this as LdLoc;
 			if (inst != null)
@@ -8211,7 +8650,7 @@ namespace ICSharpCode.Decompiler.IL
 			variable = default(ILVariable);
 			return false;
 		}
-		public bool MatchLdLoca(out ILVariable variable)
+		public bool MatchLdLoca([NotNullWhen(true)] out ILVariable? variable)
 		{
 			var inst = this as LdLoca;
 			if (inst != null)
@@ -8222,7 +8661,7 @@ namespace ICSharpCode.Decompiler.IL
 			variable = default(ILVariable);
 			return false;
 		}
-		public bool MatchStLoc(out ILVariable variable, out ILInstruction value)
+		public bool MatchStLoc([NotNullWhen(true)] out ILVariable? variable, [NotNullWhen(true)] out ILInstruction? value)
 		{
 			var inst = this as StLoc;
 			if (inst != null)
@@ -8235,7 +8674,7 @@ namespace ICSharpCode.Decompiler.IL
 			value = default(ILInstruction);
 			return false;
 		}
-		public bool MatchAddressOf(out ILInstruction value, out IType type)
+		public bool MatchAddressOf([NotNullWhen(true)] out ILInstruction? value, [NotNullWhen(true)] out IType? type)
 		{
 			var inst = this as AddressOf;
 			if (inst != null)
@@ -8248,7 +8687,7 @@ namespace ICSharpCode.Decompiler.IL
 			type = default(IType);
 			return false;
 		}
-		public bool MatchThreeValuedBoolAnd(out ILInstruction left, out ILInstruction right)
+		public bool MatchThreeValuedBoolAnd([NotNullWhen(true)] out ILInstruction? left, [NotNullWhen(true)] out ILInstruction? right)
 		{
 			var inst = this as ThreeValuedBoolAnd;
 			if (inst != null)
@@ -8261,7 +8700,7 @@ namespace ICSharpCode.Decompiler.IL
 			right = default(ILInstruction);
 			return false;
 		}
-		public bool MatchThreeValuedBoolOr(out ILInstruction left, out ILInstruction right)
+		public bool MatchThreeValuedBoolOr([NotNullWhen(true)] out ILInstruction? left, [NotNullWhen(true)] out ILInstruction? right)
 		{
 			var inst = this as ThreeValuedBoolOr;
 			if (inst != null)
@@ -8274,20 +8713,33 @@ namespace ICSharpCode.Decompiler.IL
 			right = default(ILInstruction);
 			return false;
 		}
-		public bool MatchNullableRewrap(out ILInstruction argument)
+		public bool MatchNullableRewrap([NotNullWhen(true)] out ILInstruction? argument, [NotNullWhen(true)] out IType? type)
 		{
 			var inst = this as NullableRewrap;
 			if (inst != null)
 			{
 				argument = inst.Argument;
+				type = inst.Type;
 				return true;
 			}
 			argument = default(ILInstruction);
+			type = default(IType);
 			return false;
 		}
-		public bool MatchLdStr(out string value)
+		public bool MatchLdStr([NotNullWhen(true)] out string? value)
 		{
 			var inst = this as LdStr;
+			if (inst != null)
+			{
+				value = inst.Value;
+				return true;
+			}
+			value = default(string);
+			return false;
+		}
+		public bool MatchLdStrUtf8([NotNullWhen(true)] out string? value)
+		{
+			var inst = this as LdStrUtf8;
 			if (inst != null)
 			{
 				value = inst.Value;
@@ -8360,7 +8812,7 @@ namespace ICSharpCode.Decompiler.IL
 			}
 			return false;
 		}
-		public bool MatchLdFtn(out IMethod method)
+		public bool MatchLdFtn([NotNullWhen(true)] out IMethod? method)
 		{
 			var inst = this as LdFtn;
 			if (inst != null)
@@ -8371,7 +8823,7 @@ namespace ICSharpCode.Decompiler.IL
 			method = default(IMethod);
 			return false;
 		}
-		public bool MatchLdVirtFtn(out ILInstruction argument, out IMethod method)
+		public bool MatchLdVirtFtn([NotNullWhen(true)] out ILInstruction? argument, [NotNullWhen(true)] out IMethod? method)
 		{
 			var inst = this as LdVirtFtn;
 			if (inst != null)
@@ -8384,7 +8836,7 @@ namespace ICSharpCode.Decompiler.IL
 			method = default(IMethod);
 			return false;
 		}
-		public bool MatchLdVirtDelegate(out ILInstruction argument, out IType type, out IMethod method)
+		public bool MatchLdVirtDelegate([NotNullWhen(true)] out ILInstruction? argument, [NotNullWhen(true)] out IType? type, [NotNullWhen(true)] out IMethod? method)
 		{
 			var inst = this as LdVirtDelegate;
 			if (inst != null)
@@ -8399,7 +8851,7 @@ namespace ICSharpCode.Decompiler.IL
 			method = default(IMethod);
 			return false;
 		}
-		public bool MatchLdTypeToken(out IType type)
+		public bool MatchLdTypeToken([NotNullWhen(true)] out IType? type)
 		{
 			var inst = this as LdTypeToken;
 			if (inst != null)
@@ -8410,7 +8862,7 @@ namespace ICSharpCode.Decompiler.IL
 			type = default(IType);
 			return false;
 		}
-		public bool MatchLdMemberToken(out IMember member)
+		public bool MatchLdMemberToken([NotNullWhen(true)] out IMember? member)
 		{
 			var inst = this as LdMemberToken;
 			if (inst != null)
@@ -8421,7 +8873,7 @@ namespace ICSharpCode.Decompiler.IL
 			member = default(IMember);
 			return false;
 		}
-		public bool MatchLocAlloc(out ILInstruction argument)
+		public bool MatchLocAlloc([NotNullWhen(true)] out ILInstruction? argument)
 		{
 			var inst = this as LocAlloc;
 			if (inst != null)
@@ -8432,7 +8884,7 @@ namespace ICSharpCode.Decompiler.IL
 			argument = default(ILInstruction);
 			return false;
 		}
-		public bool MatchLocAllocSpan(out ILInstruction argument, out IType type)
+		public bool MatchLocAllocSpan([NotNullWhen(true)] out ILInstruction? argument, [NotNullWhen(true)] out IType? type)
 		{
 			var inst = this as LocAllocSpan;
 			if (inst != null)
@@ -8445,7 +8897,7 @@ namespace ICSharpCode.Decompiler.IL
 			type = default(IType);
 			return false;
 		}
-		public bool MatchCpblk(out ILInstruction destAddress, out ILInstruction sourceAddress, out ILInstruction size)
+		public bool MatchCpblk([NotNullWhen(true)] out ILInstruction? destAddress, [NotNullWhen(true)] out ILInstruction? sourceAddress, [NotNullWhen(true)] out ILInstruction? size)
 		{
 			var inst = this as Cpblk;
 			if (inst != null)
@@ -8460,7 +8912,7 @@ namespace ICSharpCode.Decompiler.IL
 			size = default(ILInstruction);
 			return false;
 		}
-		public bool MatchInitblk(out ILInstruction address, out ILInstruction value, out ILInstruction size)
+		public bool MatchInitblk([NotNullWhen(true)] out ILInstruction? address, [NotNullWhen(true)] out ILInstruction? value, [NotNullWhen(true)] out ILInstruction? size)
 		{
 			var inst = this as Initblk;
 			if (inst != null)
@@ -8475,31 +8927,31 @@ namespace ICSharpCode.Decompiler.IL
 			size = default(ILInstruction);
 			return false;
 		}
-		public bool MatchLdFlda(out ILInstruction target, out IField field)
+		public bool MatchLdFlda([NotNullWhen(true)] out ILInstruction? target, [NotNullWhen(true)] out IField? @field)
 		{
 			var inst = this as LdFlda;
 			if (inst != null)
 			{
 				target = inst.Target;
-				field = inst.Field;
+				@field = inst.Field;
 				return true;
 			}
 			target = default(ILInstruction);
-			field = default(IField);
+			@field = default(IField);
 			return false;
 		}
-		public bool MatchLdsFlda(out IField field)
+		public bool MatchLdsFlda([NotNullWhen(true)] out IField? @field)
 		{
 			var inst = this as LdsFlda;
 			if (inst != null)
 			{
-				field = inst.Field;
+				@field = inst.Field;
 				return true;
 			}
-			field = default(IField);
+			@field = default(IField);
 			return false;
 		}
-		public bool MatchCastClass(out ILInstruction argument, out IType type)
+		public bool MatchCastClass([NotNullWhen(true)] out ILInstruction? argument, [NotNullWhen(true)] out IType? type)
 		{
 			var inst = this as CastClass;
 			if (inst != null)
@@ -8512,7 +8964,7 @@ namespace ICSharpCode.Decompiler.IL
 			type = default(IType);
 			return false;
 		}
-		public bool MatchIsInst(out ILInstruction argument, out IType type)
+		public bool MatchIsInst([NotNullWhen(true)] out ILInstruction? argument, [NotNullWhen(true)] out IType? type)
 		{
 			var inst = this as IsInst;
 			if (inst != null)
@@ -8525,7 +8977,7 @@ namespace ICSharpCode.Decompiler.IL
 			type = default(IType);
 			return false;
 		}
-		public bool MatchLdObj(out ILInstruction target, out IType type)
+		public bool MatchLdObj([NotNullWhen(true)] out ILInstruction? target, [NotNullWhen(true)] out IType? type)
 		{
 			var inst = this as LdObj;
 			if (inst != null)
@@ -8538,7 +8990,20 @@ namespace ICSharpCode.Decompiler.IL
 			type = default(IType);
 			return false;
 		}
-		public bool MatchStObj(out ILInstruction target, out ILInstruction value, out IType type)
+		public bool MatchLdObjIfRef([NotNullWhen(true)] out ILInstruction? target, [NotNullWhen(true)] out IType? type)
+		{
+			var inst = this as LdObjIfRef;
+			if (inst != null)
+			{
+				target = inst.Target;
+				type = inst.Type;
+				return true;
+			}
+			target = default(ILInstruction);
+			type = default(IType);
+			return false;
+		}
+		public bool MatchStObj([NotNullWhen(true)] out ILInstruction? target, [NotNullWhen(true)] out ILInstruction? value, [NotNullWhen(true)] out IType? type)
 		{
 			var inst = this as StObj;
 			if (inst != null)
@@ -8553,7 +9018,7 @@ namespace ICSharpCode.Decompiler.IL
 			type = default(IType);
 			return false;
 		}
-		public bool MatchBox(out ILInstruction argument, out IType type)
+		public bool MatchBox([NotNullWhen(true)] out ILInstruction? argument, [NotNullWhen(true)] out IType? type)
 		{
 			var inst = this as Box;
 			if (inst != null)
@@ -8566,7 +9031,7 @@ namespace ICSharpCode.Decompiler.IL
 			type = default(IType);
 			return false;
 		}
-		public bool MatchUnbox(out ILInstruction argument, out IType type)
+		public bool MatchUnbox([NotNullWhen(true)] out ILInstruction? argument, [NotNullWhen(true)] out IType? type)
 		{
 			var inst = this as Unbox;
 			if (inst != null)
@@ -8579,7 +9044,7 @@ namespace ICSharpCode.Decompiler.IL
 			type = default(IType);
 			return false;
 		}
-		public bool MatchUnboxAny(out ILInstruction argument, out IType type)
+		public bool MatchUnboxAny([NotNullWhen(true)] out ILInstruction? argument, [NotNullWhen(true)] out IType? type)
 		{
 			var inst = this as UnboxAny;
 			if (inst != null)
@@ -8592,7 +9057,7 @@ namespace ICSharpCode.Decompiler.IL
 			type = default(IType);
 			return false;
 		}
-		public bool MatchNewArr(out IType type)
+		public bool MatchNewArr([NotNullWhen(true)] out IType? type)
 		{
 			var inst = this as NewArr;
 			if (inst != null)
@@ -8603,7 +9068,7 @@ namespace ICSharpCode.Decompiler.IL
 			type = default(IType);
 			return false;
 		}
-		public bool MatchDefaultValue(out IType type)
+		public bool MatchDefaultValue([NotNullWhen(true)] out IType? type)
 		{
 			var inst = this as DefaultValue;
 			if (inst != null)
@@ -8614,7 +9079,7 @@ namespace ICSharpCode.Decompiler.IL
 			type = default(IType);
 			return false;
 		}
-		public bool MatchThrow(out ILInstruction argument)
+		public bool MatchThrow([NotNullWhen(true)] out ILInstruction? argument)
 		{
 			var inst = this as Throw;
 			if (inst != null)
@@ -8634,7 +9099,7 @@ namespace ICSharpCode.Decompiler.IL
 			}
 			return false;
 		}
-		public bool MatchSizeOf(out IType type)
+		public bool MatchSizeOf([NotNullWhen(true)] out IType? type)
 		{
 			var inst = this as SizeOf;
 			if (inst != null)
@@ -8645,7 +9110,7 @@ namespace ICSharpCode.Decompiler.IL
 			type = default(IType);
 			return false;
 		}
-		public bool MatchLdElema(out IType type, out ILInstruction array)
+		public bool MatchLdElema([NotNullWhen(true)] out IType? type, [NotNullWhen(true)] out ILInstruction? array)
 		{
 			var inst = this as LdElema;
 			if (inst != null)
@@ -8658,20 +9123,35 @@ namespace ICSharpCode.Decompiler.IL
 			array = default(ILInstruction);
 			return false;
 		}
-		public bool MatchGetPinnableReference(out ILInstruction argument, out IMethod method)
+		public bool MatchLdElemaInlineArray([NotNullWhen(true)] out IType? type, [NotNullWhen(true)] out ILInstruction? array)
+		{
+			var inst = this as LdElemaInlineArray;
+			if (inst != null)
+			{
+				type = inst.Type;
+				array = inst.Array;
+				return true;
+			}
+			type = default(IType);
+			array = default(ILInstruction);
+			return false;
+		}
+		public bool MatchGetPinnableReference([NotNullWhen(true)] out ILInstruction? argument, [NotNullWhen(true)] out IType? type, out IMethod? method)
 		{
 			var inst = this as GetPinnableReference;
 			if (inst != null)
 			{
 				argument = inst.Argument;
+				type = inst.Type;
 				method = inst.Method;
 				return true;
 			}
 			argument = default(ILInstruction);
-			method = default(IMethod);
+			type = default(IType);
+			method = default(IMethod?);
 			return false;
 		}
-		public bool MatchUserDefinedLogicOperator(out IMethod method, out ILInstruction left, out ILInstruction right)
+		public bool MatchUserDefinedLogicOperator([NotNullWhen(true)] out IMethod? method, [NotNullWhen(true)] out ILInstruction? left, [NotNullWhen(true)] out ILInstruction? right)
 		{
 			var inst = this as UserDefinedLogicOperator;
 			if (inst != null)
@@ -8686,7 +9166,7 @@ namespace ICSharpCode.Decompiler.IL
 			right = default(ILInstruction);
 			return false;
 		}
-		public bool MatchMatchInstruction(out ILVariable variable, out IMethod method, out ILInstruction testedOperand)
+		public bool MatchMatchInstruction([NotNullWhen(true)] out ILVariable? variable, out IMethod? method, [NotNullWhen(true)] out ILInstruction? testedOperand)
 		{
 			var inst = this as MatchInstruction;
 			if (inst != null)
@@ -8697,11 +9177,11 @@ namespace ICSharpCode.Decompiler.IL
 				return true;
 			}
 			variable = default(ILVariable);
-			method = default(IMethod);
+			method = default(IMethod?);
 			testedOperand = default(ILInstruction);
 			return false;
 		}
-		public bool MatchMakeRefAny(out ILInstruction argument, out IType type)
+		public bool MatchMakeRefAny([NotNullWhen(true)] out ILInstruction? argument, [NotNullWhen(true)] out IType? type)
 		{
 			var inst = this as MakeRefAny;
 			if (inst != null)
@@ -8714,7 +9194,7 @@ namespace ICSharpCode.Decompiler.IL
 			type = default(IType);
 			return false;
 		}
-		public bool MatchRefAnyType(out ILInstruction argument)
+		public bool MatchRefAnyType([NotNullWhen(true)] out ILInstruction? argument)
 		{
 			var inst = this as RefAnyType;
 			if (inst != null)
@@ -8725,7 +9205,7 @@ namespace ICSharpCode.Decompiler.IL
 			argument = default(ILInstruction);
 			return false;
 		}
-		public bool MatchRefAnyValue(out ILInstruction argument, out IType type)
+		public bool MatchRefAnyValue([NotNullWhen(true)] out ILInstruction? argument, [NotNullWhen(true)] out IType? type)
 		{
 			var inst = this as RefAnyValue;
 			if (inst != null)
@@ -8738,7 +9218,7 @@ namespace ICSharpCode.Decompiler.IL
 			type = default(IType);
 			return false;
 		}
-		public bool MatchYieldReturn(out ILInstruction value)
+		public bool MatchYieldReturn([NotNullWhen(true)] out ILInstruction? value)
 		{
 			var inst = this as YieldReturn;
 			if (inst != null)
@@ -8749,7 +9229,7 @@ namespace ICSharpCode.Decompiler.IL
 			value = default(ILInstruction);
 			return false;
 		}
-		public bool MatchAwait(out ILInstruction value)
+		public bool MatchAwait([NotNullWhen(true)] out ILInstruction? value)
 		{
 			var inst = this as Await;
 			if (inst != null)

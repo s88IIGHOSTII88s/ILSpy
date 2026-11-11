@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2018 Siegfried Pammer
+// Copyright (c) 2018 Siegfried Pammer
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -52,7 +52,17 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			foreach (var store in variable.StoreInstructions.OfType<StLoc>())
 			{
+				// Check if C# requires that the local is ref-readonly in order to allow the store:
 				if (ILInlining.IsReadonlyReference(store.Value))
+					return true;
+				// Check whether the local needs to be ref-readonly to avoid changing the semantics of
+				// a readonly.ldelema:
+				ILInstruction val = store.Value;
+				while (val is LdFlda ldflda)
+				{
+					val = ldflda.Target;
+				}
+				if (val is LdElema { IsReadOnly: true })
 					return true;
 			}
 			return false;

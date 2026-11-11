@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2020 Daniel Grunwald
+// Copyright (c) 2020 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -32,30 +32,44 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			if (!context.Settings.NativeIntegers)
 				return;
-			foreach (var variable in function.Variables)
+			foreach (var nestedFunction in function.Descendants.OfType<ILFunction>())
 			{
-				if (variable.Kind != VariableKind.Local &&
-					variable.Kind != VariableKind.StackSlot &&
-					variable.Kind != VariableKind.ForeachLocal &&
-					variable.Kind != VariableKind.UsingLocal)
+				Dictionary<int, IType> variableTypeMapping = new();
+				foreach (var variable in nestedFunction.Variables)
 				{
-					continue;
+					if (variable.Kind != VariableKind.Local &&
+						variable.Kind != VariableKind.StackSlot &&
+						variable.Kind != VariableKind.PatternLocal &&
+						variable.Kind != VariableKind.ForeachLocal &&
+						variable.Kind != VariableKind.UsingLocal)
+					{
+						continue;
+					}
+					if (!(variable.Type.IsKnownType(KnownTypeCode.IntPtr) || variable.Type.IsKnownType(KnownTypeCode.UIntPtr)))
+						continue;
+					bool isUsedAsNativeInt = variable.LoadInstructions.Any(IsUsedAsNativeInt);
+					bool isAssignedNativeInt = variable.StoreInstructions.Any(store => IsNativeIntStore(store, context.TypeSystem));
+					if (isUsedAsNativeInt || isAssignedNativeInt)
+					{
+						variable.Type = variable.Type.GetSign() == Sign.Unsigned ? SpecialType.NUInt : SpecialType.NInt;
+						if (variable.Kind == VariableKind.Local && variable.Index.HasValue)
+							variableTypeMapping[variable.Index.Value] = variable.Type;
+					}
 				}
-				if (!(variable.Type.IsKnownType(KnownTypeCode.IntPtr) || variable.Type.IsKnownType(KnownTypeCode.UIntPtr)))
-					continue;
-				bool isUsedAsNativeInt = variable.LoadInstructions.Any(IsUsedAsNativeInt);
-				bool isAssignedNativeInt = variable.StoreInstructions.Any(store => IsNativeIntStore(store, context.TypeSystem));
-				if (isUsedAsNativeInt || isAssignedNativeInt)
+				foreach (var variable in nestedFunction.Variables)
 				{
-					variable.Type = variable.Type.GetSign() == Sign.Unsigned ? SpecialType.NUInt : SpecialType.NInt;
+					if (variable.Kind == VariableKind.Local && variable.Index.HasValue
+						&& variableTypeMapping.TryGetValue(variable.Index.Value, out var type))
+					{
+						variable.Type = type;
+					}
 				}
 			}
 		}
 
 		static bool IsUsedAsNativeInt(LdLoc load)
 		{
-			return load.Parent switch
-			{
+			return load.Parent switch {
 				BinaryNumericInstruction { UnderlyingResultType: StackType.I } => true,
 				BitNot { UnderlyingResultType: StackType.I } => true,
 				CallInstruction call => call.GetParameter(load.ChildIndex)?.Type.IsCSharpNativeIntegerType() ?? false,

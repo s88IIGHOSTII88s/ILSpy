@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2018 Siegfried Pammer
+// Copyright (c) 2018 Siegfried Pammer
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -18,6 +18,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 
 using ICSharpCode.Decompiler.IL.Transforms;
@@ -29,26 +30,51 @@ namespace ICSharpCode.Decompiler.IL
 	{
 		public void Run(ILFunction function, ILTransformContext context)
 		{
-			foreach (var variable in function.Variables)
+			foreach (var nestedFunction in function.Descendants.OfType<ILFunction>())
 			{
-				if (variable.Kind != VariableKind.Local &&
-					variable.Kind != VariableKind.StackSlot &&
-					variable.Kind != VariableKind.ForeachLocal &&
-					variable.Kind != VariableKind.UsingLocal)
+				HashSet<int> dynamicVariables = new();
+				foreach (var variable in nestedFunction.Variables)
 				{
-					continue;
-				}
-				if (!variable.Type.IsKnownType(KnownTypeCode.Object) || variable.LoadCount == 0)
-					continue;
-				foreach (var load in variable.LoadInstructions)
-				{
-					if (load.Parent is DynamicInstruction dynamicInstruction)
+					if (variable.Kind != VariableKind.Local &&
+						variable.Kind != VariableKind.StackSlot &&
+						variable.Kind != VariableKind.ForeachLocal &&
+						variable.Kind != VariableKind.UsingLocal)
 					{
-						var argumentInfo = dynamicInstruction.GetArgumentInfoOfChild(load.ChildIndex);
-						if (!argumentInfo.HasFlag(CSharpArgumentInfoFlags.UseCompileTimeType))
+						continue;
+					}
+					if (!variable.Type.IsKnownType(KnownTypeCode.Object) || variable.LoadCount == 0)
+						continue;
+					foreach (var load in variable.LoadInstructions)
+					{
+						bool isDynamicUse;
+						if (load.Parent is DynamicInstruction dynamicInstruction)
+						{
+							var argumentInfo = dynamicInstruction.GetArgumentInfoOfChild(load.ChildIndex);
+							isDynamicUse = !argumentInfo.HasFlag(CSharpArgumentInfoFlags.UseCompileTimeType);
+						}
+						else
+						{
+							// awaiting a dynamic value: the awaited operand has type dynamic
+							isDynamicUse = load.Parent is Await { GetResultMethod.DeclaringType.Kind: TypeKind.Dynamic };
+						}
+						if (isDynamicUse)
 						{
 							variable.Type = SpecialType.Dynamic;
+							if (variable.Index.HasValue && variable.Kind == VariableKind.Local)
+							{
+								dynamicVariables.Add(variable.Index.Value);
+							}
+							break;
 						}
+					}
+				}
+				foreach (var variable in nestedFunction.Variables)
+				{
+					if (variable.Index.HasValue && variable.Kind == VariableKind.Local
+						&& dynamicVariables.Contains(variable.Index.Value))
+					{
+						variable.Type = SpecialType.Dynamic;
+						continue;
 					}
 				}
 			}

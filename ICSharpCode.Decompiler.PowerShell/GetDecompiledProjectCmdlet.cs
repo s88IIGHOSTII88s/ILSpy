@@ -1,9 +1,28 @@
-﻿using System;
-using System.Collections.Concurrent;
+// Copyright (c) 2017 Christoph Wille
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy of this
+// software and associated documentation files (the "Software"), to deal in the Software
+// without restriction, including without limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
+// to whom the Software is furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all copies or
+// substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
+// FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Management.Automation;
 using System.Threading;
 using System.Threading.Tasks;
+
 using ICSharpCode.Decompiler.CSharp;
 using ICSharpCode.Decompiler.CSharp.ProjectDecompiler;
 using ICSharpCode.Decompiler.Metadata;
@@ -29,10 +48,11 @@ namespace ICSharpCode.Decompiler.PowerShell
 
 		public void Report(DecompilationProgress value)
 		{
-			lock (syncObject) {
+			lock (syncObject)
+			{
 				completed++;
-				progress = new ProgressRecord(1, "Decompiling " + fileName, $"Completed {completed} of {value.TotalNumberOfFiles}: {value.Status}") {
-					PercentComplete = (int)(completed * 100.0 / value.TotalNumberOfFiles)
+				progress = new ProgressRecord(1, "Decompiling " + fileName, $"Completed {completed} of {value.TotalUnits}: {value.Status}") {
+					PercentComplete = (int)(completed * 100.0 / value.TotalUnits)
 				};
 			}
 		}
@@ -40,28 +60,35 @@ namespace ICSharpCode.Decompiler.PowerShell
 		protected override void ProcessRecord()
 		{
 			string path = GetUnresolvedProviderPathFromPSPath(LiteralPath);
-			if (!Directory.Exists(path)) {
+			if (!Directory.Exists(path))
+			{
 				WriteObject("Destination directory must exist prior to decompilation");
 				return;
 			}
 
-			try {
+			try
+			{
 				var task = Task.Run(() => DoDecompile(path));
 				int timeout = 100;
 
 				// Give the decompiler some time to spin up all threads
 				Thread.Sleep(timeout);
 
-				while (!task.IsCompleted) {
+				while (!task.IsCompleted)
+				{
 					ProgressRecord progress;
-					lock (syncObject) {
+					lock (syncObject)
+					{
 						progress = this.progress;
 						this.progress = null;
 					}
-					if (progress != null) {
+					if (progress != null)
+					{
 						timeout = 100;
 						WriteProgress(progress);
-					} else {
+					}
+					else
+					{
 						Thread.Sleep(timeout);
 						timeout = Math.Min(1000, timeout * 2);
 					}
@@ -70,21 +97,33 @@ namespace ICSharpCode.Decompiler.PowerShell
 				task.Wait();
 
 				WriteProgress(new ProgressRecord(1, "Decompiling " + fileName, "Decompilation finished") { RecordType = ProgressRecordType.Completed });
-			} catch (Exception e) {
+				this.WriteDecompilationErrors(errors);
+			}
+			catch (Exception e)
+			{
 				WriteVerbose(e.ToString());
 				WriteError(new ErrorRecord(e, ErrorIds.DecompilationFailed, ErrorCategory.OperationStopped, null));
 			}
 		}
 
+		private IReadOnlyList<DecompilerException> errors = Array.Empty<DecompilerException>();
+
 		private void DoDecompile(string path)
 		{
-			PEFile module = Decompiler.TypeSystem.MainModule.PEFile;
-			var assemblyResolver = new UniversalAssemblyResolver(module.FileName, false, module.Reader.DetectTargetFrameworkId());
+			MetadataFile module = Decompiler.TypeSystem.MainModule.MetadataFile;
+			var assemblyResolver = new UniversalAssemblyResolver(module.FileName, false, module.Metadata.DetectTargetFrameworkId());
 			WholeProjectDecompiler decompiler = new WholeProjectDecompiler(assemblyResolver);
 			decompiler.ProgressIndicator = this;
 			fileName = module.FileName;
 			completed = 0;
-			decompiler.DecompileProject(module, path);
+			try
+			{
+				decompiler.DecompileProject(module, path);
+			}
+			finally
+			{
+				errors = decompiler.Errors;
+			}
 		}
 	}
 }

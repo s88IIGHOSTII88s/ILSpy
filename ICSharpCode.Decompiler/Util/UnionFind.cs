@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2014 Daniel Grunwald
+// Copyright (c) 2014 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -15,6 +15,7 @@
 // FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
+#nullable enable
 
 using System.Collections.Generic;
 
@@ -23,7 +24,7 @@ namespace ICSharpCode.Decompiler.Util
 	/// <summary>
 	/// Union-Find data structure.
 	/// </summary>
-	public class UnionFind<T>
+	public class UnionFind<T> where T : notnull
 	{
 		Dictionary<T, Node> mapping;
 
@@ -32,6 +33,12 @@ namespace ICSharpCode.Decompiler.Util
 			public int rank;
 			public Node parent;
 			public T value;
+
+			internal Node(T value)
+			{
+				this.value = value;
+				this.parent = this;
+			}
 		}
 
 		public UnionFind()
@@ -41,13 +48,9 @@ namespace ICSharpCode.Decompiler.Util
 
 		Node GetNode(T element)
 		{
-			Node node;
-			if (!mapping.TryGetValue(element, out node))
+			if (!mapping.TryGetValue(element, out Node? node))
 			{
-				node = new Node {
-					value = element,
-					rank = 0
-				};
+				node = new Node(element);
 				node.parent = node;
 				mapping.Add(element, node);
 			}
@@ -84,5 +87,3 @@ namespace ICSharpCode.Decompiler.Util
 		}
 	}
 }
-
-

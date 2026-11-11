@@ -1,4 +1,5 @@
-﻿// Copyright (c) 2014 Daniel Grunwald
+#nullable enable
+// Copyright (c) 2014 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -18,11 +19,11 @@
 
 using System;
 using System.Collections.Generic;
-using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Linq;
 
 using ICSharpCode.Decompiler.IL.Transforms;
+using ICSharpCode.Decompiler.Instrumentation;
 using ICSharpCode.Decompiler.TypeSystem;
 using ICSharpCode.Decompiler.Util;
 
@@ -35,7 +36,7 @@ namespace ICSharpCode.Decompiler.IL
 		/// May be null for functions that were not constructed from metadata,
 		/// e.g., expression trees.
 		/// </summary>
-		public readonly IMethod Method;
+		public readonly IMethod? Method;
 
 		/// <summary>
 		/// Gets the generic context of this function.
@@ -54,7 +55,7 @@ namespace ICSharpCode.Decompiler.IL
 		/// has no effect, as the name should not be used in the final AST construction.
 		/// </para>
 		/// </summary>
-		public string Name;
+		public string? Name;
 
 		/// <summary>
 		/// Size of the IL code in this function.
@@ -68,10 +69,15 @@ namespace ICSharpCode.Decompiler.IL
 		public readonly ILVariableCollection Variables;
 
 		/// <summary>
+		/// Gets 
+		/// </summary>
+		public int LocalVariableSignatureLength;
+
+		/// <summary>
 		/// Gets the scope in which the local function is declared.
 		/// Returns null, if this is not a local function.
 		/// </summary>
-		public BlockContainer DeclarationScope { get; internal set; }
+		public BlockContainer? DeclarationScope { get; internal set; }
 
 		/// <summary>
 		/// Gets the set of captured variables by this ILFunction.
@@ -99,6 +105,11 @@ namespace ICSharpCode.Decompiler.IL
 		public bool StateMachineCompiledWithMono;
 
 		/// <summary>
+		/// Gets whether the YieldReturnDecompiler determined that the Legacy VB compiler was used to compile this function.
+		/// </summary>
+		public bool StateMachineCompiledWithLegacyVisualBasic;
+
+		/// <summary>
 		/// Gets whether this function is async.
 		/// This flag gets set by the AsyncAwaitDecompiler.
 		/// </summary>
@@ -108,17 +119,17 @@ namespace ICSharpCode.Decompiler.IL
 		/// Return element type -- if the async method returns Task{T}, this field stores T.
 		/// If the async method returns Task or void, this field stores void.
 		/// </summary>
-		public IType AsyncReturnType;
+		public IType? AsyncReturnType;
 
 		/// <summary>
 		/// If this function is an iterator/async, this field stores the compiler-generated MoveNext() method.
 		/// </summary>
-		public IMethod MoveNextMethod;
+		public IMethod? MoveNextMethod;
 
 		/// <summary>
 		/// If this function is a local function, this field stores the reduced version of the function.
 		/// </summary>
-		internal TypeSystem.Implementation.LocalFunctionMethod ReducedMethod;
+		internal TypeSystem.Implementation.LocalFunctionMethod? ReducedMethod;
 
 		public DebugInfo.AsyncDebugInfo AsyncDebugInfo;
 
@@ -131,8 +142,10 @@ namespace ICSharpCode.Decompiler.IL
 			get {
 				if (ctorCallStart == int.MinValue)
 				{
-					if (!this.Method.IsConstructor || this.Method.IsStatic)
+					if (this.Method == null || !this.Method.IsConstructor || this.Method.IsStatic)
+					{
 						ctorCallStart = -1;
+					}
 					else
 					{
 						ctorCallStart = this.Descendants.FirstOrDefault(d => d is CallInstruction call && !(call is NewObj)
@@ -150,7 +163,7 @@ namespace ICSharpCode.Decompiler.IL
 		/// T is the delegate type that matches the signature of this method.
 		/// Otherwise this must be null.
 		/// </summary>
-		public IType DelegateType;
+		public IType? DelegateType;
 
 		ILFunctionKind kind;
 
@@ -181,7 +194,7 @@ namespace ICSharpCode.Decompiler.IL
 		/// where the stack is empty, nop instructions, and the instruction following
 		/// a call instruction
 		/// </summary>
-		public List<int> SequencePointCandidates { get; set; }
+		public List<int>? SequencePointCandidates { get; set; }
 
 		/// <summary>
 		/// Constructs a new ILFunction from the given metadata and with the given ILAst body.
@@ -217,7 +230,7 @@ namespace ICSharpCode.Decompiler.IL
 			this.kind = kind;
 		}
 
-		internal override void CheckInvariant(ILPhase phase)
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
 		{
 			switch (kind)
 			{
@@ -250,7 +263,7 @@ namespace ICSharpCode.Decompiler.IL
 				Debug.Assert(Variables[i].IndexInFunction == i);
 				Variables[i].CheckInvariant();
 			}
-			base.CheckInvariant(phase);
+			base.CheckInvariant(phase, compilation);
 		}
 
 		void CloneVariables()
@@ -258,7 +271,7 @@ namespace ICSharpCode.Decompiler.IL
 			throw new NotSupportedException("ILFunction.CloneVariables is currently not supported!");
 		}
 
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -388,40 +401,36 @@ namespace ICSharpCode.Decompiler.IL
 		/// </summary>
 		public void RunTransforms(IEnumerable<IILTransform> transforms, ILTransformContext context)
 		{
-			this.CheckInvariant(ILPhase.Normal);
+			this.CheckInvariant(ILPhase.Normal, context.TypeSystem);
+			bool traceTransforms = DecompilerEventSource.Log.IsTransformTracingEnabled();
 			foreach (var transform in transforms)
 			{
 				context.CancellationToken.ThrowIfCancellationRequested();
+				// 'near: this' is what lets a halt on a group opener be traced back to the function it
+				// belongs to; without a position the step carries no anchor and the halt cannot be
+				// attributed to any member.
 				if (transform is BlockILTransform blockTransform)
 				{
-					context.StepStartGroup(blockTransform.ToString());
+					context.StepStartGroup(blockTransform.ToString(), this);
 				}
 				else
 				{
-					context.StepStartGroup(transform.GetType().Name);
+					context.StepStartGroup(transform.GetType().Name, this);
 				}
+				long traceStart = traceTransforms ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
 				transform.Run(this, context);
-				this.CheckInvariant(ILPhase.Normal);
+				if (traceTransforms)
+					DecompilerEventSource.Log.ILTransformExecuted(transform, this, traceStart);
+				this.CheckInvariant(ILPhase.Normal, context.TypeSystem);
 				context.StepEndGroup(keepIfEmpty: true);
 			}
 		}
 
 		int helperVariableCount;
 
-		public ILVariable RegisterVariable(VariableKind kind, IType type, string name = null)
+		public ILVariable RegisterVariable(VariableKind kind, IType type, string? name = null)
 		{
-			return RegisterVariable(kind, type, type.GetStackType(), name);
-		}
-
-		public ILVariable RegisterVariable(VariableKind kind, StackType stackType, string name = null)
-		{
-			var type = Method.Compilation.FindType(stackType.ToKnownTypeCode());
-			return RegisterVariable(kind, type, stackType, name);
-		}
-
-		ILVariable RegisterVariable(VariableKind kind, IType type, StackType stackType, string name = null)
-		{
-			var variable = new ILVariable(kind, type, stackType);
+			var variable = new ILVariable(kind, type);
 			if (string.IsNullOrWhiteSpace(name))
 			{
 				name = "I_" + (helperVariableCount++);

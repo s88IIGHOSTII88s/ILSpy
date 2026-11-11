@@ -45,6 +45,7 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 		public ICompilation Compilation { get; }
 		CorlibTypeDefinition[] typeDefinitions;
 		readonly CorlibNamespace rootNamespace;
+		readonly Version asmVersion = new Version(0, 0, 0, 0);
 
 		private MinimalCorlib(ICompilation compilation, IEnumerable<KnownTypeReference> types)
 		{
@@ -56,11 +57,12 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 		bool IModule.IsMainModule => Compilation.MainModule == this;
 
 		string IModule.AssemblyName => "corlib";
+		Version IModule.AssemblyVersion => asmVersion;
 		string IModule.FullAssemblyName => "corlib";
 		string ISymbol.Name => "corlib";
 		SymbolKind ISymbol.SymbolKind => SymbolKind.Module;
 
-		Metadata.PEFile IModule.PEFile => null;
+		Metadata.MetadataFile IModule.MetadataFile => null;
 		INamespace IModule.RootNamespace => rootNamespace;
 
 		public IEnumerable<ITypeDefinition> TopLevelTypeDefinitions => typeDefinitions.Where(td => td != null);
@@ -146,7 +148,9 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 			{
 				this.corlib = corlib;
 				this.typeCode = typeCode;
-				this.typeKind = KnownTypeReference.Get(typeCode).typeKind;
+				KnownTypeReference ktr = KnownTypeReference.Get(typeCode);
+				this.typeKind = ktr.typeKind;
+				this.MetadataName = ktr.Name + (ktr.TypeParameterCount > 0 ? "`" + ktr.TypeParameterCount : "");
 			}
 
 			IReadOnlyList<ITypeDefinition> ITypeDefinition.NestedTypes => EmptyList<ITypeDefinition>.Instance;
@@ -162,12 +166,15 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 
 			public FullTypeName FullTypeName => KnownTypeReference.Get(typeCode).TypeName;
 
+			public string MetadataName { get; }
+
 			ITypeDefinition IEntity.DeclaringTypeDefinition => null;
 			IType ITypeDefinition.DeclaringType => null;
 			IType IType.DeclaringType => null;
 			IType IEntity.DeclaringType => null;
 
-			bool ITypeDefinition.HasExtensionMethods => false;
+			bool ITypeDefinition.HasExtensions => false;
+			ExtensionInfo ITypeDefinition.ExtensionInfo => null;
 			bool ITypeDefinition.IsReadOnly => false;
 
 			TypeKind IType.Kind => typeKind;
@@ -252,10 +259,9 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 				return EmptyList<IMethod>.Instance;
 			}
 
-			IEnumerable<IAttribute> IEntity.GetAttributes()
-			{
-				return EmptyList<IAttribute>.Instance;
-			}
+			IEnumerable<IAttribute> IEntity.GetAttributes() => EmptyList<IAttribute>.Instance;
+			bool IEntity.HasAttribute(KnownAttribute attribute) => false;
+			IAttribute IEntity.GetAttribute(KnownAttribute attribute) => null;
 
 			IEnumerable<IMethod> IType.GetConstructors(Predicate<IMethod> filter, GetMemberOptions options)
 			{
@@ -305,6 +311,7 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 			bool ITypeDefinition.IsRecord => false;
 
 			ITypeDefinition IType.GetDefinition() => this;
+			ITypeDefinitionOrUnknown IType.GetDefinitionOrUnknown() => this;
 			TypeParameterSubstitution IType.GetSubstitution() => TypeParameterSubstitution.Identity;
 
 			IType IType.AcceptVisitor(TypeVisitor visitor)

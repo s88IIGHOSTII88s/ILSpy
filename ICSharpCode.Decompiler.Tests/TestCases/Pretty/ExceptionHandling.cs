@@ -1,4 +1,4 @@
-﻿// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -17,6 +17,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System;
+using System.Collections.Generic;
 #if CS60
 using System.IO;
 #endif
@@ -246,6 +247,28 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			}
 		}
 
+		internal void EarlyReturnInTryBlock(bool a, bool b)
+		{
+			try
+			{
+				if (a)
+				{
+					Console.WriteLine("a");
+				}
+				else if (b)
+				{
+					// #2379: The only goto-free way of representing this code is to use a return statement
+					return;
+				}
+
+				Console.WriteLine("a || !b");
+			}
+			finally
+			{
+				Console.WriteLine("finally");
+			}
+		}
+
 #if ROSLYN || !OPT
 		// TODO Non-Roslyn compilers create a second while loop inside the try, by inverting the if
 		// This is fixed in the non-optimised version by the enabling the RemoveDeadCode flag
@@ -396,9 +419,9 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			{
 				Console.WriteLine(input);
 			}
-			catch (TException val)
+			catch (TException ex)
 			{
-				Console.WriteLine(val.Message);
+				Console.WriteLine(ex.Message);
 				throw;
 			}
 		}
@@ -430,9 +453,9 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			{
 				Console.WriteLine(input);
 			}
-			catch (TException val) when (val.Message.Contains("Test"))
+			catch (TException ex) when (ex.Message.Contains("Test"))
 			{
-				Console.WriteLine(val.Message);
+				Console.WriteLine(ex.Message);
 				throw;
 			}
 		}
@@ -443,9 +466,9 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			{
 				Console.WriteLine(input);
 			}
-			catch (TException val) when (val.Message.Contains("Test"))
+			catch (TException ex) when (ex.Message.Contains("Test"))
 			{
-				Console.WriteLine("{0} {1}", val, val.ToString());
+				Console.WriteLine("{0} {1}", ex, ex.ToString());
 			}
 		}
 
@@ -458,7 +481,9 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			catch (Exception ex) when (ex.Data.IsFixedSize)
 			{
 				Console.WriteLine(ex.ToString());
+#pragma warning disable CA2200 // Rethrow to preserve stack details
 				throw ex;
+#pragma warning restore CA2200 // Rethrow to preserve stack details
 			}
 		}
 
@@ -471,9 +496,69 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			catch (Exception ex) when (ex is InternalBufferOverflowException)
 			{
 				Console.WriteLine(ex.ToString());
+#pragma warning disable CA2200 // Rethrow to preserve stack details
 				throw ex;
+#pragma warning restore CA2200 // Rethrow to preserve stack details
+			}
+		}
+
+		private static bool FilterWithSideEffect(Exception e, ref int log)
+		{
+			log++;
+			return e.Message.Length > 0;
+		}
+
+		public static void SideEffectingFilter()
+		{
+			int log = 0;
+			try
+			{
+				Console.WriteLine("try");
+			}
+			catch (Exception e) when (FilterWithSideEffect(e, ref log))
+			{
+				Console.WriteLine(log);
 			}
 		}
 #endif
+
+		public static void ContinueInCatchInForeach(int[] arr)
+		{
+			foreach (int value in arr)
+			{
+				try
+				{
+					Console.WriteLine(value);
+				}
+				catch (Exception)
+				{
+					continue;
+				}
+				Console.WriteLine("after");
+			}
+		}
+
+		public static void ContinueInCatchInForeachOverEnumerable(IEnumerable<int> arr)
+		{
+			foreach (int item in arr)
+			{
+				try
+				{
+					try
+					{
+						Console.WriteLine(item);
+					}
+					catch (BadImageFormatException)
+					{
+						continue;
+					}
+					Console.WriteLine("after inner try");
+				}
+				catch (Exception ex2)
+				{
+					Console.WriteLine(ex2.Message);
+				}
+			}
+		}
 	}
 }

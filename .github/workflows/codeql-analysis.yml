@@ -2,12 +2,19 @@ name: "CodeQL"
 
 on:
   push:
-    branches: [ master ]
+    branches: '**'
   pull_request:
-    branches: [ master ]
+    branches: [ master, release/** ]
+
+permissions:
+  contents: read
 
 jobs:
   analyze:
+    permissions:
+      actions: read  # for github/codeql-action/init to get workflow details
+      security-events: write  # for github/codeql-action/analyze to upload SARIF results
+      
     name: Analyze
     runs-on: ubuntu-latest
 
@@ -18,21 +25,25 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v2
+      uses: actions/checkout@v7.0.1
       with:
         fetch-depth: 0
+        persist-credentials: false
     
     - name: Initialize CodeQL
-      uses: github/codeql-action/init@v1
+      uses: github/codeql-action/init@v4.39.3
       with:
         languages: ${{ matrix.language }}
 
-    - name: Setup .NET Core
-      uses: actions/setup-dotnet@v1
+    - uses: actions/setup-dotnet@v6.1.0
       with:
-        dotnet-version: 3.1.x
+        dotnet-version: '11.0.x'
+        dotnet-quality: 'ga'
+        cache: true
+        cache-dependency-path: '**/packages.lock.json'
+
     - name: Build
-      run: dotnet build Frontends.sln --configuration Release
+      run: dotnet build ILSpy.XPlat.slnf --configuration Release -p:RestoreEnablePackagePruning=false
 
     - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v1
+      uses: github/codeql-action/analyze@v4.39.3

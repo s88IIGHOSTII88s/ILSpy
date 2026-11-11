@@ -1,4 +1,5 @@
-﻿// Copyright (c) 2017 Siegfried Pammer
+#nullable enable
+// Copyright (c) 2017 Siegfried Pammer
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -16,30 +17,34 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-
 using System.Collections.Generic;
+
+using ICSharpCode.Decompiler.TypeSystem;
 
 namespace ICSharpCode.Decompiler.IL
 {
 	partial class StringToInt
 	{
-		public List<(string Key, int Value)> Map { get; }
+		public List<(string? Key, int Value)> Map { get; }
 
-		public StringToInt(ILInstruction argument, List<(string Key, int Value)> map)
+		public IType ExpectedType { get; }
+
+		public StringToInt(ILInstruction argument, List<(string? Key, int Value)> map, IType expectedType)
 			: base(OpCode.StringToInt)
 		{
 			this.Argument = argument;
 			this.Map = map;
+			this.ExpectedType = expectedType;
 		}
 
-		public StringToInt(ILInstruction argument, string[] map)
-			: this(argument, ArrayToDictionary(map))
+		public StringToInt(ILInstruction argument, string?[] map, IType expectedType)
+			: this(argument, ArrayToDictionary(map), expectedType)
 		{
 		}
 
-		static List<(string Key, int Value)> ArrayToDictionary(string[] map)
+		static List<(string? Key, int Value)> ArrayToDictionary(string?[] map)
 		{
-			var dict = new List<(string Key, int Value)>();
+			var dict = new List<(string? Key, int Value)>();
 			for (int i = 0; i < map.Length; i++)
 			{
 				dict.Add((map[i], i));
@@ -47,10 +52,12 @@ namespace ICSharpCode.Decompiler.IL
 			return dict;
 		}
 
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
-			output.Write("string.to.int (");
+			output.Write("string.to.int ");
+			ExpectedType.WriteTo(output);
+			output.Write('(');
 			Argument.WriteTo(output, options);
 			output.Write(", { ");
 			int i = 0;

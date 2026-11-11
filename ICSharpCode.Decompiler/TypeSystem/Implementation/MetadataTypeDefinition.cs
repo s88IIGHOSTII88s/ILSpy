@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2018 Daniel Grunwald
+// Copyright (c) 2018 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -41,6 +41,7 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 		// eagerly loaded:
 		readonly FullTypeName fullTypeName;
 		readonly TypeAttributes attributes;
+
 		public TypeKind Kind { get; }
 		public bool IsByRefLike { get; }
 		public bool IsReadOnly { get; }
@@ -48,7 +49,7 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 		public IReadOnlyList<ITypeParameter> TypeParameters { get; }
 		public KnownTypeCode KnownTypeCode { get; }
 		public IType EnumUnderlyingType { get; }
-		public bool HasExtensionMethods { get; }
+		public bool HasExtensions { get; }
 		public Nullability NullableContext { get; }
 
 		// lazy-loaded:
@@ -58,6 +59,7 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 		IEvent[] events;
 		IMethod[] methods;
 		List<IType> directBaseTypes;
+		bool defaultMemberNameInitialized;
 		string defaultMemberName;
 
 		internal MetadataTypeDefinition(MetadataModule module, TypeDefinitionHandle handle)
@@ -69,7 +71,15 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 			var metadata = module.metadata;
 			var td = metadata.GetTypeDefinition(handle);
 			this.attributes = td.Attributes;
-			this.fullTypeName = td.GetFullTypeName(metadata);
+			this.fullTypeName = handle.GetFullTypeName(metadata);
+			try
+			{
+				this.MetadataName = metadata.GetString(td.Name);
+			}
+			catch (Exception ex) when (ex is BadImageFormatException or ArgumentOutOfRangeException)
+			{
+				this.MetadataName = $"TD{metadata.GetToken(handle):x8}";
+			}
 			// Find DeclaringType + KnownTypeCode:
 			if (fullTypeName.IsNested)
 			{
@@ -108,7 +118,7 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 				this.Kind = TypeKind.Enum;
 				this.EnumUnderlyingType = module.Compilation.FindType(underlyingType.ToKnownTypeCode());
 			}
-			else if (td.IsValueType(metadata))
+			else if (handle.IsValueType(metadata))
 			{
 				if (KnownTypeCode == KnownTypeCode.Void)
 				{
@@ -130,7 +140,7 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 			else
 			{
 				this.Kind = TypeKind.Class;
-				this.HasExtensionMethods = this.IsStatic
+				this.HasExtensions = this.IsStatic
 					&& (module.TypeSystemOptions & TypeSystemOptions.ExtensionMethods) == TypeSystemOptions.ExtensionMethods
 					&& td.GetCustomAttributes().HasKnownAttribute(metadata, KnownAttribute.Extension);
 			}
@@ -139,6 +149,28 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 		public override string ToString()
 		{
 			return $"{MetadataTokens.GetToken(handle):X8} {fullTypeName}";
+		}
+
+		private ExtensionInfo extensionInfo;
+
+		public ExtensionInfo ExtensionInfo {
+			get {
+				if (!HasExtensions)
+					return null;
+				if ((module.TypeSystemOptions & TypeSystemOptions.ExtensionMembers) == 0)
+					return null;
+				var extensionInfo = LazyInit.VolatileRead(ref this.extensionInfo);
+				if (extensionInfo == null)
+				{
+					extensionInfo = new ExtensionInfo(module, this);
+					if ((module.TypeSystemOptions & TypeSystemOptions.Uncached) == 0)
+						extensionInfo = LazyInit.GetOrSet(ref this.extensionInfo, extensionInfo);
+				}
+				// A static class whose extension methods all use the classic "this" parameter
+				// syntax carries [Extension] but has no extension blocks; it is not an
+				// extension container.
+				return extensionInfo.ExtensionGroups.Count > 0 ? extensionInfo : null;
+			}
 		}
 
 		ITypeDefinition[] nestedTypes;
@@ -184,8 +216,8 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 				var fieldList = new List<IField>(fieldCollection.Count);
 				foreach (FieldDefinitionHandle h in fieldCollection)
 				{
-					var field = metadata.GetFieldDefinition(h);
-					var attr = field.Attributes;
+					var @field = metadata.GetFieldDefinition(h);
+					var attr = @field.Attributes;
 					if (module.IsVisible(attr))
 					{
 						fieldList.Add(module.GetDefinition(h));
@@ -256,18 +288,24 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 				var metadata = module.metadata;
 				var methodsCollection = metadata.GetTypeDefinition(handle).GetMethods();
 				var methodsList = new List<IMethod>(methodsCollection.Count);
-				var methodSemantics = module.PEFile.MethodSemanticsLookup;
+				var methodSemantics = module.MetadataFile.MethodSemanticsLookup;
+				bool hasDefaultCtor = false;
 				foreach (MethodDefinitionHandle h in methodsCollection)
 				{
 					var md = metadata.GetMethodDefinition(h);
 					if (methodSemantics.GetSemantics(h).Item2 == 0 && module.IsVisible(md.Attributes))
 					{
-						methodsList.Add(module.GetDefinition(h));
+						IMethod method = module.GetDefinition(h);
+						if (method.SymbolKind == SymbolKind.Constructor && !method.IsStatic && method.Parameters.Count == 0)
+						{
+							hasDefaultCtor = true;
+						}
+						methodsList.Add(method);
 					}
 				}
-				if (this.Kind == TypeKind.Struct || this.Kind == TypeKind.Enum)
+				if (!hasDefaultCtor && (this.Kind == TypeKind.Struct || this.Kind == TypeKind.Enum))
 				{
-					methodsList.Add(FakeMethod.CreateDummyConstructor(Compilation, this, IsAbstract ? Accessibility.Protected : Accessibility.Public));
+					methodsList.Add(FakeMethod.CreateDummyConstructor(Compilation, this, Accessibility.Public));
 				}
 				if ((module.TypeSystemOptions & TypeSystemOptions.Uncached) != 0)
 					return methodsList;
@@ -300,7 +338,7 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 
 		public IType ChangeNullability(Nullability nullability)
 		{
-			if (nullability == Nullability.Oblivious)
+			if (nullability == Nullability.Oblivious || IsReferenceType == false)
 				return this;
 			else
 				return new NullabilityAnnotatedType(this, nullability);
@@ -322,7 +360,7 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 					EntityHandle baseTypeHandle = td.BaseType;
 					if (!baseTypeHandle.IsNil)
 					{
-						baseType = module.ResolveType(baseTypeHandle, context);
+						baseType = module.ResolveType(baseTypeHandle, context, metadata.GetCustomAttributes(this.handle), Nullability.Oblivious);
 					}
 				}
 				catch (BadImageFormatException)
@@ -349,7 +387,7 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 		}
 
 		public EntityHandle MetadataToken => handle;
-
+		public string MetadataName { get; }
 		public FullTypeName FullTypeName => fullTypeName;
 		public string Name => fullTypeName.Name;
 
@@ -431,10 +469,34 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 			return b.Build();
 		}
 
+		public bool HasAttribute(KnownAttribute attribute)
+		{
+			if (!attribute.IsCustomAttribute())
+			{
+				return GetAttributes().Any(attr => attr.AttributeType.IsKnownType(attribute));
+			}
+			var b = new AttributeListBuilder(module);
+			var metadata = module.metadata;
+			var def = metadata.GetTypeDefinition(handle);
+			return b.HasAttribute(metadata, def.GetCustomAttributes(), attribute, SymbolKind.TypeDefinition);
+		}
+
+		public IAttribute GetAttribute(KnownAttribute attribute)
+		{
+			if (!attribute.IsCustomAttribute())
+			{
+				return GetAttributes().FirstOrDefault(attr => attr.AttributeType.IsKnownType(attribute));
+			}
+			var b = new AttributeListBuilder(module);
+			var metadata = module.metadata;
+			var def = metadata.GetTypeDefinition(handle);
+			return b.GetAttribute(metadata, def.GetCustomAttributes(), attribute, SymbolKind.TypeDefinition);
+		}
+
 		public string DefaultMemberName {
 			get {
 				string defaultMemberName = LazyInit.VolatileRead(ref this.defaultMemberName);
-				if (defaultMemberName != null)
+				if (defaultMemberName != null || defaultMemberNameInitialized)
 					return defaultMemberName;
 				var metadata = module.metadata;
 				var typeDefinition = metadata.GetTypeDefinition(handle);
@@ -450,7 +512,9 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 						break;
 					}
 				}
-				return LazyInit.GetOrSet(ref this.defaultMemberName, defaultMemberName ?? "Item");
+				defaultMemberName = LazyInit.GetOrSet(ref this.defaultMemberName, defaultMemberName);
+				defaultMemberNameInitialized = true;
+				return defaultMemberName;
 			}
 		}
 		#endregion
@@ -502,6 +566,7 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 		public string Namespace => fullTypeName.TopLevelTypeName.Namespace;
 
 		ITypeDefinition IType.GetDefinition() => this;
+		ITypeDefinitionOrUnknown IType.GetDefinitionOrUnknown() => this;
 		TypeParameterSubstitution IType.GetSubstitution() => TypeParameterSubstitution.Identity;
 
 		public IType AcceptVisitor(TypeVisitor visitor)
@@ -518,14 +583,14 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 		{
 			if (obj is MetadataTypeDefinition td)
 			{
-				return handle == td.handle && module.PEFile == td.module.PEFile;
+				return handle == td.handle && module.MetadataFile == td.module.MetadataFile;
 			}
 			return false;
 		}
 
 		public override int GetHashCode()
 		{
-			return 0x2e0520f2 ^ module.PEFile.GetHashCode() ^ handle.GetHashCode();
+			return 0x2e0520f2 ^ module.MetadataFile.GetHashCode() ^ handle.GetHashCode();
 		}
 
 		bool IEquatable<IType>.Equals(IType other)
@@ -757,21 +822,51 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 
 		private bool ComputeIsRecord()
 		{
-			if (Kind != TypeKind.Class)
+			if (Kind != TypeKind.Class && Kind != TypeKind.Struct)
 				return false;
+			bool isStruct = Kind == TypeKind.Struct;
+
 			var metadata = module.metadata;
 			var typeDef = metadata.GetTypeDefinition(handle);
+
+			bool getEqualityContract = isStruct;
+			bool toString = false;
+			bool printMembers = false;
+			bool getHashCode = false;
+			bool equals = false;
 			bool opEquality = false;
 			bool opInequality = false;
-			bool clone = false;
+			bool clone = isStruct;
 			foreach (var methodHandle in typeDef.GetMethods())
 			{
 				var method = metadata.GetMethodDefinition(methodHandle);
+				if (metadata.StringComparer.Equals(method.Name, "Clone"))
+				{
+					// error CS8859: Members named 'Clone' are disallowed in records.
+					return false;
+				}
+
+				getEqualityContract |= metadata.StringComparer.Equals(method.Name, "get_EqualityContract");
+				toString |= metadata.StringComparer.Equals(method.Name, "ToString");
+				printMembers |= metadata.StringComparer.Equals(method.Name, "PrintMembers");
+				getHashCode |= metadata.StringComparer.Equals(method.Name, "GetHashCode");
+				equals |= metadata.StringComparer.Equals(method.Name, "Equals");
 				opEquality |= metadata.StringComparer.Equals(method.Name, "op_Equality");
 				opInequality |= metadata.StringComparer.Equals(method.Name, "op_Inequality");
 				clone |= metadata.StringComparer.Equals(method.Name, "<Clone>$");
 			}
-			return opEquality & opInequality & clone;
+			// relaxed check for toString:
+			// record classes may have their ToString implementation only in the base class,
+			// so we cannot check for it here, as the type hierarchy is not yet known.
+			// usually, the existence of a "<Clone>$" and "get_EqualityContract" method should
+			// be a good enough indicator.
+			// in record structs we require a ToString implementation, because the PrintMembers
+			// method needs to be called.
+			if (isStruct && !toString)
+			{
+				return false;
+			}
+			return getEqualityContract & printMembers & getHashCode & equals & opEquality & opInequality & clone;
 		}
 		#endregion
 	}

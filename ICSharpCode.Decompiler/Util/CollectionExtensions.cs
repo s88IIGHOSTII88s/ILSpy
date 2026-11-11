@@ -1,4 +1,23 @@
-﻿using System;
+// Copyright (c) 2014 Daniel Grunwald
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy of this
+// software and associated documentation files (the "Software"), to deal in the Software
+// without restriction, including without limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
+// to whom the Software is furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all copies or
+// substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
+// FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+#nullable enable
+using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
@@ -13,14 +32,20 @@ namespace ICSharpCode.Decompiler.Util
 			value = pair.Value;
 		}
 
-#if !NETCORE
+#if !NET8_0_OR_GREATER
 		public static IEnumerable<(A, B)> Zip<A, B>(this IEnumerable<A> input1, IEnumerable<B> input2)
 		{
 			return input1.Zip(input2, (a, b) => (a, b));
 		}
 #endif
 
-		public static IEnumerable<(A, B)> ZipLongest<A, B>(this IEnumerable<A> input1, IEnumerable<B> input2)
+		public static IEnumerable<(int, A, B)> ZipWithIndex<A, B>(this IEnumerable<A> input1, IEnumerable<B> input2)
+		{
+			int index = 0;
+			return input1.Zip(input2, (a, b) => (index++, a, b));
+		}
+
+		public static IEnumerable<(A?, B?)> ZipLongest<A, B>(this IEnumerable<A> input1, IEnumerable<B> input2)
 		{
 			using (var it1 = input1.GetEnumerator())
 			{
@@ -59,7 +84,7 @@ namespace ICSharpCode.Decompiler.Util
 			}
 		}
 
-#if !NETCORE
+#if !NET8_0_OR_GREATER
 		public static HashSet<T> ToHashSet<T>(this IEnumerable<T> input)
 		{
 			return new HashSet<T>(input);
@@ -76,14 +101,14 @@ namespace ICSharpCode.Decompiler.Util
 			return input.Skip(input.Count - count);
 		}
 
-		public static T PopOrDefault<T>(this Stack<T> stack)
+		public static T? PopOrDefault<T>(this Stack<T> stack)
 		{
 			if (stack.Count == 0)
 				return default(T);
 			return stack.Pop();
 		}
 
-		public static T PeekOrDefault<T>(this Stack<T> stack)
+		public static T? PeekOrDefault<T>(this Stack<T> stack)
 		{
 			if (stack.Count == 0)
 				return default(T);
@@ -218,13 +243,37 @@ namespace ICSharpCode.Decompiler.Util
 				yield return func(index++, element);
 		}
 
-		public static IEnumerable<(int, T)> WithIndex<T>(this ICollection<T> source)
+		public static IEnumerable<(int, T)> WithIndex<T>(this IEnumerable<T> source)
 		{
 			int index = 0;
 			foreach (var item in source)
 			{
 				yield return (index, item);
 				index++;
+			}
+		}
+
+		/// <summary>
+		/// Filters out null elements, narrowing the element type to non-nullable.
+		/// </summary>
+		public static IEnumerable<T> WhereNotNull<T>(this IEnumerable<T?> source) where T : class
+		{
+			foreach (var item in source)
+			{
+				if (item != null)
+					yield return item;
+			}
+		}
+
+		/// <summary>
+		/// Filters out null elements and unwraps the remaining values.
+		/// </summary>
+		public static IEnumerable<T> WhereNotNull<T>(this IEnumerable<T?> source) where T : struct
+		{
+			foreach (var item in source)
+			{
+				if (item.HasValue)
+					yield return item.GetValueOrDefault();
 			}
 		}
 
@@ -277,7 +326,7 @@ namespace ICSharpCode.Decompiler.Util
 		/// Returns the minimum element.
 		/// </summary>
 		/// <exception cref="InvalidOperationException">The input sequence is empty</exception>
-		public static T MinBy<T, K>(this IEnumerable<T> source, Func<T, K> keySelector, IComparer<K> keyComparer)
+		public static T MinBy<T, K>(this IEnumerable<T> source, Func<T, K> keySelector, IComparer<K>? keyComparer)
 		{
 			if (source == null)
 				throw new ArgumentNullException(nameof(source));
@@ -305,6 +354,7 @@ namespace ICSharpCode.Decompiler.Util
 			}
 		}
 
+#if !NET8_0_OR_GREATER
 		/// <summary>
 		/// Returns the maximum element.
 		/// </summary>
@@ -313,12 +363,12 @@ namespace ICSharpCode.Decompiler.Util
 		{
 			return source.MaxBy(keySelector, Comparer<K>.Default);
 		}
-
+#endif
 		/// <summary>
 		/// Returns the maximum element.
 		/// </summary>
 		/// <exception cref="InvalidOperationException">The input sequence is empty</exception>
-		public static T MaxBy<T, K>(this IEnumerable<T> source, Func<T, K> keySelector, IComparer<K> keyComparer)
+		public static T MaxBy<T, K>(this IEnumerable<T> source, Func<T, K> keySelector, IComparer<K>? keyComparer)
 		{
 			if (source == null)
 				throw new ArgumentNullException(nameof(source));
@@ -353,12 +403,12 @@ namespace ICSharpCode.Decompiler.Util
 			list.RemoveAt(list.Count - 1);
 		}
 
-		public static T OnlyOrDefault<T>(this IEnumerable<T> source, Func<T, bool> predicate) => OnlyOrDefault(source.Where(predicate));
+		public static T? OnlyOrDefault<T>(this IEnumerable<T> source, Func<T, bool> predicate) => OnlyOrDefault(source.Where(predicate));
 
-		public static T OnlyOrDefault<T>(this IEnumerable<T> source)
+		public static T? OnlyOrDefault<T>(this IEnumerable<T> source)
 		{
 			bool any = false;
-			T first = default;
+			T? first = default;
 			foreach (var t in source)
 			{
 				if (any)
@@ -370,6 +420,31 @@ namespace ICSharpCode.Decompiler.Util
 			return first;
 		}
 
+#if !NET8_0_OR_GREATER
+		public static int EnsureCapacity<T>(this List<T> list, int capacity)
+		{
+			if (capacity < 0)
+				throw new ArgumentOutOfRangeException(nameof(capacity));
+			if (list.Capacity < capacity)
+			{
+				const int DefaultCapacity = 4;
+				const int MaxLength = 0X7FFFFFC7;
+
+				int newcapacity = list.Capacity == 0 ? DefaultCapacity : 2 * list.Capacity;
+
+				if ((uint)newcapacity > MaxLength)
+					newcapacity = MaxLength;
+
+				if (newcapacity < capacity)
+					newcapacity = capacity;
+
+				list.Capacity = newcapacity;
+			}
+
+			return list.Capacity;
+		}
+#endif
+
 		#region Aliases/shortcuts for Enumerable extension methods
 		public static bool Any<T>(this ICollection<T> list) => list.Count > 0;
 		public static bool Any<T>(this T[] array, Predicate<T> match) => Array.Exists(array, match);
@@ -378,8 +453,8 @@ namespace ICSharpCode.Decompiler.Util
 		public static bool All<T>(this T[] array, Predicate<T> match) => Array.TrueForAll(array, match);
 		public static bool All<T>(this List<T> list, Predicate<T> match) => list.TrueForAll(match);
 
-		public static T FirstOrDefault<T>(this T[] array, Predicate<T> predicate) => Array.Find(array, predicate);
-		public static T FirstOrDefault<T>(this List<T> list, Predicate<T> predicate) => list.Find(predicate);
+		public static T? FirstOrDefault<T>(this T[] array, Predicate<T> predicate) => Array.Find(array, predicate);
+		public static T? FirstOrDefault<T>(this List<T> list, Predicate<T> predicate) => list.Find(predicate);
 
 		public static T Last<T>(this IList<T> list) => list[list.Count - 1];
 		#endregion

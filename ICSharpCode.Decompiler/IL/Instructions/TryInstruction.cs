@@ -1,4 +1,5 @@
-﻿// Copyright (c) 2014 Daniel Grunwald
+#nullable enable
+// Copyright (c) 2014 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -20,6 +21,7 @@ using System;
 using System.Diagnostics;
 using System.Linq;
 
+using ICSharpCode.Decompiler.TypeSystem;
 using ICSharpCode.Decompiler.Util;
 
 namespace ICSharpCode.Decompiler.IL
@@ -33,7 +35,10 @@ namespace ICSharpCode.Decompiler.IL
 			this.TryBlock = tryBlock;
 		}
 
-		ILInstruction tryBlock;
+		public sealed override StackType ResultType => StackType.Void;
+		public sealed override IType InferType(ICompilation compilation) => compilation.FindType(KnownTypeCode.Void);
+
+		ILInstruction tryBlock = null!;
 		public ILInstruction TryBlock {
 			get { return this.tryBlock; }
 			set {
@@ -67,7 +72,7 @@ namespace ICSharpCode.Decompiler.IL
 			return clone;
 		}
 
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(".try ");
@@ -77,10 +82,6 @@ namespace ICSharpCode.Decompiler.IL
 				output.Write(' ');
 				handler.WriteTo(output, options);
 			}
-		}
-
-		public override StackType ResultType {
-			get { return StackType.Void; }
 		}
 
 		protected override InstructionFlags ComputeFlags()
@@ -139,16 +140,12 @@ namespace ICSharpCode.Decompiler.IL
 	/// </summary>
 	partial class TryCatchHandler
 	{
-		internal override void CheckInvariant(ILPhase phase)
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
 		{
-			base.CheckInvariant(phase);
+			base.CheckInvariant(phase, compilation);
 			Debug.Assert(Parent is TryCatch);
 			Debug.Assert(filter.ResultType == StackType.I4);
-			Debug.Assert(this.IsDescendantOf(variable.Function));
-		}
-
-		public override StackType ResultType {
-			get { return StackType.Void; }
+			Debug.Assert(this.IsDescendantOf(variable.Function!));
 		}
 
 		protected override InstructionFlags ComputeFlags()
@@ -163,7 +160,7 @@ namespace ICSharpCode.Decompiler.IL
 			}
 		}
 
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write("catch ");
@@ -202,7 +199,7 @@ namespace ICSharpCode.Decompiler.IL
 			this.FinallyBlock = finallyBlock;
 		}
 
-		ILInstruction finallyBlock;
+		ILInstruction finallyBlock = null!;
 		public ILInstruction FinallyBlock {
 			get { return this.finallyBlock; }
 			set {
@@ -216,19 +213,13 @@ namespace ICSharpCode.Decompiler.IL
 			return new TryFinally(TryBlock.Clone(), finallyBlock.Clone()).WithILRange(this);
 		}
 
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(".try ");
 			TryBlock.WriteTo(output, options);
 			output.Write(" finally ");
 			finallyBlock.WriteTo(output, options);
-		}
-
-		public override StackType ResultType {
-			get {
-				return TryBlock.ResultType;
-			}
 		}
 
 		protected override InstructionFlags ComputeFlags()
@@ -299,7 +290,7 @@ namespace ICSharpCode.Decompiler.IL
 			this.FaultBlock = faultBlock;
 		}
 
-		ILInstruction faultBlock;
+		ILInstruction faultBlock = null!;
 		public ILInstruction FaultBlock {
 			get { return this.faultBlock; }
 			set {
@@ -313,17 +304,13 @@ namespace ICSharpCode.Decompiler.IL
 			return new TryFault(TryBlock.Clone(), faultBlock.Clone()).WithILRange(this);
 		}
 
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(".try ");
 			TryBlock.WriteTo(output, options);
 			output.Write(" fault ");
 			faultBlock.WriteTo(output, options);
-		}
-
-		public override StackType ResultType {
-			get { return TryBlock.ResultType; }
 		}
 
 		protected override InstructionFlags ComputeFlags()
@@ -383,10 +370,5 @@ namespace ICSharpCode.Decompiler.IL
 					throw new IndexOutOfRangeException();
 			}
 		}
-	}
-
-	public partial class Throw
-	{
-		internal StackType resultType = StackType.Void;
 	}
 }

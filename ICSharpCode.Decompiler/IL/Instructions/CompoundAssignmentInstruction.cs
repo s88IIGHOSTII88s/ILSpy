@@ -1,4 +1,5 @@
-﻿// Copyright (c) 2016 Siegfried Pammer
+#nullable enable
+// Copyright (c) 2016 Siegfried Pammer
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -78,9 +79,9 @@ namespace ICSharpCode.Decompiler.IL
 			CheckValidTarget();
 		}
 
-		internal override void CheckInvariant(ILPhase phase)
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
 		{
-			base.CheckInvariant(phase);
+			base.CheckInvariant(phase, compilation);
 			CheckValidTarget();
 		}
 
@@ -152,10 +153,11 @@ namespace ICSharpCode.Decompiler.IL
 		public bool IsLifted { get; }
 
 		public NumericCompoundAssign(BinaryNumericInstruction binary, ILInstruction target,
-			CompoundTargetKind targetKind, ILInstruction value, IType type, CompoundEvalMode evalMode)
+			CompoundTargetKind targetKind, ILInstruction value, IType type, CompoundEvalMode evalMode,
+			Transforms.ILTransformContext context)
 			: base(OpCode.NumericCompoundAssign, evalMode, target, targetKind, value)
 		{
-			Debug.Assert(IsBinaryCompatibleWithType(binary, type, null));
+			Debug.Assert(IsBinaryCompatibleWithType(binary, type, context));
 			this.CheckForOverflow = binary.CheckForOverflow;
 			this.Sign = binary.Sign;
 			this.LeftInputType = binary.LeftInputType;
@@ -165,14 +167,14 @@ namespace ICSharpCode.Decompiler.IL
 			this.IsLifted = binary.IsLifted;
 			this.type = type;
 			this.AddILRange(binary);
-			Debug.Assert(evalMode == CompoundEvalMode.EvaluatesToNewValue || (Operator == BinaryNumericOperator.Add || Operator == BinaryNumericOperator.Sub));
-			Debug.Assert(this.ResultType == (IsLifted ? StackType.O : UnderlyingResultType));
+			Debug.Assert(evalMode == CompoundEvalMode.EvaluatesToNewValue || Operator == BinaryNumericOperator.Add || Operator == BinaryNumericOperator.Sub);
+			Debug.Assert(this.ResultType == (IsLifted ? StackType.VT : UnderlyingResultType));
 		}
 
 		/// <summary>
 		/// Gets whether the specific binary instruction is compatible with a compound operation on the specified type.
 		/// </summary>
-		internal static bool IsBinaryCompatibleWithType(BinaryNumericInstruction binary, IType type, DecompilerSettings settings)
+		internal static bool IsBinaryCompatibleWithType(BinaryNumericInstruction binary, IType type, Transforms.ILTransformContext context)
 		{
 			if (binary.IsLifted)
 			{
@@ -214,11 +216,12 @@ namespace ICSharpCode.Decompiler.IL
 						return false; // operator not supported on pointer types
 				}
 			}
-			else if (type.IsKnownType(KnownTypeCode.IntPtr) || type.IsKnownType(KnownTypeCode.UIntPtr))
+			else if ((type.IsKnownType(KnownTypeCode.IntPtr) || type.IsKnownType(KnownTypeCode.UIntPtr)) && type.Kind is not (TypeKind.NInt or TypeKind.NUInt))
 			{
+				// If the LHS is C# 9 IntPtr (but not nint or C# 11 IntPtr):
 				// "target.intptr *= 2;" is compiler error, but
 				// "target.intptr *= (nint)2;" works
-				if (settings != null && !settings.NativeIntegers)
+				if (!context.Settings.NativeIntegers)
 				{
 					// But if native integers are not available, we cannot use compound assignment.
 					return false;
@@ -233,21 +236,22 @@ namespace ICSharpCode.Decompiler.IL
 			}
 			if (binary.Sign != Sign.None)
 			{
+				bool signMismatchAllowed = binary.Sign == Sign.Unsigned && binary.Operator == BinaryNumericOperator.ShiftRight && context.Settings.UnsignedRightShift;
 				if (type.IsCSharpSmallIntegerType())
 				{
 					// C# will use numeric promotion to int, binary op must be signed
-					if (binary.Sign != Sign.Signed)
+					if (binary.Sign != Sign.Signed && !signMismatchAllowed)
 						return false;
 				}
 				else
 				{
-					// C# will use sign from type
-					if (type.GetSign() != binary.Sign)
+					// C# will use sign from type; except for right shift with C# 11 >>> operator.
+					if (type.GetSign() != binary.Sign && !signMismatchAllowed)
 						return false;
 				}
 			}
 			// Can't transform if the RHS value would be need to be truncated for the LHS type.
-			if (Transforms.TransformAssignment.IsImplicitTruncation(binary.Right, type, null, binary.IsLifted))
+			if (Transforms.TransformAssignment.IsImplicitTruncation(binary.Right, type, context.TypeSystem, binary.IsLifted))
 				return false;
 			return true;
 		}
@@ -269,7 +273,7 @@ namespace ICSharpCode.Decompiler.IL
 			}
 		}
 
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -312,7 +316,18 @@ namespace ICSharpCode.Decompiler.IL
 		{
 			this.Method = method;
 			Debug.Assert(Method.IsOperator || IsStringConcat(method));
-			Debug.Assert(evalMode == CompoundEvalMode.EvaluatesToNewValue || (Method.Name == "op_Increment" || Method.Name == "op_Decrement"));
+			Debug.Assert(evalMode == CompoundEvalMode.EvaluatesToNewValue || IsIncrementOrDecrement(method));
+		}
+
+		public static bool IsIncrementOrDecrement(IMethod method, DecompilerSettings? settings = null)
+		{
+			if (!(method.IsOperator && method.IsStatic))
+				return false;
+			if (method.Name is "op_Increment" or "op_Decrement")
+				return true;
+			if (method.Name is "op_CheckedIncrement" or "op_CheckedDecrement")
+				return settings?.CheckedOperators ?? true;
+			return false;
 		}
 
 		public static bool IsStringConcat(IMethod method)
@@ -321,8 +336,9 @@ namespace ICSharpCode.Decompiler.IL
 		}
 
 		public override StackType ResultType => Method.ReturnType.GetStackType();
+		public override IType InferType(ICompilation compilation) => Method.ReturnType;
 
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -358,11 +374,11 @@ namespace ICSharpCode.Decompiler.IL
 			this.ValueArgumentInfo = valueArgumentInfo;
 		}
 
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
-			output.Write("." + Operation.ToString().ToLower());
+			output.Write("." + Operation.ToString().ToLowerInvariant());
 			DynamicInstruction.WriteBinderFlags(BinderFlags, output, options);
 			base.WriteSuffix(output);
 			output.Write(' ');
@@ -403,5 +419,4 @@ namespace ICSharpCode.Decompiler.IL
 		}
 	}
 }
-
 

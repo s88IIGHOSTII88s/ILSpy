@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2018 Daniel Grunwald
+// Copyright (c) 2018 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -190,7 +190,7 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 			foreach (var handle in attributes)
 			{
 				var attribute = metadata.GetCustomAttribute(handle);
-				// Attribute types shouldn't be generic (and certainly not open), so we don't need a generic context.
+				// Attribute types shouldn't be open generic, so we don't need a generic context.
 				var ctor = module.ResolveMethod(attribute.Constructor, new GenericContext());
 				var type = ctor.DeclaringType;
 				if (IgnoreAttribute(type, target))
@@ -205,6 +205,11 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 		{
 			if (attributeType.DeclaringType != null || attributeType.TypeParameterCount != 0)
 				return false;
+			return IgnoreAttribute(new TopLevelTypeName(attributeType.Namespace, attributeType.Name), target);
+		}
+
+		internal bool IgnoreAttribute(TopLevelTypeName attributeType, SymbolKind target)
+		{
 			switch (attributeType.Namespace)
 			{
 				case "System.Runtime.CompilerServices":
@@ -233,6 +238,7 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 								case SymbolKind.ReturnType:
 								case SymbolKind.Property:
 								case SymbolKind.Indexer:
+								case SymbolKind.Field:
 									return true;  // "ref readonly" is currently always active
 								default:
 									return false;
@@ -246,6 +252,15 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 						case "NullableContextAttribute":
 							return (options & TypeSystemOptions.NullabilityAnnotations) != 0
 								&& (target == SymbolKind.TypeDefinition || IsMethodLike(target));
+						case "ScopedRefAttribute":
+							return (options & TypeSystemOptions.ScopedRef) != 0
+								&& (target == SymbolKind.Parameter);
+						case "RequiresLocationAttribute":
+							return (options & TypeSystemOptions.RefReadOnlyParameters) != 0
+								&& (target == SymbolKind.Parameter);
+						case "ParamCollectionAttribute":
+							return (options & TypeSystemOptions.ParamsCollections) != 0
+								&& (target == SymbolKind.Parameter);
 						default:
 							return false;
 					}
@@ -256,10 +271,42 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 			}
 		}
 
+		internal bool HasAttribute(MetadataReader metadata, CustomAttributeHandleCollection customAttributes, KnownAttribute attribute, SymbolKind symbolKind)
+		{
+			Debug.Assert(attribute.IsCustomAttribute());
+			foreach (var h in customAttributes)
+			{
+				var attr = metadata.GetCustomAttribute(h);
+				if (attr.IsKnownAttribute(metadata, attribute))
+				{
+					return !IgnoreAttribute(attribute.GetTypeName(), symbolKind);
+				}
+			}
+
+			return false;
+		}
+
+		internal IAttribute GetAttribute(MetadataReader metadata, CustomAttributeHandleCollection customAttributes, KnownAttribute attribute, SymbolKind symbolKind)
+		{
+			Debug.Assert(attribute.IsCustomAttribute());
+			foreach (var h in customAttributes)
+			{
+				var attr = metadata.GetCustomAttribute(h);
+				if (attr.IsKnownAttribute(metadata, attribute)
+					&& !IgnoreAttribute(attribute.GetTypeName(), symbolKind))
+				{
+					// Attribute types shouldn't be open generic, so we don't need a generic context.
+					var ctor = module.ResolveMethod(attr.Constructor, new GenericContext());
+					return new CustomAttribute(module, ctor, h);
+				}
+			}
+
+			return null;
+		}
+
 		static bool IsMethodLike(SymbolKind kind)
 		{
-			return kind switch
-			{
+			return kind switch {
 				SymbolKind.Method => true,
 				SymbolKind.Operator => true,
 				SymbolKind.Constructor => true,

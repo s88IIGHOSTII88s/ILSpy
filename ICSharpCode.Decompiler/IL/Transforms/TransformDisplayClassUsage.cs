@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2019 Siegfried Pammer
+// Copyright (c) 2019 Siegfried Pammer
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -53,10 +53,10 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			private readonly IField field;
 			private ILVariable declaredVariable;
 
-			public string Name => field.Name;
+			public string Name => @field.Name;
 
 			public bool CanPropagate { get; private set; }
-			public bool HasInitialValue { get; set; }
+			public bool UsesInitialValue { get; set; }
 
 			public HashSet<ILInstruction> Initializers { get; } = new HashSet<ILInstruction>();
 
@@ -80,7 +80,8 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				if (declaredVariable != null)
 					return declaredVariable;
 				declaredVariable = container.Variable.Function.RegisterVariable(VariableKind.Local, field.Type, field.Name);
-				declaredVariable.HasInitialValue = HasInitialValue;
+				declaredVariable.InitialValueIsInitialized = true;
+				declaredVariable.UsesInitialValue = UsesInitialValue;
 				declaredVariable.CaptureScope = container.CaptureScope;
 				return declaredVariable;
 			}
@@ -106,6 +107,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 		ILTransformContext context;
 		ITypeResolveContext decompilationContext;
 		readonly Dictionary<ILVariable, DisplayClass> displayClasses = new Dictionary<ILVariable, DisplayClass>();
+		readonly Dictionary<ILVariable, ILVariable> displayClassCopyMap = new Dictionary<ILVariable, ILVariable>();
 
 		void IILTransform.Run(ILFunction function, ILTransformContext context)
 		{
@@ -127,6 +129,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 		void ClearState()
 		{
 			displayClasses.Clear();
+			displayClassCopyMap.Clear();
 			this.decompilationContext = null;
 			this.context = null;
 		}
@@ -183,7 +186,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					if (displayClass.VariablesToDeclare.ContainsKey(f))
 						continue;
 					var variable = AddVariable(displayClass, null, f);
-					variable.HasInitialValue = true;
+					variable.UsesInitialValue = true;
 					displayClass.VariablesToDeclare[(IField)f.MemberDefinition] = variable;
 				}
 
@@ -201,7 +204,6 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 
 		bool ValidateDisplayClassUses(ILVariable v, DisplayClass displayClass)
 		{
-			Debug.Assert(v == displayClass.Variable);
 			foreach (var ldloc in v.LoadInstructions)
 			{
 				if (!ValidateUse(displayClass, ldloc))
@@ -225,6 +227,19 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 						{
 							variable = AddVariable(container, null, field);
 						}
+						if (variable.CanPropagate && !IsPlainReadOrInitializerStore(ldflda, variable))
+						{
+							// The field is mutated after initialization (stored again, or its address
+							// escapes). Propagation is only sound if the store can be redirected to
+							// the propagated variable: possible for parameters (their remaining uses
+							// are restricted in ResolveVariableToPropagate), but not for 'this' and
+							// not for a variable that is itself a scalar-replaced display class.
+							var propagatedVariable = variable.GetOrDeclare();
+							if (propagatedVariable.IsThis() || displayClasses.ContainsKey(propagatedVariable))
+							{
+								variable.Propagate(null);
+							}
+						}
 						container.VariablesToDeclare[keyField] = variable;
 						return true;
 					case StObj stobj when stobj.MatchStObj(out var target, out ILInstruction value, out _) && value == use:
@@ -234,9 +249,29 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 								return declaredVar.CanPropagate;
 						}
 						return false;
+					case StLoc stloc when stloc.Variable.IsSingleDefinition && stloc.Value == use:
+						displayClassCopyMap[stloc.Variable] = v;
+						return ValidateDisplayClassUses(stloc.Variable, displayClass);
 					default:
 						return false;
 				}
+			}
+		}
+
+		/// <summary>
+		/// True when the given field access is a plain read or one of the recorded
+		/// initializer stores; false for any other store or for an escaping address.
+		/// </summary>
+		static bool IsPlainReadOrInitializerStore(LdFlda ldflda, VariableToDeclare variable)
+		{
+			switch (ldflda.Parent)
+			{
+				case LdObj:
+					return true;
+				case StObj store when store.Target == ldflda:
+					return variable.Initializers.Contains(store);
+				default:
+					return false;
 			}
 		}
 
@@ -284,7 +319,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 						return null;
 					if (!(v.StoreInstructions.SingleOrDefault() is StLoc stloc))
 						return null;
-					if (stloc.Value is NewObj newObj && ValidateConstructor(newObj.Method))
+					if (stloc.Value is NewObj newObj && ValidateConstructor(context, newObj.Method))
 					{
 						result = new DisplayClass(v, definition) {
 							CaptureScope = v.CaptureScope,
@@ -299,7 +334,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					HandleInitBlock(stloc.Parent as Block, stloc.ChildIndex + 1, result, result.Variable);
 					break;
 				case TypeKind.Struct:
-					if (v.StoreCount != (v.HasInitialValue ? 1 : 0))
+					if (v.StoreInstructions.Count != 0)
 						return null;
 					Debug.Assert(v.StoreInstructions.Count == 0);
 					result = new DisplayClass(v, definition) { CaptureScope = v.CaptureScope };
@@ -388,7 +423,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			var definition = newObj.Method.DeclaringType.GetDefinition();
 			if (!ValidateDisplayClassDefinition(definition))
 				return null;
-			if (!ValidateConstructor(newObj.Method))
+			if (!ValidateConstructor(context, newObj.Method))
 				return null;
 			if (!initializerBlock.Parent.MatchStLoc(out var referenceVariable))
 				return null;
@@ -408,11 +443,11 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 		{
 			if (definition == null)
 				return false;
-			if (definition.ParentModule.PEFile != context.PEFile)
+			if (definition.ParentModule.MetadataFile != context.PEFile)
 				return false;
 			// We do not want to accidentially transform state-machines and thus destroy them.
 			var token = (TypeDefinitionHandle)definition.MetadataToken;
-			var metadata = definition.ParentModule.PEFile.Metadata;
+			var metadata = definition.ParentModule.MetadataFile.Metadata;
 			if (YieldReturnDecompiler.IsCompilerGeneratorEnumerator(token, metadata))
 				return false;
 			if (AsyncAwaitDecompiler.IsCompilerGeneratedStateMachine(token, metadata))
@@ -427,21 +462,21 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			return true;
 		}
 
-		private bool ValidateConstructor(IMethod method)
+		internal static bool ValidateConstructor(ILTransformContext context, IMethod method)
 		{
 			try
 			{
-				if (method.Parameters.Count != 0)
+				if (method.Parameters.Count > 1)
 					return false;
 				var handle = (MethodDefinitionHandle)method.MetadataToken;
 				var module = (MetadataModule)method.ParentModule;
-				var file = module.PEFile;
+				var file = module.MetadataFile;
 				if (handle.IsNil || file != context.PEFile)
 					return false;
 				var def = file.Metadata.GetMethodDefinition(handle);
 				if (def.RelativeVirtualAddress == 0)
 					return false;
-				var body = file.Reader.GetMethodBody(def.RelativeVirtualAddress);
+				var body = file.GetMethodBody(def.RelativeVirtualAddress);
 				// some compilers produce ctors with unused local variables
 				// see https://github.com/icsharpcode/ILSpy/issues/2174
 				//if (!body.LocalSignature.IsNil)
@@ -454,20 +489,8 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				// IL_0000: ldarg.0
 				// IL_0001: call instance void [mscorlib]System.Object::.ctor()
 				// IL_0006: ret
-				var opCode = DecodeOpCodeSkipNop(ref reader);
-				switch (opCode)
-				{
-					case ILOpCode.Ldarg:
-					case ILOpCode.Ldarg_s:
-						if (reader.DecodeIndex(opCode) != 0)
-							return false;
-						break;
-					case ILOpCode.Ldarg_0:
-						// OK
-						break;
-					default:
-						return false;
-				}
+				if (!DecodeLdArg(ref reader, 0))
+					return false;
 				if (DecodeOpCodeSkipNop(ref reader) != ILOpCode.Call)
 					return false;
 				var baseCtorHandle = MetadataTokenHelpers.EntityHandleOrNil(reader.ReadInt32());
@@ -478,7 +501,43 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					return false;
 				if (!objectCtor.IsConstructor || objectCtor.Parameters.Count != 0)
 					return false;
-				return DecodeOpCodeSkipNop(ref reader) == ILOpCode.Ret;
+				if (method.Parameters.Count == 0)
+					return DecodeOpCodeSkipNop(ref reader) == ILOpCode.Ret;
+				if (!object.Equals(method.Parameters[0].Type.GetDefinition(), method.DeclaringTypeDefinition))
+					return false;
+				if (!DecodeLdArg(ref reader, 1))
+					return false;
+				switch (DecodeOpCodeSkipNop(ref reader))
+				{
+					case ILOpCode.Brfalse:
+						reader.ReadInt32();
+						break;
+					case ILOpCode.Brfalse_s:
+						reader.ReadSByte();
+						break;
+					default:
+						return false;
+				}
+				bool copiedField = false;
+				while (true)
+				{
+					var opCode = DecodeOpCodeSkipNop(ref reader);
+					if (opCode == ILOpCode.Ret)
+						return copiedField;
+					if (!DecodeLdArg(opCode, ref reader, 0))
+						return false;
+					if (!DecodeLdArg(ref reader, 1))
+						return false;
+					if (DecodeOpCodeSkipNop(ref reader) != ILOpCode.Ldfld)
+						return false;
+					var sourceField = MetadataTokenHelpers.EntityHandleOrNil(reader.ReadInt32());
+					if (DecodeOpCodeSkipNop(ref reader) != ILOpCode.Stfld)
+						return false;
+					var targetField = MetadataTokenHelpers.EntityHandleOrNil(reader.ReadInt32());
+					if (sourceField.IsNil || sourceField != targetField)
+						return false;
+					copiedField = true;
+				}
 			}
 			catch (BadImageFormatException)
 			{
@@ -486,7 +545,28 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			}
 		}
 
-		ILOpCode DecodeOpCodeSkipNop(ref BlobReader reader)
+		static bool DecodeLdArg(ref BlobReader reader, int expectedIndex)
+		{
+			return DecodeLdArg(DecodeOpCodeSkipNop(ref reader), ref reader, expectedIndex);
+		}
+
+		static bool DecodeLdArg(ILOpCode opCode, ref BlobReader reader, int expectedIndex)
+		{
+			switch (opCode)
+			{
+				case ILOpCode.Ldarg:
+				case ILOpCode.Ldarg_s:
+					return reader.DecodeIndex(opCode) == expectedIndex;
+				case ILOpCode.Ldarg_0:
+					return expectedIndex == 0;
+				case ILOpCode.Ldarg_1:
+					return expectedIndex == 1;
+				default:
+					return false;
+			}
+		}
+
+		static ILOpCode DecodeOpCodeSkipNop(ref BlobReader reader)
 		{
 			ILOpCode code;
 			do
@@ -504,8 +584,8 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				variable.Propagate(ResolveVariableToPropagate(statement.Value, field.Type));
 				variable.Initializers.Add(statement);
 			}
-			variable.HasInitialValue =
-				result.Type.IsReferenceType != false || result.Variable.HasInitialValue;
+			variable.UsesInitialValue =
+				result.Type.IsReferenceType != false || result.Variable.UsesInitialValue;
 			return variable;
 		}
 
@@ -544,7 +624,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 						// "dc.field = v; v = 42; use(dc.field)" cannot turn to "v = 42; use(v);"
 						return null;
 					}
-					if (!(expectedType == null || v.Kind == VariableKind.StackSlot || v.Type.Equals(expectedType)))
+					if (!(expectedType == null || v.Kind == VariableKind.StackSlot || NormalizeTypeVisitor.IgnoreNullability.EquivalentTypes(v.Type, expectedType)))
 						return null;
 					return v;
 				case LdObj ldfld:
@@ -576,9 +656,9 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 		{
 			VisitILFunction(function);
 			context.Step($"ResetHasInitialValueFlag", function);
-			foreach (var f in TreeTraversal.PostOrder(function, f => f.LocalFunctions))
+			foreach (var f in function.Descendants.OfType<ILFunction>())
 			{
-				RemoveDeadVariableInit.ResetHasInitialValueFlag(f, context);
+				RemoveDeadVariableInit.ResetUsesInitialValueFlag(f, context);
 				f.CapturedVariables.RemoveWhere(v => v.IsDead);
 			}
 		}
@@ -596,9 +676,10 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				}
 			}
 			closureType = variable.Type.GetDefinition();
-			if (context.Settings.LocalFunctions && closureType?.Kind == TypeKind.Struct && variable.HasInitialValue && IsPotentialClosure(context, closureType))
+			if (context.Settings.LocalFunctions && closureType?.Kind == TypeKind.Struct
+				&& variable.UsesInitialValue && IsPotentialClosure(context, closureType))
 			{
-				initializer = LocalFunctionDecompiler.GetStatement(variable.AddressInstructions.OrderBy(i => i.StartILOffset).First());
+				initializer = Block.GetContainingStatement(variable.AddressInstructions.OrderBy(i => i.StartILOffset).First());
 				return true;
 			}
 			return false;
@@ -652,8 +733,15 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					.FirstOrDefault(t => t.IsThis() && t.Type.GetDefinition() == decompilationContext.CurrentTypeDefinition);
 				if (thisVar == null)
 				{
-					thisVar = new ILVariable(VariableKind.Parameter, decompilationContext.CurrentTypeDefinition, -1) { Name = "this" };
+					thisVar = new ILVariable(VariableKind.Parameter, decompilationContext.CurrentTypeDefinition, -1) {
+						Name = "this", StateMachineField = thisField
+					};
 					function.Variables.Add(thisVar);
+				}
+				else if (thisVar.StateMachineField != null && displayClass.VariablesToDeclare.ContainsKey(thisVar.StateMachineField))
+				{
+					// "this" was already added previously, no need to add it twice.
+					return displayClass;
 				}
 				VariableToDeclare variableToDeclare = new VariableToDeclare(displayClass, thisField, thisVar);
 				displayClass.VariablesToDeclare.Add(thisField, variableToDeclare);
@@ -703,13 +791,26 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					return false;
 			}
 
-			while (potentialDisplayClass != decompiledTypeDefinition)
+			// Make sure that potentialDisplayCLass and decompiledTypeDefinition are part of the same type tree
+			// Either decompiledTypeDefinition is an ancestor type of potentialDisplayClass or both have
+			// at least one common ancestor.
+			var potentialDisplayClassAncestors = new HashSet<ITypeDefinition>();
+			var potentialDisplayClassParent = potentialDisplayClass.DeclaringTypeDefinition;
+			while (potentialDisplayClassParent != null)
 			{
-				potentialDisplayClass = potentialDisplayClass.DeclaringTypeDefinition;
-				if (potentialDisplayClass == null)
-					return false;
+				potentialDisplayClassAncestors.Add(potentialDisplayClassParent);
+				potentialDisplayClassParent = potentialDisplayClassParent.DeclaringTypeDefinition;
 			}
-			return true;
+
+			var decompiledTypeDefinitionOrAncestor = decompiledTypeDefinition;
+
+			while (decompiledTypeDefinitionOrAncestor != null)
+			{
+				if (potentialDisplayClassAncestors.Contains(decompiledTypeDefinitionOrAncestor))
+					return true;
+				decompiledTypeDefinitionOrAncestor = decompiledTypeDefinitionOrAncestor.DeclaringTypeDefinition;
+			}
+			return false;
 		}
 
 		readonly Stack<ILFunction> currentFunctions = new Stack<ILFunction>();
@@ -751,7 +852,9 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					if (inst.Value is StLoc || inst.Value is CompoundAssignmentInstruction)
 					{
 						context.Step($"Remove unused variable assignment {inst.Variable.Name}", inst);
-						inst.ReplaceWith(inst.Value);
+						var replacement = inst.Value;
+						inst.ReplaceWith(replacement);
+						context.EndStep(replacement);
 					}
 					return;
 				}
@@ -761,12 +864,27 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					if (inst.Value is Block initBlock && initBlock.Kind == BlockKind.ObjectInitializer)
 					{
 						context.Step($"Remove initializer of {inst.Variable.Name}", inst);
+						ILInstruction firstInlinedStore = null;
+						// Stores are appended after the initializer, in source order; a store that
+						// is dropped must not leave a gap, so the position is tracked separately
+						// from the loop index.
+						int insertionIndex = inst.ChildIndex;
 						for (int i = 1; i < initBlock.Instructions.Count; i++)
 						{
 							var stobj = (StObj)initBlock.Instructions[i];
 							var variable = displayClass.VariablesToDeclare[(IField)((LdFlda)stobj.Target).Field.MemberDefinition];
-							parentBlock.Instructions.Insert(inst.ChildIndex + i, new StLoc(variable.GetOrDeclare(), stobj.Value).WithILRange(stobj));
+							// A propagated field is replaced by the variable it was initialized from,
+							// so keeping its initializer would assign that variable to itself - and
+							// where the variable is 'this', the result is not even valid C#. Stores
+							// outside an object-initializer block are dropped in VisitStObj under the
+							// same condition.
+							if (variable.CanPropagate && variable.Initializers.Contains(stobj))
+								continue;
+							var inlinedStore = new StLoc(variable.GetOrDeclare(), stobj.Value).WithILRange(stobj);
+							parentBlock.Instructions.Insert(++insertionIndex, inlinedStore);
+							firstInlinedStore ??= inlinedStore;
 						}
+						context.EndStep(firstInlinedStore);
 					}
 					context.Step($"Remove initializer of {inst.Variable.Name}", inst);
 					parentBlock.Instructions.Remove(inst);
@@ -777,14 +895,21 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					// in some cases (e.g. if inlining fails), there can be a reference to a display class in a stack slot,
 					// in that case it is necessary to resolve the reference and iff it can be propagated, replace all loads
 					// of the single-definition.
-					var referencedDisplayClass = ResolveVariableToPropagate(inst.Value);
+					if (!displayClassCopyMap.TryGetValue(inst.Variable, out var referencedDisplayClass))
+					{
+						referencedDisplayClass = ResolveVariableToPropagate(inst.Value);
+					}
 					if (referencedDisplayClass != null && displayClasses.TryGetValue(referencedDisplayClass, out _))
 					{
 						context.Step($"Propagate reference to {referencedDisplayClass.Name} in {inst.Variable}", inst);
+						ILInstruction firstReplacement = null;
 						foreach (var ld in inst.Variable.LoadInstructions.ToArray())
 						{
-							ld.ReplaceWith(new LdLoc(referencedDisplayClass).WithILRange(ld));
+							var newLoad = new LdLoc(referencedDisplayClass).WithILRange(ld);
+							ld.ReplaceWith(newLoad);
+							firstReplacement ??= newLoad;
 						}
+						context.EndStep(firstReplacement);
 						parentBlock.Instructions.Remove(inst);
 						return;
 					}
@@ -807,6 +932,12 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 						return;
 					}
 				}
+				if (inst.Value is LdLoc ldLoc && ldLoc.Variable is { IsSingleDefinition: true, CaptureScope: null }
+					&& ldLoc.Variable.StoreInstructions.FirstOrDefault() is StLoc stloc
+					&& stloc.Parent is Block block)
+				{
+					ILInlining.InlineOneIfPossible(block, stloc.ChildIndex, InliningOptions.None, context);
+				}
 			}
 			base.VisitStObj(inst);
 			EarlyExpressionTransforms.StObjToStLoc(inst, context);
@@ -821,9 +952,11 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 		private bool IsDisplayClassLoad(ILInstruction target, out ILVariable variable)
 		{
 			// We cannot use MatchLdLocRef here because local functions use ref parameters
-			if (target.MatchLdLoc(out variable) || target.MatchLdLoca(out variable))
-				return true;
-			return false;
+			if (!target.MatchLdLoc(out variable) && !target.MatchLdLoca(out variable))
+				return false;
+			if (displayClassCopyMap.TryGetValue(variable, out ILVariable other))
+				variable = other;
+			return true;
 		}
 
 		private bool IsDisplayClassFieldAccess(ILInstruction inst,
@@ -832,7 +965,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			displayClass = null;
 			displayClassVar = null;
 			field = null;
-			if (!(inst is LdFlda ldflda))
+			if (inst is not LdFlda ldflda)
 				return false;
 			field = ldflda.Field;
 			return IsDisplayClassLoad(ldflda.Target, out displayClassVar)
@@ -849,7 +982,9 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			var v = displayClass.VariablesToDeclare[keyField];
 			context.Step($"Replace {field.Name} with captured variable {v.Name}", inst);
 			ILVariable variable = v.GetOrDeclare();
-			inst.ReplaceWith(new LdLoca(variable).WithILRange(inst));
+			var replacement = new LdLoca(variable).WithILRange(inst);
+			inst.ReplaceWith(replacement);
+			context.EndStep(replacement);
 			// add captured variable to all descendant functions from the declaring function to this use-site function
 			foreach (var f in currentFunctions)
 			{

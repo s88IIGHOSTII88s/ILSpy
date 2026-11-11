@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -29,16 +29,19 @@ namespace ICSharpCode.Decompiler.TypeSystem
 	/// </summary>
 	public sealed class ArrayType : TypeWithElementType, ICompilationProvider
 	{
+		public const int MaxArrayRank = 32;
+
 		readonly int dimensions;
+		readonly int originalDimensions;
 		readonly ICompilation compilation;
 		readonly Nullability nullability;
 
-		public ArrayType(ICompilation compilation, IType elementType, int dimensions = 1, Nullability nullability = Nullability.Oblivious) : base(elementType)
+		public ArrayType(ICompilation compilation, IType elementType, int dimensions = 1, Nullability nullability = Nullability.Oblivious, int? originalDimensions = null) : base(elementType)
 		{
 			if (compilation == null)
 				throw new ArgumentNullException(nameof(compilation));
-			if (dimensions <= 0)
-				throw new ArgumentOutOfRangeException(nameof(dimensions), dimensions, "dimensions must be positive");
+			this.originalDimensions = originalDimensions ?? dimensions;
+			dimensions = Math.Min(Math.Max(dimensions, 1), MaxArrayRank);
 			this.compilation = compilation;
 			this.dimensions = dimensions;
 			this.nullability = nullability;
@@ -60,6 +63,11 @@ namespace ICSharpCode.Decompiler.TypeSystem
 			get { return dimensions; }
 		}
 
+		/// <summary>
+		/// Gets the rank from metadata before it was clamped to the range supported by the CLR.
+		/// </summary>
+		public int OriginalDimensions => originalDimensions;
+
 		public override Nullability Nullability => nullability;
 
 		public override IType ChangeNullability(Nullability nullability)
@@ -67,7 +75,7 @@ namespace ICSharpCode.Decompiler.TypeSystem
 			if (nullability == this.nullability)
 				return this;
 			else
-				return new ArrayType(compilation, elementType, dimensions, nullability);
+				return new ArrayType(compilation, elementType, dimensions, nullability, originalDimensions);
 		}
 
 		public override string NameSuffix {
@@ -172,52 +180,6 @@ namespace ICSharpCode.Decompiler.TypeSystem
 				return this;
 			else
 				return new ArrayType(compilation, e, dimensions, nullability);
-		}
-	}
-
-	[Serializable]
-	public sealed class ArrayTypeReference : ITypeReference, ISupportsInterning
-	{
-		readonly ITypeReference elementType;
-		readonly int dimensions;
-
-		public ArrayTypeReference(ITypeReference elementType, int dimensions = 1)
-		{
-			if (elementType == null)
-				throw new ArgumentNullException(nameof(elementType));
-			if (dimensions <= 0)
-				throw new ArgumentOutOfRangeException(nameof(dimensions), dimensions, "dimensions must be positive");
-			this.elementType = elementType;
-			this.dimensions = dimensions;
-		}
-
-		public ITypeReference ElementType {
-			get { return elementType; }
-		}
-
-		public int Dimensions {
-			get { return dimensions; }
-		}
-
-		public IType Resolve(ITypeResolveContext context)
-		{
-			return new ArrayType(context.Compilation, elementType.Resolve(context), dimensions);
-		}
-
-		public override string ToString()
-		{
-			return elementType.ToString() + "[" + new string(',', dimensions - 1) + "]";
-		}
-
-		int ISupportsInterning.GetHashCodeForInterning()
-		{
-			return elementType.GetHashCode() ^ dimensions;
-		}
-
-		bool ISupportsInterning.EqualsForInterning(ISupportsInterning other)
-		{
-			ArrayTypeReference o = other as ArrayTypeReference;
-			return o != null && elementType == o.elementType && dimensions == o.dimensions;
 		}
 	}
 }

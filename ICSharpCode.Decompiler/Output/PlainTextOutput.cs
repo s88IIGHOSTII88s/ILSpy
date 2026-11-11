@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2011 AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) 2011 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -28,9 +28,10 @@ using ICSharpCode.Decompiler.TypeSystem;
 
 namespace ICSharpCode.Decompiler
 {
-	public sealed class PlainTextOutput : ITextOutput
+	public sealed class PlainTextOutput : ITextOutput, IDisposable
 	{
 		readonly TextWriter writer;
+		readonly bool ownsWriter;
 		int indent;
 		bool needsIndent;
 
@@ -44,11 +45,19 @@ namespace ICSharpCode.Decompiler
 			if (writer == null)
 				throw new ArgumentNullException(nameof(writer));
 			this.writer = writer;
+			this.ownsWriter = false;
 		}
 
 		public PlainTextOutput()
 		{
 			this.writer = new StringWriter();
+			this.ownsWriter = true;
+		}
+
+		public void Dispose()
+		{
+			if (ownsWriter)
+				writer.Dispose();
 		}
 
 		public TextLocation Location {
@@ -123,7 +132,7 @@ namespace ICSharpCode.Decompiler
 			}
 		}
 
-		public void WriteReference(PEFile module, Handle handle, string text, string protocol = "decompile", bool isDefinition = false)
+		public void WriteReference(MetadataFile module, Handle handle, string text, string protocol = "decompile", bool isDefinition = false)
 		{
 			Write(text);
 		}
@@ -138,12 +147,16 @@ namespace ICSharpCode.Decompiler
 			Write(text);
 		}
 
-		public void WriteLocalReference(string text, object reference, bool isDefinition = false)
+		public void WriteLocalReference(string text, object reference, bool isDefinition = false, bool isHoverOnly = false)
 		{
 			Write(text);
 		}
 
-		void ITextOutput.MarkFoldStart(string collapsedText, bool defaultCollapsed)
+		void ITextOutput.MarkDefinitionStart()
+		{
+		}
+
+		void ITextOutput.MarkFoldStart(string collapsedText, bool defaultCollapsed, bool isDefinition)
 		{
 		}
 
@@ -190,9 +203,14 @@ namespace ICSharpCode.Decompiler
 			actions.Add(target => target.MarkFoldEnd());
 		}
 
-		public void MarkFoldStart(string collapsedText = "...", bool defaultCollapsed = false)
+		public void MarkDefinitionStart()
 		{
-			actions.Add(target => target.MarkFoldStart(collapsedText, defaultCollapsed));
+			actions.Add(target => target.MarkDefinitionStart());
+		}
+
+		public void MarkFoldStart(string collapsedText = "...", bool defaultCollapsed = false, bool isDefinition = false)
+		{
+			actions.Add(target => target.MarkFoldStart(collapsedText, defaultCollapsed, isDefinition));
 		}
 
 		public void Unindent()
@@ -215,7 +233,7 @@ namespace ICSharpCode.Decompiler
 			actions.Add(target => target.WriteLine());
 		}
 
-		public void WriteLocalReference(string text, object reference, bool isDefinition = false)
+		public void WriteLocalReference(string text, object reference, bool isDefinition = false, bool isHoverOnly = false)
 		{
 			actions.Add(target => target.WriteLocalReference(text, reference, isDefinition));
 		}
@@ -225,7 +243,7 @@ namespace ICSharpCode.Decompiler
 			actions.Add(target => target.WriteReference(opCode));
 		}
 
-		public void WriteReference(PEFile module, Handle handle, string text, string protocol = "decompile", bool isDefinition = false)
+		public void WriteReference(MetadataFile module, Handle handle, string text, string protocol = "decompile", bool isDefinition = false)
 		{
 			actions.Add(target => target.WriteReference(module, handle, text, protocol, isDefinition));
 		}

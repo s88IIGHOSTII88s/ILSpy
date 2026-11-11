@@ -1,4 +1,5 @@
-﻿// Copyright (c) 2014 Daniel Grunwald
+#nullable enable
+// Copyright (c) 2014 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -16,6 +17,7 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+using ICSharpCode.Decompiler.TypeSystem;
 
 namespace ICSharpCode.Decompiler.IL
 {
@@ -24,7 +26,7 @@ namespace ICSharpCode.Decompiler.IL
 	/// </summary>
 	public abstract partial class SimpleInstruction : ILInstruction
 	{
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -40,11 +42,11 @@ namespace ICSharpCode.Decompiler.IL
 
 	partial class Nop
 	{
-		public string Comment;
+		public string? Comment;
 
 		public NopKind Kind;
 
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -61,10 +63,10 @@ namespace ICSharpCode.Decompiler.IL
 
 	partial class InvalidBranch : SimpleInstruction
 	{
-		public string Message;
+		public string? Message;
 		public StackType ExpectedResultType = StackType.Void;
 
-		public InvalidBranch(string message) : this()
+		public InvalidBranch(string? message) : this()
 		{
 			this.Message = message;
 		}
@@ -73,7 +75,12 @@ namespace ICSharpCode.Decompiler.IL
 			get { return ExpectedResultType; }
 		}
 
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		public override IType InferType(ICompilation compilation)
+		{
+			return compilation.FindType(ExpectedResultType);
+		}
+
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
@@ -88,10 +95,11 @@ namespace ICSharpCode.Decompiler.IL
 
 	partial class InvalidExpression : SimpleInstruction
 	{
-		public string Message;
+		public string Severity = "Error";
+		public string? Message;
 		public StackType ExpectedResultType = StackType.Unknown;
 
-		public InvalidExpression(string message) : this()
+		public InvalidExpression(string? message) : this()
 		{
 			this.Message = message;
 		}
@@ -100,7 +108,12 @@ namespace ICSharpCode.Decompiler.IL
 			get { return ExpectedResultType; }
 		}
 
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		public override IType InferType(ICompilation compilation)
+		{
+			return compilation.FindType(ExpectedResultType);
+		}
+
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);

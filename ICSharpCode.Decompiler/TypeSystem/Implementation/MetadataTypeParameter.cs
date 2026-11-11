@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2018 Daniel Grunwald
+// Copyright (c) 2018 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -119,6 +119,7 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 		public override bool HasDefaultConstructorConstraint => (attr & GenericParameterAttributes.DefaultConstructorConstraint) != 0;
 		public override bool HasReferenceTypeConstraint => (attr & GenericParameterAttributes.ReferenceTypeConstraint) != 0;
 		public override bool HasValueTypeConstraint => (attr & GenericParameterAttributes.NotNullableValueTypeConstraint) != 0;
+		public override bool AllowsRefLikeType => (attr & SRMExtensions.AllowByRefLike) != 0;
 
 		public override bool HasUnmanagedConstraint {
 			get {
@@ -248,12 +249,12 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 
 		public override int GetHashCode()
 		{
-			return 0x51fc5b83 ^ module.PEFile.GetHashCode() ^ handle.GetHashCode();
+			return 0x51fc5b83 ^ module.MetadataFile.GetHashCode() ^ handle.GetHashCode();
 		}
 
 		public override bool Equals(IType other)
 		{
-			return other is MetadataTypeParameter tp && handle == tp.handle && module.PEFile == tp.module.PEFile;
+			return other is MetadataTypeParameter tp && handle == tp.handle && module.MetadataFile == tp.module.MetadataFile;
 		}
 
 		public override string ToString()

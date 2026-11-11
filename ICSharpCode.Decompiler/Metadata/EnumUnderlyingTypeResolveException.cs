@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2018 Siegfried Pammer
+// Copyright (c) 2018 Siegfried Pammer
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -35,12 +35,12 @@ namespace ICSharpCode.Decompiler.Metadata
 	}
 
 	[Serializable]
-	public class PEFileNotSupportedException : Exception
+	public class MetadataFileNotSupportedException : Exception
 	{
-		public PEFileNotSupportedException() { }
-		public PEFileNotSupportedException(string message) : base(message) { }
-		public PEFileNotSupportedException(string message, Exception inner) : base(message, inner) { }
-		protected PEFileNotSupportedException(
+		public MetadataFileNotSupportedException() { }
+		public MetadataFileNotSupportedException(string message) : base(message) { }
+		public MetadataFileNotSupportedException(string message, Exception inner) : base(message, inner) { }
+		protected MetadataFileNotSupportedException(
 		  SerializationInfo info,
 		  StreamingContext context) : base(info, context) { }
 	}

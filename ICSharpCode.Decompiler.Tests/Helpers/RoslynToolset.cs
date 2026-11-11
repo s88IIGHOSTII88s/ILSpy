@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2020 Siegfried Pammer
+// Copyright (c) 2020 Siegfried Pammer
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -24,88 +24,238 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
+using ICSharpCode.Decompiler.Metadata;
+
 using NuGet.Common;
 using NuGet.Packaging;
 using NuGet.Protocol;
 using NuGet.Protocol.Core.Types;
 using NuGet.Versioning;
 
+using NUnit.Framework;
+
 namespace ICSharpCode.Decompiler.Tests.Helpers
 {
-	class RoslynToolset
+	[System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1001:Types that own disposable fields should be disposable",
+		Justification = "Derived types are intended to be used as static singletons, each living until the process terminates.")]
+	abstract class AbstractToolset
 	{
 		readonly SourceCacheContext cache;
-		readonly SourceRepository repository;
-		readonly FindPackageByIdResource resource;
-		readonly string nugetDir;
-		readonly Dictionary<string, string> installedCompilers = new Dictionary<string, string> {
-			{ "legacy", Environment.ExpandEnvironmentVariables(@"%WINDIR%\Microsoft.NET\Framework\v4.0.30319") }
-		};
-		readonly object syncObj = new object();
+		readonly SourceRepository repository, dotnetToolsFeed;
+		protected readonly string baseDir;
 
-		public RoslynToolset()
+		// Only the repository handles are created here. Resolving a FindPackageByIdResource
+		// loads the feed's service index over HTTP, so that happens in FetchPackage, and only
+		// for a package that is neither in the ILSpy-tests nuget folder nor already extracted.
+		// A run with every toolset cached therefore needs no network access at all.
+		public AbstractToolset(string baseDir)
 		{
 			this.cache = new SourceCacheContext();
 			this.repository = Repository.Factory.GetCoreV3("https://api.nuget.org/v3/index.json");
-			this.resource = repository.GetResource<FindPackageByIdResource>();
-			this.nugetDir = Path.Combine(Path.GetDirectoryName(typeof(RoslynToolset).Assembly.Location), "roslyn");
+			this.dotnetToolsFeed = Repository.Factory.GetCoreV3("https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet-tools/nuget/v3/index.json");
+			this.baseDir = baseDir;
 		}
 
+		enum PackageVersionKind
+		{
+			Rtm,
+			Preview,
+			TransportFeed,
+		}
+
+		// RTM versions look like 5.3.0, and preview ones like 4.12.0-3.final. Transport feed ones eg 5.6.0-2.26177.1
+		static PackageVersionKind ClassifyVersion(NuGetVersion version)
+		{
+			if (!version.IsPrerelease)
+				return PackageVersionKind.Rtm;
+
+			var labels = version.ReleaseLabels.ToList();
+			bool looksLikeTransportFeed = labels.Count >= 3
+				&& labels.All(static label => int.TryParse(label, out _));
+
+			return looksLikeTransportFeed ? PackageVersionKind.TransportFeed : PackageVersionKind.Preview;
+		}
+
+		protected async Task FetchPackage(string packageName, string version, string sourcePath, string outputPath)
+		{
+			if (!Directory.Exists(Path.Combine(Roundtrip.RoundtripAssembly.TestDir, "nuget")))
+				Assert.Fail("No nuget cache found!");
+
+			ILogger logger = NullLogger.Instance;
+			CancellationToken cancellationToken = CancellationToken.None;
+			string pathToPackage = Path.Combine(Roundtrip.RoundtripAssembly.TestDir, "nuget", $"{packageName}-{version}.nupkg");
+			Stream packageStream;
+			if (File.Exists(pathToPackage))
+			{
+				packageStream = File.OpenRead(pathToPackage);
+			}
+			else
+			{
+				packageStream = new MemoryStream();
+
+				NuGetVersion parsedVersion = NuGetVersion.Parse(version);
+				PackageVersionKind versionKind = ClassifyVersion(parsedVersion);
+				SourceRepository selectedFeed = versionKind == PackageVersionKind.TransportFeed
+					? dotnetToolsFeed
+					: repository;
+				FindPackageByIdResource selectedResource = await selectedFeed
+					.GetResourceAsync<FindPackageByIdResource>(cancellationToken).ConfigureAwait(false);
+
+				await selectedResource.CopyNupkgToStreamAsync(
+					packageName,
+					parsedVersion,
+					packageStream,
+					cache,
+					logger,
+					cancellationToken).ConfigureAwait(false);
+
+				packageStream.Position = 0;
+			}
+			using (packageStream)
+			{
+				using PackageArchiveReader packageReader = new PackageArchiveReader(packageStream);
+				NuspecReader nuspecReader = await packageReader.GetNuspecReaderAsync(cancellationToken).ConfigureAwait(false);
+
+				var files = (await packageReader.GetFilesAsync(cancellationToken).ConfigureAwait(false)).ToArray();
+				files = files.Where(f => f.StartsWith(sourcePath, StringComparison.OrdinalIgnoreCase)).ToArray();
+				await packageReader.CopyFilesAsync(outputPath, files,
+					(sourceFile, targetPath, fileStream) => {
+						fileStream.CopyToFile(targetPath);
+						return targetPath;
+					},
+					logger, cancellationToken).ConfigureAwait(false);
+			}
+		}
+	}
+
+	class RoslynToolset : AbstractToolset
+	{
+		readonly Dictionary<string, string> installedCompilers = new Dictionary<string, string> {
+			{ "legacy", Environment.ExpandEnvironmentVariables(@"%WINDIR%\Microsoft.NET\Framework\v4.0.30319") }
+		};
+
+		public RoslynToolset()
+			: base(Path.Combine(AppContext.BaseDirectory, "roslyn"))
+		{
+		}
+
+		public async Task Fetch(string version, string packageName = "Microsoft.Net.Compilers.Toolset", string sourcePath = "tasks/net472")
+		{
+			string path = Path.Combine(baseDir, version, sourcePath);
+			if (!Directory.Exists(path))
+			{
+				await FetchPackage(packageName, version, sourcePath, Path.Combine(baseDir, version)).ConfigureAwait(false);
+			}
+
+			installedCompilers.Add(SanitizeVersion(version), path);
+		}
+
+		// In the .NET ("netcore") build of the compiler toolset the executables live in a
+		// "bincore" subfolder of the tasks directory, as .dlls launched through the dotnet host.
+		// The old Microsoft.Net.Compilers packages (Roslyn 1.x/2.x) have no .NET build; they
+		// only ship .NET Framework executables, which non-Windows platforms host with Mono.
 		public string GetCSharpCompiler(string version)
 		{
-			return GetCompiler("csc.exe", version);
+			return GetHostedCompiler(version, "csc");
 		}
 
 		public string GetVBCompiler(string version)
 		{
-			return GetCompiler("vbc.exe", version);
+			return GetHostedCompiler(version, "vbc");
+		}
+
+		string GetHostedCompiler(string version, string name)
+		{
+			if (!OperatingSystem.IsWindows())
+			{
+				// The installed path may point directly at a dotnet-hosted compiler directory
+				// (e.g. Microsoft.NETCore.Compilers' tools/bincore) or at a tasks directory
+				// with a bincore subfolder (Microsoft.Net.Compilers.Toolset).
+				string dll = GetCompiler($"{name}.dll", version);
+				if (File.Exists(dll))
+					return dll;
+				dll = GetCompiler($"bincore/{name}.dll", version);
+				if (File.Exists(dll))
+					return dll;
+			}
+			return GetCompiler($"{name}.exe", version);
 		}
 
 		string GetCompiler(string compiler, string version)
 		{
-			lock (syncObj)
-			{
-				if (installedCompilers.TryGetValue(version, out var path))
-					return Path.Combine(path, compiler);
-
-				string outputPath = Path.Combine(nugetDir, version);
-				path = Path.Combine(outputPath, "tools");
-
-				if (!Directory.Exists(path))
-				{
-					FetchPackage(version, outputPath).GetAwaiter().GetResult();
-				}
-
-				installedCompilers.Add(version, path);
+			if (installedCompilers.TryGetValue(SanitizeVersion(version), out var path))
 				return Path.Combine(path, compiler);
-			}
+			throw new NotSupportedException($"Cannot find {compiler} {version}, please add it to the initialization.");
 		}
 
-		async Task FetchPackage(string version, string outputPath)
+		internal static string SanitizeVersion(string version)
 		{
-			ILogger logger = NullLogger.Instance;
-			CancellationToken cancellationToken = CancellationToken.None;
-			using MemoryStream packageStream = new MemoryStream();
+			int index = version.IndexOf('-');
+			if (index > 0)
+				return version[..index];
+			return version;
+		}
+	}
 
-			await resource.CopyNupkgToStreamAsync(
-				"Microsoft.Net.Compilers",
-				NuGetVersion.Parse(version),
-				packageStream,
-				cache,
-				logger,
-				cancellationToken);
+	class VsWhereToolset : AbstractToolset
+	{
+		string vswherePath;
 
-			using PackageArchiveReader packageReader = new PackageArchiveReader(packageStream);
-			NuspecReader nuspecReader = await packageReader.GetNuspecReaderAsync(cancellationToken);
+		public VsWhereToolset()
+			: base(Path.Combine(AppContext.BaseDirectory, "vswhere"))
+		{
+		}
 
-			var files = await packageReader.GetFilesAsync(cancellationToken);
-			files = files.Where(f => f.StartsWith("tools", StringComparison.OrdinalIgnoreCase));
-			await packageReader.CopyFilesAsync(outputPath, files,
-				(sourceFile, targetPath, fileStream) => {
-					fileStream.CopyToFile(targetPath);
-					return targetPath;
-				},
-				logger, cancellationToken);
+		public async Task Fetch()
+		{
+			string path = Path.Combine(baseDir, "tools");
+			if (!Directory.Exists(path))
+			{
+				await FetchPackage("vswhere", "2.8.4", "tools", baseDir).ConfigureAwait(false);
+			}
+			vswherePath = Path.Combine(path, "vswhere.exe");
+		}
+
+		public string GetVsWhere() => vswherePath;
+	}
+
+	class RefAssembliesToolset : AbstractToolset
+	{
+		readonly Dictionary<string, string> installedFrameworks = new Dictionary<string, string> {
+			{ "legacy", Path.Combine(Roundtrip.RoundtripAssembly.TestDir, "dotnet", "legacy") },
+			{ "2.2.0", Path.Combine(Roundtrip.RoundtripAssembly.TestDir, "dotnet", "netcore-2.2") },
+		};
+
+		public RefAssembliesToolset()
+			: base(Path.Combine(AppContext.BaseDirectory, "netfx"))
+		{
+		}
+
+		public async Task Fetch(string version, string packageName = CurrentNetCoreVersion.RefAsmPackage, string sourcePath = "ref/net5.0")
+		{
+			string path = Path.Combine(baseDir, version, sourcePath);
+			if (!Directory.Exists(path))
+			{
+				await FetchPackage(packageName, version, sourcePath, Path.Combine(baseDir, version)).ConfigureAwait(false);
+			}
+
+			installedFrameworks.Add(RoslynToolset.SanitizeVersion(version), path);
+		}
+
+		internal string GetPath(string targetFramework)
+		{
+			var (id, version) = UniversalAssemblyResolver.ParseTargetFramework(targetFramework);
+			string path;
+			if (id == TargetFrameworkIdentifier.NETFramework)
+			{
+				path = installedFrameworks["legacy"];
+			}
+			else
+			{
+				path = installedFrameworks[version.ToString(3)];
+			}
+			Debug.Assert(Path.Exists(path));
+			return path;
 		}
 	}
 }

@@ -1,4 +1,4 @@
-﻿// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -47,26 +47,56 @@ namespace ICSharpCode.Decompiler.Tests
 				if (file.Extension.Equals(".il", StringComparison.OrdinalIgnoreCase))
 				{
 					var testName = file.Name.Split('.')[0];
-					Assert.Contains(testName, testNames);
+					Assert.That(testNames, Has.Member(testName));
 				}
 			}
 		}
 
 		[Test]
-		public void SecurityDeclarations()
+		public async Task NegativeConstants()
 		{
-			Run();
+			await Run();
+			// CodeAssert ignores comments, so pin the hexadecimal rendering explicitly.
+			string result = File.ReadAllText(Path.Combine(TestCasePath, nameof(NegativeConstants) + ".result.il"));
+			Assert.That(result, Does.Contain("ldc.i4 -501 // 0xfffffe0b"));
+			Assert.That(result, Does.Contain("ldc.i8 -2 // 0xfffffffffffffffe"));
+			Assert.That(result, Does.Contain("ldc.i4 300\r\n").Or.Contain("ldc.i4 300\n"));
 		}
 
-		void Run([CallerMemberName] string testName = null)
+		[Test]
+		public async Task GenericConstraints()
 		{
-			var ilExpectedFile = Path.Combine(TestCasePath, testName + ".il");
+			await Run();
+		}
+
+		[Test]
+		public async Task SecurityDeclarations()
+		{
+			await Run();
+		}
+
+		[Test]
+		public async Task SortMembers()
+		{
+			await Run(ilExpectedFile: Path.Combine(TestCasePath, "SortMembers.expected.il"), asmOptions: AssemblerOptions.SortedOutput);
+		}
+
+		[Test]
+		public async Task InterfaceImplAttributes()
+		{
+			await Run();
+		}
+
+		async Task Run([CallerMemberName] string testName = null, string ilExpectedFile = null, AssemblerOptions asmOptions = AssemblerOptions.None)
+		{
+			var ilInputFile = Path.Combine(TestCasePath, testName + ".il");
+			ilExpectedFile ??= ilInputFile;
 			var ilResultFile = Path.Combine(TestCasePath, testName + ".result.il");
 
-			var executable = Tester.AssembleIL(ilExpectedFile, AssemblerOptions.Library);
-			var disassembled = Tester.Disassemble(executable, ilResultFile, AssemblerOptions.UseOwnDisassembler);
+			var executable = await Tester.AssembleIL(ilInputFile, AssemblerOptions.Library).ConfigureAwait(false);
+			var disassembled = await Tester.Disassemble(executable, ilResultFile, AssemblerOptions.UseOwnDisassembler | asmOptions).ConfigureAwait(false);
 
-			CodeAssert.FilesAreEqual(ilExpectedFile, ilResultFile);
+			CodeAssert.FilesAreEqual(ilExpectedFile, disassembled);
 		}
 	}
 }

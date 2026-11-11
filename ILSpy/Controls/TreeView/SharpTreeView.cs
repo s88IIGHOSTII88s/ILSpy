@@ -1,0 +1,833 @@
+// Copyright (c) 2026 AlphaSierraPapa for the SharpDevelop Team
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy of this
+// software and associated documentation files (the "Software"), to deal in the Software
+// without restriction, including without limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
+// to whom the Software is furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all copies or
+// substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
+// FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+using System;
+using System.Collections.Generic;
+using System.Collections.Specialized;
+using System.Linq;
+using System.Threading;
+
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
+using Avalonia.Input;
+using Avalonia.Interactivity;
+using Avalonia.Media;
+using Avalonia.Platform.Storage;
+using Avalonia.Threading;
+using Avalonia.VisualTree;
+
+using ICSharpCode.ILSpyX.TreeView;
+using ICSharpCode.ILSpyX.TreeView.PlatformAbstractions;
+
+namespace ICSharpCode.ILSpy.Controls.TreeView
+{
+	/// <summary>
+	/// A virtualizing tree control built on <see cref="ListBox"/>, mirroring the WPF SharpTreeView.
+	/// The tree of <see cref="SharpTreeNode"/>s is flattened to the visible-node list by
+	/// <see cref="TreeFlattener"/> (an <see cref="System.Collections.IList"/> +
+	/// <see cref="INotifyCollectionChanged"/>) which is bound straight to the ListBox ItemsSource --
+	/// so the ListBox virtualizes it and provides anchor-based extend/shrink selection natively.
+	/// </summary>
+	public class SharpTreeView : ListBox
+	{
+		public static readonly StyledProperty<SharpTreeNode?> RootProperty =
+			AvaloniaProperty.Register<SharpTreeView, SharpTreeNode?>(nameof(Root));
+
+		public static readonly StyledProperty<bool> ShowRootProperty =
+			AvaloniaProperty.Register<SharpTreeView, bool>(nameof(ShowRoot), defaultValue: true);
+
+		public static readonly StyledProperty<bool> ShowRootExpanderProperty =
+			AvaloniaProperty.Register<SharpTreeView, bool>(nameof(ShowRootExpander), defaultValue: false);
+
+		public static readonly StyledProperty<bool> ShowLinesProperty =
+			AvaloniaProperty.Register<SharpTreeView, bool>(nameof(ShowLines), defaultValue: true, inherits: true);
+
+		TreeFlattener? flattener;
+		string searchBuffer = string.Empty;
+		DispatcherTimer? searchResetTimer;
+		bool pruningRemovedRowsFromSelection;
+		List<object>? prunedRemovedRows;
+
+		static SharpTreeView()
+		{
+			// WPF "Extended": plain click selects one, Shift extends a range from the anchor (and
+			// shrinks it), Ctrl toggles. Avalonia's ListBox provides this with Multiple selection --
+			// the behaviour ProDataGrid could not do correctly.
+			SelectionModeProperty.OverrideDefaultValue<SharpTreeView>(SelectionMode.Multiple);
+		}
+
+		public SharpTreeView()
+		{
+			// Take keyboard focus directly so gestures like Ctrl+A work the moment the user tabs
+			// or clicks into the pane, before any row becomes the current item.
+			Focusable = true;
+			// The app reveals the selection explicitly on cross-control navigation (search results,
+			// code/metadata links, analyzer nodes) via TreeSelectionBinder -> CenterNodeInView. The
+			// ListBox's own AutoScrollToSelectedItem additionally chases the selected row whenever its
+			// index shifts -- e.g. when the user expands an unrelated node -- yanking the viewport away
+			// from what the user is doing. Disable it so in-tree gestures never move the view.
+			AutoScrollToSelectedItem = false;
+			SelectionChanged += OnSelectionChanged;
+			DoubleTapped += OnDoubleTapped;
+			// Drag-drop is handled generically here and delegated to SharpTreeNode.CanDrop/Drop.
+			AddHandler(PointerPressedEvent, OnDragPointerPressed, RoutingStrategies.Tunnel);
+			AddHandler(PointerMovedEvent, OnDragPointerMoved, RoutingStrategies.Bubble, handledEventsToo: true);
+			AddHandler(PointerReleasedEvent, OnDragPointerReleased, RoutingStrategies.Bubble, handledEventsToo: true);
+			DragDrop.SetAllowDrop(this, true);
+			AddHandler(DragDrop.DragOverEvent, OnDragOver);
+			AddHandler(DragDrop.DropEvent, OnDrop);
+			AddHandler(DragDrop.DragLeaveEvent, (_, _) => HideInsertMarker());
+			// The row template's expander writes IsExpanded straight to the node, so an expansion
+			// made with the mouse never passes through this control; its Click is what identifies
+			// one. Only a gesture scrolls: code that expands nodes to reveal a selection (see
+			// ScrollIntoNodeView) or to open every match of a filter positions the viewport itself,
+			// and a scroll per expanded node would fight it.
+			AddHandler(Button.ClickEvent, OnExpanderClick, RoutingStrategies.Bubble, handledEventsToo: true);
+		}
+
+		public SharpTreeNode? Root {
+			get => GetValue(RootProperty);
+			set => SetValue(RootProperty, value);
+		}
+
+		public bool ShowRoot {
+			get => GetValue(ShowRootProperty);
+			set => SetValue(ShowRootProperty, value);
+		}
+
+		public bool ShowRootExpander {
+			get => GetValue(ShowRootExpanderProperty);
+			set => SetValue(ShowRootExpanderProperty, value);
+		}
+
+		public bool ShowLines {
+			get => GetValue(ShowLinesProperty);
+			set => SetValue(ShowLinesProperty, value);
+		}
+
+		protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
+		{
+			base.OnPropertyChanged(change);
+			if (change.Property == RootProperty || change.Property == ShowRootProperty || change.Property == ShowRootExpanderProperty)
+				Reload();
+		}
+
+		void Reload()
+		{
+			if (flattener != null)
+			{
+				flattener.CollectionChanged -= OnFlattenerCollectionChanged;
+				flattener.Stop();
+				flattener = null;
+			}
+			if (Root != null)
+			{
+				// The tree becomes reachable from the UI here, so this is where the UI thread takes
+				// ownership of it. Avalonia raises property changes on the UI thread, so the calling
+				// thread is the right owner. Every SharpTreeView in the app routes through Reload,
+				// so this single call claims every displayed tree.
+				//
+				// The dispatcher invoke goes with it: EnsureLazyChildren uses it to get back onto
+				// this thread when a background decompile realizes a node's children, which the
+				// tree model cannot do for itself - it must not name a UI framework.
+				Root.SetOwner(Thread.CurrentThread, action => Dispatcher.UIThread.Invoke(action));
+				if (!(ShowRoot && ShowRootExpander))
+					Root.IsExpanded = true;
+				flattener = new TreeFlattener(Root, ShowRoot);
+				flattener.CollectionChanged += OnFlattenerCollectionChanged;
+				ItemsSource = flattener;
+			}
+			else
+			{
+				ItemsSource = null;
+			}
+		}
+
+		void OnFlattenerCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+		{
+			if (SelectedItems == null)
+				return;
+
+			SharpTreeNode[] removedRows = e.Action switch {
+				NotifyCollectionChangedAction.Remove when e.OldItems != null => e.OldItems
+					.OfType<SharpTreeNode>()
+					.Where(SelectedItems.Contains)
+					.ToArray(),
+				NotifyCollectionChangedAction.Reset => SelectedItems
+					.OfType<SharpTreeNode>()
+					.Where(node => flattener?.Contains(node) != true)
+					.ToArray(),
+				_ => []
+			};
+			if (removedRows.Length == 0)
+				return;
+
+			prunedRemovedRows = [];
+			pruningRemovedRowsFromSelection = true;
+			try
+			{
+				foreach (var node in removedRows)
+					SelectedItems.Remove(node);
+			}
+			finally
+			{
+				pruningRemovedRowsFromSelection = false;
+			}
+
+			var removedSelection = prunedRemovedRows;
+			prunedRemovedRows = null;
+			if (removedSelection is { Count: > 0 })
+			{
+				RaiseEvent(new SelectionChangedEventArgs(
+					SelectionChangedEvent,
+					removedSelection,
+					Array.Empty<object>()) { Source = this });
+			}
+		}
+
+		protected override Control CreateContainerForItemOverride(object? item, int index, object? recycleKey)
+			=> new SharpTreeViewItem();
+
+		protected override bool NeedsContainerOverride(object? item, int index, out object? recycleKey)
+			=> NeedsContainer<SharpTreeViewItem>(item, out recycleKey);
+
+		protected override void PrepareContainerForItemOverride(Control container, object? item, int index)
+		{
+			base.PrepareContainerForItemOverride(container, item, index);
+			if (container is SharpTreeViewItem treeItem)
+				treeItem.ParentTreeView = this;
+		}
+
+		void OnSelectionChanged(object? sender, SelectionChangedEventArgs e)
+		{
+			if (pruningRemovedRowsFromSelection)
+			{
+				foreach (var item in e.RemovedItems)
+					prunedRemovedRows!.Add(item);
+				e.Handled = true;
+				return;
+			}
+
+			foreach (SharpTreeNode node in e.RemovedItems)
+				node.IsSelected = false;
+			foreach (SharpTreeNode node in e.AddedItems)
+				node.IsSelected = true;
+		}
+
+		void OnDoubleTapped(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+		{
+			var node = (e.Source as Visual)?.FindAncestorOfType<SharpTreeViewItem>(includeSelf: true)?.Node;
+			if (node == null)
+				return;
+			// Let the node act first (e.g. an analyzer entity row navigates); only when it doesn't
+			// handle the gesture do we fall back to toggling expansion.
+			var args = new AvaloniaPlatformRoutedEventArgs(e);
+			node.ActivateItem(args);
+			if (!e.Handled && node.ShowExpander)
+			{
+				SetExpanded(node, !node.IsExpanded);
+				e.Handled = true;
+			}
+		}
+
+		void OnExpanderClick(object? sender, RoutedEventArgs e)
+		{
+			if (e.Source is ToggleButton { Name: "PART_Expander" } expander
+				&& expander.DataContext is SharpTreeNode { IsExpanded: true } node)
+			{
+				HandleExpanding(node);
+			}
+		}
+
+		/// <summary>Expands or collapses <paramref name="node"/> as a user gesture, so an expansion
+		/// reveals its children the way <see cref="HandleExpanding"/> describes.</summary>
+		void SetExpanded(SharpTreeNode node, bool expanded)
+		{
+			if (node.IsExpanded == expanded)
+				return;
+			node.IsExpanded = expanded;
+			if (expanded)
+				HandleExpanding(node);
+		}
+
+		/// <summary>
+		/// Scrolls the rows a just-expanded node revealed into view, the way the native Windows
+		/// tree control does: far enough to show the new children, but never so far that the
+		/// expanded node itself leaves the viewport. Both steps only move the viewport when their
+		/// row lies outside it, so expanding a node whose children already fit below it does not
+		/// scroll at all.
+		/// </summary>
+		void HandleExpanding(SharpTreeNode node)
+		{
+			SharpTreeNode lastVisibleChild = node;
+			while (lastVisibleChild.Children.LastOrDefault(c => c.IsVisible) is { } child)
+				lastVisibleChild = child;
+			if (lastVisibleChild == node)
+				return;
+			ScrollRowIntoView(lastVisibleChild, centre: false);
+			ScrollRowIntoView(node, centre: false);
+		}
+
+		/// <summary>Scrolls the node into view (unless <paramref name="scroll"/> is false) and gives it
+		/// keyboard focus. Pass <c>scroll: false</c> to focus a row that is already visible without
+		/// disturbing the scroll position.</summary>
+		public void FocusNode(SharpTreeNode node, bool scroll = true)
+		{
+			ArgumentNullException.ThrowIfNull(node);
+			if (scroll)
+				ScrollIntoNodeView(node);
+			if (ContainerFromItem(node) is { } container)
+				container.Focus();
+			else
+				Dispatcher.UIThread.Post(() => (ContainerFromItem(node))?.Focus(), DispatcherPriority.Loaded);
+		}
+
+		/// <summary>True when the node's row is realised and lies fully within the scroll viewport.
+		/// Used to decide, before a selection change scrolls the list, whether a reveal is needed at
+		/// all -- an already-visible row should not be pulled to the centre.</summary>
+		public bool IsNodeFullyVisible(SharpTreeNode node)
+		{
+			ArgumentNullException.ThrowIfNull(node);
+			var scrollViewer = ScrollHost;
+			if (scrollViewer is null)
+				return false;
+			if (ContainerFromItem(node) is Control row && row.IsVisible
+				&& row.TranslatePoint(new Point(0, 0), scrollViewer) is { } top)
+				return top.Y >= 0 && top.Y + row.Bounds.Height <= scrollViewer.Viewport.Height;
+			return false;
+		}
+
+		ScrollViewer? scrollHost;
+
+		/// <summary>
+		/// The template's <see cref="ScrollViewer"/>, looked up once. Callers that ask per node --
+		/// a selection sync checks every selected row -- would otherwise walk the visual tree once
+		/// per call. Re-resolved while null so a query made before the template is applied does not
+		/// cache the miss.
+		/// </summary>
+		ScrollViewer? ScrollHost
+			=> scrollHost ??= this.GetVisualDescendants().OfType<ScrollViewer>().FirstOrDefault();
+
+		/// <summary>Moves the (single) selection to <paramref name="node"/> and focuses it.
+		/// Used by keyboard navigation where selection must follow the caret.</summary>
+		void SelectAndFocus(SharpTreeNode node)
+		{
+			SelectedItem = node;
+			FocusNode(node);
+		}
+
+		public void ScrollIntoNodeView(SharpTreeNode node)
+		{
+			ArgumentNullException.ThrowIfNull(node);
+			foreach (var ancestor in node.Ancestors())
+				ancestor.IsExpanded = true;
+			CenterNodeInView(node);
+		}
+
+		/// <summary>
+		/// Reveals <paramref name="node"/> centred in the viewport so the user's eye lands on a
+		/// newly selected row, rather than at the nearest edge. Skips the move when the row is
+		/// already roughly centred, so re-selecting it never twitches the viewport. We
+		/// deliberately do NOT skip a merely-visible row sitting at an edge: the ListBox's
+		/// AutoScrollToSelectedItem drags the selected row to the nearest edge first, and a
+		/// reveal should still pull it to the centre from there. (Skipping an already-visible
+		/// row is decided one level up, before AutoScroll runs, in the model-&gt;tree sync --
+		/// see TreeSelectionBinder.SyncModelToTree.)
+		/// </summary>
+		void CenterNodeInView(SharpTreeNode node) => ScrollRowIntoView(node, centre: true);
+
+		/// <summary>
+		/// Hides <see cref="ItemsControl.ScrollIntoView(object)"/> so the obvious way to reveal a
+		/// row is also the safe one -- see <see cref="ScrollRowIntoView"/> for what the base
+		/// method does to a container it realises. Hiding is not enforcement: a call through an
+		/// <see cref="ItemsControl"/>-typed reference still reaches the base method. It is here
+		/// so that code written later, on a SharpTreeView-typed variable, lands on the safe path
+		/// without its author having to know any of this.
+		/// </summary>
+		public new void ScrollIntoView(object item)
+		{
+			if (item is SharpTreeNode node)
+				ScrollRowIntoView(node, centre: false);
+		}
+
+		/// <inheritdoc cref="ScrollIntoView(object)"/>
+		public new void ScrollIntoView(int index)
+		{
+			if (flattener is { } rows && (uint)index < (uint)rows.Count)
+				ScrollIntoView(rows[index]);
+		}
+
+		/// <summary>
+		/// Scrolls to a row by setting the offset the row's index implies, rather than calling
+		/// <see cref="ListBox.ScrollIntoView(object)"/>.
+		///
+		/// That method realises a container for the target, arranges it at its own desired
+		/// width, parks it aside for the duration of a few layout passes and then drops the
+		/// reference. A container the passes do not adopt back into the realized range is left
+		/// a visible child of the panel that nothing arranges again -- it keeps painting its
+		/// old item at its old position, over whatever row now occupies that spot. Rows here
+		/// are a uniform height, so the arithmetic below reaches the same place without ever
+		/// entering that code path.
+		/// </summary>
+		void ScrollRowIntoView(SharpTreeNode node, bool centre)
+		{
+			if (this.GetVisualDescendants().OfType<ScrollViewer>().FirstOrDefault() is not { } scrollViewer)
+				return;
+			if (flattener is null || flattener.IndexOf(node) is not (>= 0 and var index))
+				return;
+
+			// An expansion has just changed how many rows there are; the extent has to catch up
+			// before an offset can be clamped against it.
+			UpdateLayout();
+
+			double rowHeight = RowHeight();
+			double viewport = scrollViewer.Viewport.Height;
+			double rowTop = index * rowHeight;
+			double offset = scrollViewer.Offset.Y;
+
+			if (centre)
+			{
+				double rowMidInViewport = rowTop - offset + rowHeight / 2;
+				if (Math.Abs(rowMidInViewport - viewport / 2) <= rowHeight)
+					return;
+				offset = rowTop - (viewport - rowHeight) / 2;
+			}
+			else if (rowTop < offset)
+			{
+				offset = rowTop;
+			}
+			else if (rowTop + rowHeight > offset + viewport)
+			{
+				offset = rowTop + rowHeight - viewport;
+			}
+			else
+			{
+				return;
+			}
+
+			double maxOffset = Math.Max(0, scrollViewer.Extent.Height - viewport);
+			scrollViewer.Offset = new Vector(scrollViewer.Offset.X, Math.Clamp(offset, 0, maxOffset));
+		}
+
+		/// <summary>The height of a row, taken from one that exists rather than assumed. The
+		/// fallback matches the item template, for the moment before the first row is
+		/// realised.</summary>
+		double RowHeight()
+		{
+			foreach (var container in GetRealizedContainers())
+			{
+				if (container.Bounds.Height > 0)
+					return container.Bounds.Height;
+			}
+			return 20;
+		}
+
+		/// <summary>
+		/// Avalonia's default key selection triggers treat plain Enter/Space as selection input:
+		/// the ListBoxItem container marks the KeyDown handled before it bubbles here, so the
+		/// activation handling in <see cref="OnKeyDown"/> would never see those keys. Suppress the
+		/// selection trigger exactly for the case OnKeyDown activates instead -- a single selected
+		/// row that is the row the key landed on. Multi-row selections keep the default behaviour
+		/// (Enter/Space collapses the selection to the focused row).
+		/// </summary>
+		protected override bool ShouldTriggerSelection(Visual selectable, KeyEventArgs eventArgs)
+		{
+			if (eventArgs.KeyModifiers == KeyModifiers.None
+				&& eventArgs.Key is Key.Enter or Key.Space
+				&& selectable is SharpTreeViewItem { Node: { } node }
+				&& SelectedItems?.Count == 1
+				&& ReferenceEquals(SelectedItem, node))
+			{
+				return false;
+			}
+			return base.ShouldTriggerSelection(selectable, eventArgs);
+		}
+
+		protected override void OnKeyDown(KeyEventArgs e)
+		{
+			// Ctrl+A select-all must work on the first press even before a current item is
+			// established (right after the tree gains focus). The base ListBox only selects all
+			// when a focused item lives inside it, so drive it explicitly here.
+			if (e.Key == Key.A && e.KeyModifiers == KeyModifiers.Control
+				&& SelectionMode.HasFlag(SelectionMode.Multiple))
+			{
+				SelectAll();
+				e.Handled = true;
+				return;
+			}
+			if (e.Key == Key.Delete && e.KeyModifiers == KeyModifiers.None && DeleteSelection())
+			{
+				e.Handled = true;
+				return;
+			}
+			var node = (e.Source as Visual)?.FindAncestorOfType<SharpTreeViewItem>(includeSelf: true)?.Node
+				?? SelectedItem as SharpTreeNode;
+			if (node != null && e.KeyModifiers == KeyModifiers.None)
+			{
+				switch (e.Key)
+				{
+					case Key.Left:
+						if (node.IsExpanded)
+							SetExpanded(node, false);
+						else if (node.Parent != null && !node.Parent.IsRoot)
+							SelectAndFocus(node.Parent);
+						else
+							break;
+						e.Handled = true;
+						break;
+					case Key.Right:
+						if (!node.IsExpanded && node.ShowExpander)
+							SetExpanded(node, true);
+						else if (node.Children.Count > 0)
+							SelectAndFocus(node.Children.First(c => c.IsVisible));
+						else
+							break;
+						e.Handled = true;
+						break;
+					case Key.Add:
+						SetExpanded(node, true);
+						e.Handled = true;
+						break;
+					case Key.Subtract:
+						SetExpanded(node, false);
+						e.Handled = true;
+						break;
+					case Key.Multiply:
+						node.IsExpanded = true;
+						ExpandRecursively(node);
+						// The whole subtree is open now, so this reveals as much of it as fits.
+						HandleExpanding(node);
+						e.Handled = true;
+						break;
+					case Key.Enter:
+					case Key.Space:
+						if (SelectedItems!.Count == 1 && ReferenceEquals(SelectedItem, node))
+						{
+							if (e.Key == Key.Space && node.IsCheckable)
+								node.IsChecked = node.IsChecked == null ? true : !node.IsChecked;
+							else
+								node.ActivateItem(new AvaloniaPlatformRoutedEventArgs(e));
+							e.Handled = true;
+						}
+						break;
+				}
+			}
+			if (!e.Handled)
+				base.OnKeyDown(e);
+		}
+
+		/// <summary>
+		/// Deletes the top-level selection (see <see cref="GetTopLevelSelection"/>) when every node in it
+		/// supports deletion, then selects the row that takes the first deleted node's place so a
+		/// repeated Delete keeps working. Returns false without touching anything otherwise, e.g. for
+		/// a selection that mixes deletable and non-deletable rows.
+		/// </summary>
+		bool DeleteSelection()
+		{
+			if (flattener is null)
+				return false;
+			var nodes = GetTopLevelSelection().ToArray();
+			if (nodes.Length == 0 || !nodes.All(n => n.CanDelete()))
+				return false;
+			int index = nodes.Min(flattener.IndexOf);
+			nodes[0].Delete(nodes);
+			// The deleted rows leave the selection with the source; pick the nearest survivor.
+			if (SelectedItems!.Count == 0 && flattener.Count > 0)
+				SelectAndFocus((SharpTreeNode)flattener[Math.Clamp(index, 0, flattener.Count - 1)]!);
+			return true;
+		}
+
+		static void ExpandRecursively(SharpTreeNode node)
+		{
+			if (!node.CanExpandRecursively)
+				return;
+			node.IsExpanded = true;
+			foreach (var child in node.Children)
+				ExpandRecursively(child);
+		}
+
+		protected override void OnTextInput(TextInputEventArgs e)
+		{
+			var text = e.Text;
+			if (!string.IsNullOrEmpty(text) && !char.IsControl(text[0]) && flattener is { Count: > 0 })
+			{
+				searchBuffer += text;
+				RestartSearchTimer();
+				// A fresh single keystroke advances past the current row (so repeating a letter
+				// cycles); a growing prefix re-matches from the current row so a settled match stays.
+				int anchor = SelectedItem is SharpTreeNode current ? flattener.IndexOf(current) : -1;
+				int from = searchBuffer.Length <= 1 ? anchor + 1 : anchor;
+				if (FindPrefixMatch(from) is { } match)
+				{
+					SelectedItem = match;
+					FocusNode(match);
+				}
+				e.Handled = true;
+			}
+			if (!e.Handled)
+				base.OnTextInput(e);
+		}
+
+		SharpTreeNode? FindPrefixMatch(int from)
+		{
+			if (flattener is null)
+				return null;
+			int count = flattener.Count;
+			if (from < 0)
+				from = 0;
+			for (int k = 0; k < count; k++)
+			{
+				if (flattener[(from + k) % count] is SharpTreeNode node
+					&& node.Text?.ToString() is { } text
+					&& text.StartsWith(searchBuffer, StringComparison.OrdinalIgnoreCase))
+				{
+					return node;
+				}
+			}
+			return null;
+		}
+
+		void RestartSearchTimer()
+		{
+			searchResetTimer ??= new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+			searchResetTimer.Stop();
+			searchResetTimer.Tick -= OnSearchTimeout;
+			searchResetTimer.Tick += OnSearchTimeout;
+			searchResetTimer.Start();
+		}
+
+		void OnSearchTimeout(object? sender, EventArgs e)
+		{
+			searchResetTimer?.Stop();
+			searchBuffer = string.Empty;
+		}
+
+		/// <summary>Selected items with no selected ancestor.</summary>
+		public IEnumerable<SharpTreeNode> GetTopLevelSelection()
+		{
+			var selection = SelectedItems!.OfType<SharpTreeNode>().ToHashSet();
+			return selection.Where(item => item.Ancestors().All(a => !selection.Contains(a)));
+		}
+
+		#region Drag and drop
+
+		// External Explorer drops are presented to the node under this format (the internal reorder
+		// payload carries its own node-defined format from SharpTreeNode.Copy).
+		const string FileDropFormat = "FileDrop";
+		static readonly DataFormat<string> InternalDragFormat =
+			DataFormat.CreateStringApplicationFormat("sharptreeview-drag");
+
+		internal enum DropPlace { Before, Inside, After }
+
+		SharpTreeNode[]? draggedNodes;
+		IPlatformDataObject? dragData;
+		SharpTreeNode? pressedNode;
+		PointerPressedEventArgs? dragPress;
+		Point dragStartPoint;
+		Border? insertMarker;
+
+		void OnDragPointerReleased(object? sender, PointerReleasedEventArgs e)
+		{
+			pressedNode = null;
+			dragPress = null;
+		}
+
+		void OnDragPointerPressed(object? sender, PointerPressedEventArgs e)
+		{
+			pressedNode = null;
+			dragPress = null;
+			if (e.Source is not Visual hit || !e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+				return;
+			if (hit.FindAncestorOfType<SharpTreeViewItem>(includeSelf: true)?.Node is { } node)
+			{
+				pressedNode = node;
+				dragPress = e;
+				dragStartPoint = e.GetPosition(this);
+			}
+		}
+
+		async void OnDragPointerMoved(object? sender, PointerEventArgs e)
+		{
+			if (pressedNode is null || dragPress is not { } press)
+				return;
+			if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+			{
+				pressedNode = null;
+				dragPress = null;
+				return;
+			}
+			var delta = e.GetPosition(this) - dragStartPoint;
+			if (Math.Abs(delta.X) < 4 && Math.Abs(delta.Y) < 4)
+				return;
+
+			var nodes = ResolveDraggedSet(pressedNode);
+			pressedNode = null;
+			dragPress = null;
+			if (nodes.Length == 0 || !nodes[0].CanDrag(nodes))
+				return;
+
+			draggedNodes = nodes;
+			dragData = nodes[0].Copy(nodes);
+			try
+			{
+				var data = new DataTransfer();
+				data.Add(DataTransferItem.Create(InternalDragFormat, "1"));
+				await DragDrop.DoDragDropAsync(press, data, DragDropEffects.Move | DragDropEffects.Copy);
+			}
+			finally
+			{
+				draggedNodes = null;
+				dragData = null;
+				HideInsertMarker();
+			}
+		}
+
+		// The dragged set: the whole selection when the pressed row is part of it, else the pressed row.
+		SharpTreeNode[] ResolveDraggedSet(SharpTreeNode pressed)
+		{
+			var selection = SelectedItems!.OfType<SharpTreeNode>().ToArray();
+			return selection.Contains(pressed) ? selection : new[] { pressed };
+		}
+
+		void OnDragOver(object? sender, DragEventArgs e)
+		{
+			var args = new AvaloniaPlatformDragEventArgs(BuildPlatformData(e));
+			if (PickAcceptingTarget(args, ResolveDropTarget(e)) is { } target)
+			{
+				e.DragEffects = args.Effects.ToAvalonia();
+				ShowInsertMarker(target.Item, target.Place);
+			}
+			else
+			{
+				e.DragEffects = DragDropEffects.None;
+				HideInsertMarker();
+			}
+			e.Handled = true;
+		}
+
+		void OnDrop(object? sender, DragEventArgs e)
+		{
+			HideInsertMarker();
+			var args = new AvaloniaPlatformDragEventArgs(BuildPlatformData(e));
+			if (PickAcceptingTarget(args, ResolveDropTarget(e)) is { } target)
+			{
+				target.Node.InternalDrop(args, target.Index);
+				e.DragEffects = args.Effects.ToAvalonia();
+			}
+			e.Handled = true;
+		}
+
+		// Dropping onto the middle 50% of a row lands DropPlace.Inside on the row's own node. Most
+		// concrete SharpTreeNode subclasses inherit the base CanDrop (returns false), so a literal
+		// "drop onto an assembly row" would otherwise show the no-cursor even though the root happily
+		// accepts the payload. Fall back to the empty-space (root) target in that case -- same
+		// fallback as the empty-space-below-last-row path.
+		internal DropTarget? PickAcceptingTarget(IPlatformDragEventArgs args, DropTarget? initial)
+		{
+			if (initial is { } first && first.Node.CanDrop(args, first.Index))
+				return first;
+			if (ResolveEmptySpaceDropTarget() is { } fallback
+				&& (initial is null || !ReferenceEquals(fallback.Node, initial.Value.Node))
+				&& fallback.Node.CanDrop(args, fallback.Index))
+				return fallback;
+			return null;
+		}
+
+		internal readonly record struct DropTarget(SharpTreeNode Node, int Index, DropPlace Place, SharpTreeViewItem? Item);
+
+		DropTarget? ResolveDropTarget(DragEventArgs e)
+		{
+			// External Explorer drops over the gap below the last row arrive with e.Source pointing at
+			// the ListBox-inner ScrollViewer / ItemsPresenter / the tree itself rather than a row.
+			// Fall back to "target the root, Inside, at the end of its children" so dropping onto an
+			// empty list still calls the root's CanDrop/Drop -- the WPF SharpTreeView did the same.
+			if (e.Source is not Visual hit
+				|| hit.FindAncestorOfType<SharpTreeViewItem>(includeSelf: true) is not { Node: { } node } item)
+				return ResolveEmptySpaceDropTarget();
+			double h = item.Bounds.Height;
+			double y = e.GetPosition(item).Y;
+			DropPlace place = y < h * 0.25 ? DropPlace.Before : y > h * 0.75 ? DropPlace.After : DropPlace.Inside;
+			switch (place)
+			{
+				case DropPlace.Inside:
+					return new DropTarget(node, node.Children.Count, place, item);
+				default:
+					if (node.Parent is not { } parent)
+						return new DropTarget(node, node.Children.Count, DropPlace.Inside, item);
+					int idx = parent.Children.IndexOf(node);
+					return new DropTarget(parent, place == DropPlace.After ? idx + 1 : idx, place, item);
+			}
+		}
+
+		internal DropTarget? ResolveEmptySpaceDropTarget()
+		{
+			if (Root is not { } root)
+				return null;
+			return new DropTarget(root, root.Children.Count, DropPlace.Inside, Item: null);
+		}
+
+		IPlatformDataObject BuildPlatformData(DragEventArgs e)
+		{
+			// Internal drag: the node-built payload from Copy. External: pack the dropped file paths.
+			if (dragData != null)
+				return dragData;
+			var data = new AvaloniaDataObject();
+			if (e.DataTransfer.Contains(DataFormat.File) && e.DataTransfer.TryGetFiles() is { } storageItems)
+			{
+				var files = storageItems
+					.Select(f => f.TryGetLocalPath())
+					.Where(p => !string.IsNullOrEmpty(p))
+					.Select(p => p!)
+					.ToArray();
+				if (files.Length > 0)
+					data.SetData(FileDropFormat, files);
+			}
+			return data;
+		}
+
+		void ShowInsertMarker(SharpTreeViewItem? item, DropPlace place)
+		{
+			// item is only null for the empty-space fallback target, whose place is always
+			// DropPlace.Inside -- the early return below covers that and the marker stays hidden.
+			if (place == DropPlace.Inside || item is null || AdornerLayer.GetAdornerLayer(this) is not { } layer)
+			{
+				HideInsertMarker();
+				return;
+			}
+			if (insertMarker == null)
+			{
+				insertMarker = new Border { IsHitTestVisible = false, BorderBrush = Brushes.DodgerBlue };
+				layer.Children.Add(insertMarker);
+			}
+			AdornerLayer.SetAdornedElement(insertMarker, item);
+			insertMarker.BorderThickness = place == DropPlace.After
+				? new Thickness(0, 0, 0, 2)
+				: new Thickness(0, 2, 0, 0);
+			insertMarker.IsVisible = true;
+		}
+
+		void HideInsertMarker()
+		{
+			if (insertMarker != null)
+				insertMarker.IsVisible = false;
+		}
+
+		#endregion
+	}
+}

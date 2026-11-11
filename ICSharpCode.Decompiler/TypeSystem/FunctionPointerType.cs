@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2020 Daniel Grunwald
+// Copyright (c) 2020 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -33,6 +33,7 @@ namespace ICSharpCode.Decompiler.TypeSystem
 		{
 			IType returnType = signature.ReturnType;
 			bool returnIsRefReadOnly = false;
+			SignatureCallingConvention callingConvention = signature.Header.CallingConvention;
 			var customCallConvs = ImmutableArray.CreateBuilder<IType>();
 			while (returnType is ModifiedType modReturn)
 			{
@@ -45,7 +46,31 @@ namespace ICSharpCode.Decompiler.TypeSystem
 					&& modReturn.Modifier.Namespace == "System.Runtime.CompilerServices")
 				{
 					returnType = modReturn.ElementType;
-					customCallConvs.Add(modReturn.Modifier);
+					if (callingConvention == SignatureCallingConvention.Unmanaged)
+					{
+						switch (modReturn.Modifier.Name)
+						{
+							case "CallConvCdecl":
+								callingConvention = SignatureCallingConvention.CDecl;
+								break;
+							case "CallConvFastcall":
+								callingConvention = SignatureCallingConvention.FastCall;
+								break;
+							case "CallConvStdcall":
+								callingConvention = SignatureCallingConvention.StdCall;
+								break;
+							case "CallConvThiscall":
+								callingConvention = SignatureCallingConvention.ThisCall;
+								break;
+							default:
+								customCallConvs.Add(modReturn.Modifier);
+								break;
+						}
+					}
+					else
+					{
+						customCallConvs.Add(modReturn.Modifier);
+					}
 				}
 				else
 				{
@@ -58,17 +83,22 @@ namespace ICSharpCode.Decompiler.TypeSystem
 			{
 				IType paramType = p;
 				ReferenceKind kind = ReferenceKind.None;
-				if (p is ModifiedType modreq)
+				if (p is ModifiedType mod)
 				{
-					if (modreq.Modifier.IsKnownType(KnownAttribute.In))
+					if (mod.Modifier.IsKnownType(KnownAttribute.In))
 					{
 						kind = ReferenceKind.In;
-						paramType = modreq.ElementType;
+						paramType = mod.ElementType;
 					}
-					else if (modreq.Modifier.IsKnownType(KnownAttribute.Out))
+					else if (mod.Modifier.IsKnownType(KnownAttribute.Out))
 					{
 						kind = ReferenceKind.Out;
-						paramType = modreq.ElementType;
+						paramType = mod.ElementType;
+					}
+					else if (mod.Modifier.IsKnownType(KnownAttribute.RequiresLocation))
+					{
+						kind = ReferenceKind.RefReadOnly;
+						paramType = mod.ElementType;
 					}
 				}
 				if (paramType.Kind == TypeKind.ByReference)
@@ -84,7 +114,7 @@ namespace ICSharpCode.Decompiler.TypeSystem
 				parameterReferenceKinds.Add(kind);
 			}
 			return new FunctionPointerType(
-				module, signature.Header.CallingConvention, customCallConvs.ToImmutable(),
+				module, callingConvention, customCallConvs.ToImmutable(),
 				returnType, returnIsRefReadOnly,
 				parameterTypes.MoveToImmutable(), parameterReferenceKinds.MoveToImmutable());
 		}
@@ -130,6 +160,11 @@ namespace ICSharpCode.Decompiler.TypeSystem
 				// but have them act as if they were aliases for UIntPtr.
 				return module.Compilation.FindType(KnownTypeCode.UIntPtr).GetDefinition();
 			}
+		}
+
+		public override ITypeDefinitionOrUnknown GetDefinitionOrUnknown()
+		{
+			return GetDefinition();
 		}
 
 		public override IType AcceptVisitor(TypeVisitor visitor)

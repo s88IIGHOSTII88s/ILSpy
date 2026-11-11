@@ -1,4 +1,5 @@
-﻿// Copyright (c) 2016 Daniel Grunwald
+#nullable enable
+// Copyright (c) 2016 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -20,6 +21,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 
 namespace ICSharpCode.Decompiler.Util
@@ -27,6 +29,8 @@ namespace ICSharpCode.Decompiler.Util
 	/// <summary>
 	/// An immutable set of longs, that is implemented as a list of intervals.
 	/// </summary>
+	[SuppressMessage("Usage", "CA2231:Overload operator equals on overriding value type Equals",
+		Justification = "Equality on LongSet is intentionally only available via SetEquals — the IEquatable<LongSet>.Equals overload is itself [Obsolete] in favor of SetEquals.")]
 	public struct LongSet : IEquatable<LongSet>
 	{
 		/// <summary>
@@ -121,7 +125,6 @@ namespace ICSharpCode.Decompiler.Util
 					return count;
 			}
 		}
-
 
 		IEnumerable<LongInterval> DoIntersectWith(LongSet other)
 		{
@@ -344,17 +347,26 @@ namespace ICSharpCode.Decompiler.Util
 			get { return Intervals.SelectMany(i => i.Range()); }
 		}
 
+		public LongInterval ContainingInterval()
+		{
+			if (IsEmpty)
+				return default;
+			return new LongInterval(Intervals[0].Start, Intervals[Intervals.Length - 1].End);
+		}
+
 		public override string ToString()
 		{
 			return string.Join(",", Intervals);
 		}
 
 		#region Equals and GetHashCode implementation
-		public override bool Equals(object obj)
+		public override bool Equals(object? obj)
 		{
 			return obj is LongSet && SetEquals((LongSet)obj);
 		}
 
+		[SuppressMessage("Design", "CA1065:Do not raise exceptions in unexpected locations",
+			Justification = "Throw is an explicit guard against using LongSet in hash-based containers; use SetEquals for comparison.")]
 		public override int GetHashCode()
 		{
 			throw new NotImplementedException();

@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -16,6 +16,8 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+#nullable enable
+
 using System;
 using System.Collections.Concurrent;
 
@@ -32,9 +34,9 @@ namespace ICSharpCode.Decompiler.Util
 		// There used to be a thread-local dictionary here, but I removed it as it was causing memory
 		// leaks in some use cases.
 
-		public object GetShared(object key)
+		public object? GetShared(object key)
 		{
-			object value;
+			object? value;
 			sharedDict.TryGetValue(key, out value);
 			return value;
 		}

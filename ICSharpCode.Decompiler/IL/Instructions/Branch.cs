@@ -1,4 +1,5 @@
-﻿// Copyright (c) 2014 Daniel Grunwald
+#nullable enable
+// Copyright (c) 2014 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -19,6 +20,8 @@
 using System;
 using System.Diagnostics;
 
+using ICSharpCode.Decompiler.TypeSystem;
+
 namespace ICSharpCode.Decompiler.IL
 {
 	/// <summary>
@@ -26,11 +29,12 @@ namespace ICSharpCode.Decompiler.IL
 	/// </summary>
 	/// <remarks>
 	/// When jumping to the entrypoint of the current block container, the branch represents a <c>continue</c> statement.
+	/// Will implicitly execute finally blocks when jumping out of a try-block.
 	/// </remarks>
 	partial class Branch : SimpleInstruction, IBranchOrLeaveInstruction
 	{
 		readonly int targetILOffset;
-		Block targetBlock;
+		Block? targetBlock;
 
 		public Branch(int targetILOffset) : base(OpCode.Branch)
 		{
@@ -48,7 +52,11 @@ namespace ICSharpCode.Decompiler.IL
 		}
 
 		public Block TargetBlock {
-			get { return targetBlock; }
+			get {
+				// HACK: We treat TargetBlock as non-nullable publicly, because it's only null inside
+				// the ILReader, and becomes non-null once the BlockBuilder has run.
+				return targetBlock!;
+			}
 			set {
 				if (targetBlock != null && IsConnected)
 					targetBlock.IncomingEdgeCount--;
@@ -62,7 +70,7 @@ namespace ICSharpCode.Decompiler.IL
 		/// Gets the BlockContainer that contains the target block.
 		/// </summary>
 		public BlockContainer TargetContainer {
-			get { return (BlockContainer)targetBlock?.Parent; }
+			get { return (BlockContainer)targetBlock?.Parent!; }
 		}
 
 		protected override void Connected()
@@ -92,9 +100,9 @@ namespace ICSharpCode.Decompiler.IL
 			}
 		}
 
-		internal static bool GetExecutesFinallyBlock(ILInstruction inst, BlockContainer container)
+		internal static bool GetExecutesFinallyBlock(ILInstruction? inst, BlockContainer? container)
 		{
-			for (; inst != container; inst = inst.Parent)
+			for (; inst != container && inst != null; inst = inst.Parent)
 			{
 				if (inst.Parent is TryFinally && inst.SlotInfo == TryFinally.TryBlockSlot)
 					return true;
@@ -102,28 +110,36 @@ namespace ICSharpCode.Decompiler.IL
 			return false;
 		}
 
-		internal override void CheckInvariant(ILPhase phase)
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
 		{
-			base.CheckInvariant(phase);
+			base.CheckInvariant(phase, compilation);
 			if (phase > ILPhase.InILReader)
 			{
-				Debug.Assert(targetBlock.Parent is BlockContainer);
-				Debug.Assert(this.IsDescendantOf(targetBlock.Parent));
-				Debug.Assert(targetBlock.Parent.Children[targetBlock.ChildIndex] == targetBlock);
+				Debug.Assert(targetBlock?.Parent is BlockContainer);
+				Debug.Assert(this.IsDescendantOf(targetBlock!.Parent!));
+				Debug.Assert(targetBlock!.Parent!.Children[targetBlock.ChildIndex] == targetBlock);
 			}
 		}
 
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);
 			output.Write(' ');
-			output.WriteLocalReference(TargetLabel, (object)targetBlock ?? TargetILOffset);
+			output.WriteLocalReference(TargetLabel, (object?)targetBlock ?? TargetILOffset);
 		}
 	}
 
 	interface IBranchOrLeaveInstruction
 	{
+		/// <summary>
+		/// The block container that directly contains the jump target.
+		/// </summary>
 		BlockContainer TargetContainer { get; }
+
+		/// <summary>
+		/// Gets whether this branch executes at least one finally block before reaching the jump target.
+		/// </summary>
+		bool TriggersFinallyBlock { get; }
 	}
 }

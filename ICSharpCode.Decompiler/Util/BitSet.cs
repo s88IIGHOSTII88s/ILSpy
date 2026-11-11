@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2016 Daniel Grunwald
+// Copyright (c) 2016 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -15,9 +15,12 @@
 // FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
+#nullable enable
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Numerics;
 using System.Text;
 
 namespace ICSharpCode.Decompiler.Util
@@ -264,6 +267,63 @@ namespace ICSharpCode.Decompiler.Util
 			for (int i = 0; i < words.Length; i++)
 			{
 				words[i] = 0;
+			}
+		}
+
+		public int NextSetBit(int startIndex, int endIndex)
+		{
+			Debug.Assert(startIndex <= endIndex);
+			if (startIndex >= endIndex)
+			{
+				return -1;
+			}
+
+			int startWordIndex = WordIndex(startIndex);
+			int endWordIndex = WordIndex(endIndex - 1);
+			ulong startMask = Mask << startIndex;
+			ulong endMask = Mask >> -endIndex; // same as (Mask >> (64 - (endIndex % 64)))
+			if (startWordIndex == endWordIndex)
+			{
+				ulong maskedWord = words[startWordIndex] & startMask & endMask;
+				if (maskedWord != 0)
+				{
+					return startWordIndex * 64 + BitOperations.TrailingZeroCount(maskedWord);
+				}
+			}
+			else
+			{
+				ulong maskedWord = words[startWordIndex] & startMask;
+				if (maskedWord != 0)
+				{
+					return startWordIndex * 64 + BitOperations.TrailingZeroCount(maskedWord);
+				}
+				for (int i = startWordIndex + 1; i < endWordIndex; i++)
+				{
+					maskedWord = words[i];
+					if (maskedWord != 0)
+					{
+						return i * 64 + BitOperations.TrailingZeroCount(maskedWord);
+					}
+				}
+				maskedWord = words[endWordIndex] & endMask;
+				if (maskedWord != 0)
+				{
+					return endWordIndex * 64 + BitOperations.TrailingZeroCount(maskedWord);
+				}
+			}
+
+			return -1;
+		}
+
+		public IEnumerable<int> SetBits(int startIndex, int endIndex)
+		{
+			while (true)
+			{
+				int next = NextSetBit(startIndex, endIndex);
+				if (next == -1)
+					break;
+				yield return next;
+				startIndex = next + 1;
 			}
 		}
 

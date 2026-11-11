@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2018 Siegfried Pammer
+// Copyright (c) 2018 Siegfried Pammer
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -30,6 +30,8 @@ using ICSharpCode.Decompiler.Metadata;
 using ILCompiler.Reflection.ReadyToRun;
 using ILCompiler.Reflection.ReadyToRun.Amd64;
 
+using ICSharpCode.ILSpy;
+
 namespace ICSharpCode.ILSpy.ReadyToRun
 {
 	internal class ReadyToRunDisassembler
@@ -37,27 +39,47 @@ namespace ICSharpCode.ILSpy.ReadyToRun
 		private readonly ITextOutput output;
 		private readonly ReadyToRunReader reader;
 		private readonly RuntimeFunction runtimeFunction;
+		private readonly SettingsService settingsService;
 
-		public ReadyToRunDisassembler(ITextOutput output, ReadyToRunReader reader, RuntimeFunction runtimeFunction)
+		public ReadyToRunDisassembler(ITextOutput output, ReadyToRunReader reader, RuntimeFunction runtimeFunction, SettingsService settingsService)
 		{
 			this.output = output;
 			this.reader = reader;
 			this.runtimeFunction = runtimeFunction;
+			this.settingsService = settingsService;
 		}
 
 		public void Disassemble(PEFile currentFile, int bitness, ulong address, bool showMetadataTokens, bool showMetadataTokensInBase10)
 		{
-			// TODO: Decorate the disassembly with GCInfo
 			ReadyToRunMethod readyToRunMethod = runtimeFunction.Method;
 			WriteCommentLine(readyToRunMethod.SignatureString);
 
+			var options = settingsService.GetSettings<ReadyToRunOptions>();
+
+			if (options.IsShowGCInfo)
+			{
+				if (readyToRunMethod.GcInfo != null)
+				{
+					string[] lines = readyToRunMethod.GcInfo.ToString()?.Split(Environment.NewLine) ?? [];
+					WriteCommentLine("GC info:");
+					foreach (string line in lines)
+					{
+						WriteCommentLine(line);
+					}
+				}
+				else
+				{
+					WriteCommentLine("GC Info is not available for this method");
+				}
+			}
+
 			Dictionary<ulong, UnwindCode> unwindInfo = null;
-			if (ReadyToRunOptions.GetIsShowUnwindInfo(null) && bitness == 64)
+			if (options.IsShowUnwindInfo && bitness == 64)
 			{
 				unwindInfo = WriteUnwindInfo();
 			}
 
-			bool isShowDebugInfo = ReadyToRunOptions.GetIsShowDebugInfo(null);
+			bool isShowDebugInfo = options.IsShowDebugInfo;
 			DebugInfoHelper debugInfo = null;
 			if (isShowDebugInfo)
 			{
@@ -81,7 +103,7 @@ namespace ICSharpCode.ILSpy.ReadyToRun
 				decoder.Decode(out instructions.AllocUninitializedElement());
 			}
 
-			string disassemblyFormat = ReadyToRunOptions.GetDisassemblyFormat(null);
+			string disassemblyFormat = options.DisassemblyFormat;
 			Formatter formatter = null;
 			if (disassemblyFormat.Equals(ReadyToRunOptions.intel))
 			{
@@ -96,29 +118,41 @@ namespace ICSharpCode.ILSpy.ReadyToRun
 			formatter.Options.FirstOperandCharIndex = 10;
 			var tempOutput = new StringOutput();
 			ulong baseInstrIP = instructions[0].IP;
+
+			var boundsMap = new Dictionary<uint, uint>();
+			if (runtimeFunction.DebugInfo != null)
+			{
+				foreach (var bound in runtimeFunction.DebugInfo.BoundsList)
+				{
+					// ignoring the return value assuming the same key is always mapped to the same value in runtimeFunction.DebugInfo.BoundsList
+					boundsMap.TryAdd(bound.NativeOffset, bound.ILOffset);
+				}
+			}
+
 			foreach (var instr in instructions)
 			{
 				int byteBaseIndex = (int)(instr.IP - address);
 				if (isShowDebugInfo && runtimeFunction.DebugInfo != null)
 				{
-					foreach (var bound in runtimeFunction.DebugInfo.BoundsList)
+					if (byteBaseIndex >= 0 && boundsMap.TryGetValue((uint)byteBaseIndex, out uint boundILOffset))
 					{
-						if (bound.NativeOffset == byteBaseIndex)
+						if (boundILOffset == (uint)DebugInfoBoundsType.Prolog)
 						{
-							if (bound.ILOffset == (uint)DebugInfoBoundsType.Prolog)
-							{
-								WriteCommentLine("Prolog");
-							}
-							else if (bound.ILOffset == (uint)DebugInfoBoundsType.Epilog)
-							{
-								WriteCommentLine("Epilog");
-							}
-							else
-							{
-								WriteCommentLine($"IL_{bound.ILOffset:x4}");
-							}
+							WriteCommentLine("Prolog");
+						}
+						else if (boundILOffset == (uint)DebugInfoBoundsType.Epilog)
+						{
+							WriteCommentLine("Epilog");
+						}
+						else
+						{
+							WriteCommentLine($"IL_{boundILOffset:x4}");
 						}
 					}
+				}
+				if (options.IsShowGCInfo)
+				{
+					DecorateGCInfo(instr, baseInstrIP, readyToRunMethod.GcInfo);
 				}
 				formatter.Format(instr, tempOutput);
 				output.Write(instr.IP.ToString("X16"));
@@ -137,10 +171,24 @@ namespace ICSharpCode.ILSpy.ReadyToRun
 				output.Write(tempOutput.ToStringAndReset());
 				DecorateUnwindInfo(unwindInfo, baseInstrIP, instr);
 				DecorateDebugInfo(instr, debugInfo, baseInstrIP);
-
 				DecorateCallSite(currentFile, showMetadataTokens, showMetadataTokensInBase10, instr);
+				output.WriteLine();
 			}
 			output.WriteLine();
+		}
+
+		private void DecorateGCInfo(Instruction instr, ulong baseInstrIP, BaseGcInfo gcInfo)
+		{
+			ulong codeOffset = instr.IP - baseInstrIP;
+			if (gcInfo != null && gcInfo.Transitions != null && gcInfo.Transitions.TryGetValue((int)codeOffset, out List<BaseGcTransition> transitionsForOffset))
+			{
+				// this value comes from a manual count of the spaces used for each instruction in Disassemble()
+				string indent = new string(' ', 36);
+				foreach (var transition in transitionsForOffset)
+				{
+					WriteCommentLine(indent + transition.ToString());
+				}
+			}
 		}
 
 		private void WriteCommentLine(string comment)
@@ -243,7 +291,7 @@ namespace ICSharpCode.ILSpy.ReadyToRun
 						{
 							// This could happen if the compiler is generating bogus variable info mapping record that covers 0 instructions
 							// See https://github.com/dotnet/runtime/issues/47202
-							Debug.Assert(false);
+							// Debug.Assert(false);
 							continue;
 						}
 						switch (varLoc.VariableLocation.VarLocType)
@@ -433,7 +481,7 @@ namespace ICSharpCode.ILSpy.ReadyToRun
 									output.WriteReference(currentFile, methodDefToken, $"({MetadataTokens.GetToken(methodDefToken):X8}) ", "metadata");
 								}
 							}
-							methodDefToken.WriteTo(currentFile, output, Decompiler.Metadata.GenericContext.Empty);
+							methodDefToken.WriteTo(currentFile, output, default);
 							break;
 						case MethodRefEntrySignature methodRefSignature:
 							var methodRefToken = MetadataTokens.EntityHandle(unchecked((int)methodRefSignature.MethodRefToken));
@@ -448,18 +496,13 @@ namespace ICSharpCode.ILSpy.ReadyToRun
 									output.WriteReference(currentFile, methodRefToken, $"({MetadataTokens.GetToken(methodRefToken):X8}) ", "metadata");
 								}
 							}
-							methodRefToken.WriteTo(currentFile, output, Decompiler.Metadata.GenericContext.Empty);
+							methodRefToken.WriteTo(currentFile, output, default);
 							break;
 						default:
-							output.WriteLine(reader.ImportSignatures[importCellAddress].ToString(new SignatureFormattingOptions()));
+							output.Write(reader.ImportSignatures[importCellAddress].ToString(new SignatureFormattingOptions()));
 							break;
 					}
-					output.WriteLine();
 				}
-			}
-			else
-			{
-				output.WriteLine();
 			}
 		}
 	}

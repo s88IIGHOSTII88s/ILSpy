@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2011 AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) 2011 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -16,6 +16,9 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+#nullable enable
+
+using System.Diagnostics;
 using System.Linq;
 
 using ICSharpCode.Decompiler.CSharp.Syntax;
@@ -26,9 +29,19 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 {
 	public class IntroduceUnsafeModifier : DepthFirstAstVisitor<bool>, IAstTransform
 	{
+		TransformContext? context;
+
 		public void Run(AstNode compilationUnit, TransformContext context)
 		{
-			compilationUnit.AcceptVisitor(this);
+			this.context = context;
+			try
+			{
+				compilationUnit.AcceptVisitor(this);
+			}
+			finally
+			{
+				this.context = null;
+			}
 		}
 
 		public static bool IsUnsafe(AstNode node)
@@ -36,11 +49,28 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			return node.AcceptVisitor(new IntroduceUnsafeModifier());
 		}
 
+		// Run() sets the context, but the static IsUnsafe() entry point drives this visitor with no
+		// context, so step recording must tolerate a null context. Both helpers compile out entirely
+		// in non-STEP (Release) builds, so the null check only exists in debug step-recording builds.
+		[Conditional("STEP")]
+		void Step(string description, AstNode node)
+		{
+			if (context != null)
+				context.Step(description, node);
+		}
+
+		[Conditional("STEP")]
+		void EndStep(AstNode node)
+		{
+			if (context != null)
+				context.EndStep(node);
+		}
+
 		protected override bool VisitChildren(AstNode node)
 		{
 			bool result = false;
-			AstNode next;
-			for (AstNode child = node.FirstChild; child != null; child = next)
+			AstNode? next;
+			for (AstNode? child = node.FirstChild; child != null; child = next)
 			{
 				// Store next to allow the loop to continue
 				// if the visitor removes/replaces child.
@@ -49,6 +79,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			}
 			if (result && node is EntityDeclaration && !(node is Accessor))
 			{
+				Step("Add unsafe modifier", node);
 				((EntityDeclaration)node).Modifiers |= Modifiers.Unsafe;
 				return false;
 			}
@@ -92,13 +123,15 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 					&& bop.GetResolveResult() is OperatorResolveResult orr
 					&& orr.Operands.FirstOrDefault()?.Type.Kind == TypeKind.Pointer)
 				{
+					Step("Replace pointer addition with indexer", unaryOperatorExpression);
 					// transform "*(ptr + int)" to "ptr[int]"
 					IndexerExpression indexer = new IndexerExpression();
-					indexer.Target = bop.Left.Detach();
-					indexer.Arguments.Add(bop.Right.Detach());
+					indexer.Target = bop.Left!.Detach();
+					indexer.Arguments.Add(bop.Right!.Detach());
 					indexer.CopyAnnotationsFrom(unaryOperatorExpression);
 					indexer.CopyAnnotationsFrom(bop);
 					unaryOperatorExpression.ReplaceWith(indexer);
+					EndStep(indexer);
 				}
 				return true;
 			}
@@ -115,9 +148,10 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 		public override bool VisitMemberReferenceExpression(MemberReferenceExpression memberReferenceExpression)
 		{
 			bool result = base.VisitMemberReferenceExpression(memberReferenceExpression);
-			UnaryOperatorExpression uoe = memberReferenceExpression.Target as UnaryOperatorExpression;
+			UnaryOperatorExpression? uoe = memberReferenceExpression.Target as UnaryOperatorExpression;
 			if (uoe != null && uoe.Operator == UnaryOperatorType.Dereference)
 			{
+				Step("Replace pointer member access", memberReferenceExpression);
 				PointerReferenceExpression pre = new PointerReferenceExpression();
 				pre.Target = uoe.Expression.Detach();
 				pre.MemberName = memberReferenceExpression.MemberName;
@@ -126,47 +160,25 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 				pre.RemoveAnnotations<ResolveResult>(); // only copy the ResolveResult from the MRE
 				pre.CopyAnnotationsFrom(memberReferenceExpression);
 				memberReferenceExpression.ReplaceWith(pre);
+				EndStep(pre);
 			}
-			var rr = memberReferenceExpression.GetResolveResult();
-			if (rr != null)
-			{
-				if (IsPointer(rr.Type))
-					return true;
-				if (rr is MemberResolveResult mrr && mrr.Member.ReturnType.Kind == TypeKind.Delegate)
-				{
-					var method = mrr.Member.ReturnType.GetDefinition()?.GetDelegateInvokeMethod();
-					if (method != null && (IsPointer(method.ReturnType) || method.Parameters.Any(p => IsPointer(p.Type))))
-						return true;
-				}
-			}
-
+			if (HasUnsafeResolveResult(memberReferenceExpression))
+				return true;
 			return result;
 		}
 
 		public override bool VisitIdentifierExpression(IdentifierExpression identifierExpression)
 		{
 			bool result = base.VisitIdentifierExpression(identifierExpression);
-			var rr = identifierExpression.GetResolveResult();
-			if (rr != null)
-			{
-				if (IsPointer(rr.Type))
-					return true;
-				if (rr is MemberResolveResult mrr && mrr.Member.ReturnType.Kind == TypeKind.Delegate)
-				{
-					var method = mrr.Member.ReturnType.GetDefinition()?.GetDelegateInvokeMethod();
-					if (method != null && (IsPointer(method.ReturnType) || method.Parameters.Any(p => IsPointer(p.Type))))
-						return true;
-				}
-			}
-
+			if (HasUnsafeResolveResult(identifierExpression))
+				return true;
 			return result;
 		}
 
 		public override bool VisitStackAllocExpression(StackAllocExpression stackAllocExpression)
 		{
 			bool result = base.VisitStackAllocExpression(stackAllocExpression);
-			var rr = stackAllocExpression.GetResolveResult();
-			if (IsPointer(rr?.Type))
+			if (HasUnsafeResolveResult(stackAllocExpression))
 				return true;
 			return result;
 		}
@@ -174,8 +186,15 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 		public override bool VisitInvocationExpression(InvocationExpression invocationExpression)
 		{
 			bool result = base.VisitInvocationExpression(invocationExpression);
-			var rr = invocationExpression.GetResolveResult();
-			if (IsPointer(rr?.Type))
+			if (HasUnsafeResolveResult(invocationExpression))
+				return true;
+			return result;
+		}
+
+		public override bool VisitObjectCreateExpression(ObjectCreateExpression objectCreateExpression)
+		{
+			bool result = base.VisitObjectCreateExpression(objectCreateExpression);
+			if (HasUnsafeResolveResult(objectCreateExpression))
 				return true;
 			return result;
 		}
@@ -186,7 +205,33 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			return true;
 		}
 
-		private bool IsPointer(IType type)
+		private bool HasUnsafeResolveResult(AstNode node)
+		{
+			var rr = node.GetResolveResult();
+			if (rr == null)
+				return false;
+			if (IsUnsafeType(rr.Type))
+				return true;
+			if ((rr as MemberResolveResult)?.Member is IParameterizedMember pm)
+			{
+				if (pm.Parameters.Any(p => IsUnsafeType(p.Type)))
+					return true;
+			}
+			else if (rr is MethodGroupResolveResult)
+			{
+				var chosenMethod = node.GetSymbol();
+				if (chosenMethod is IParameterizedMember pm2)
+				{
+					if (IsUnsafeType(pm2.ReturnType))
+						return true;
+					if (pm2.Parameters.Any(p => IsUnsafeType(p.Type)))
+						return true;
+				}
+			}
+			return false;
+		}
+
+		private bool IsUnsafeType(IType type)
 		{
 			switch (type?.Kind)
 			{
@@ -194,7 +239,8 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 				case TypeKind.FunctionPointer:
 					return true;
 				case TypeKind.ByReference:
-					return IsPointer(((ByReferenceType)type).ElementType);
+				case TypeKind.Array:
+					return IsUnsafeType(((Decompiler.TypeSystem.Implementation.TypeWithElementType)type).ElementType);
 				default:
 					return false;
 			}

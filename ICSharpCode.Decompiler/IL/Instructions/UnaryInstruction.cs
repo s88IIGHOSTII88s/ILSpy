@@ -1,4 +1,5 @@
-﻿// Copyright (c) 2014 Daniel Grunwald
+#nullable enable
+// Copyright (c) 2014 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -18,6 +19,8 @@
 
 using System.Diagnostics;
 
+using ICSharpCode.Decompiler.TypeSystem;
+
 namespace ICSharpCode.Decompiler.IL
 {
 	partial class BitNot : ILiftableInstruction
@@ -36,20 +39,17 @@ namespace ICSharpCode.Decompiler.IL
 		public bool IsLifted { get; }
 		public StackType UnderlyingResultType { get; }
 
-		public override StackType ResultType {
-			get {
-				return Argument.ResultType;
-			}
-		}
+		public override StackType ResultType => Argument.ResultType;
+		public override IType InferType(ICompilation compilation) => Argument.InferType(compilation);
 
-		internal override void CheckInvariant(ILPhase phase)
+		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
 		{
-			base.CheckInvariant(phase);
-			Debug.Assert(IsLifted == (ResultType == StackType.O));
+			base.CheckInvariant(phase, compilation);
+			Debug.Assert(IsLifted == (ResultType == StackType.VT));
 			Debug.Assert(IsLifted || ResultType == UnderlyingResultType);
 		}
 
-		public override void WriteTo(ITextOutput output, ILAstWritingOptions options)
+		protected override void WriteToCore(ITextOutput output, ILAstWritingOptions options)
 		{
 			WriteILRange(output, options);
 			output.Write(OpCode);

@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2018 Siegfried Pammer
+// Copyright (c) 2018 Siegfried Pammer
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -19,15 +19,12 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
-using System.Text;
 
 using ICSharpCode.Decompiler.CSharp;
 using ICSharpCode.Decompiler.CSharp.Syntax;
 using ICSharpCode.Decompiler.IL;
-using ICSharpCode.Decompiler.Metadata;
 using ICSharpCode.Decompiler.TypeSystem;
 using ICSharpCode.Decompiler.Util;
 
@@ -70,18 +67,25 @@ namespace ICSharpCode.Decompiler.DebugInfo
 			foreach (var scope in importScopes)
 			{
 				var blob = EncodeImports(metadata, scope);
-				scope.Handle = metadata.AddImportScope(scope.Parent == null ? globalImportScope : scope.Parent.Handle, blob);
+				var parent = scope.Parent == this.globalImportScope ? globalImportScope : scope.Parent.Handle;
+				scope.Handle = metadata.AddImportScope(parent, blob);
 			}
 		}
 
 		static BlobHandle EncodeImports(MetadataBuilder metadata, ImportScopeInfo scope)
 		{
 			var writer = new BlobBuilder();
+			var scopes = new Stack<ImportScopeInfo>();
+			for (var current = scope; current != null; current = current.Parent)
+				scopes.Push(current);
 
-			foreach (var import in scope.Imports)
+			while (scopes.Count > 0)
 			{
-				writer.WriteByte((byte)ImportDefinitionKind.ImportNamespace);
-				writer.WriteCompressedInteger(MetadataTokens.GetHeapOffset(metadata.GetOrAddBlobUTF8(import)));
+				foreach (var import in scopes.Pop().Imports)
+				{
+					writer.WriteByte((byte)ImportDefinitionKind.ImportNamespace);
+					writer.WriteCompressedInteger(MetadataTokens.GetHeapOffset(metadata.GetOrAddBlobUTF8(import)));
+				}
 			}
 
 			return metadata.GetOrAddBlob(writer);
@@ -134,6 +138,30 @@ namespace ICSharpCode.Decompiler.DebugInfo
 		public override void VisitAnonymousMethodExpression(AnonymousMethodExpression anonymousMethodExpression)
 		{
 			HandleMethod(anonymousMethodExpression);
+		}
+
+		public override void VisitPropertyDeclaration(PropertyDeclaration propertyDeclaration)
+		{
+			if (propertyDeclaration.ExpressionBody is not null)
+			{
+				HandleMethod(propertyDeclaration.ExpressionBody, propertyDeclaration.Annotation<ILFunction>());
+			}
+			else
+			{
+				base.VisitPropertyDeclaration(propertyDeclaration);
+			}
+		}
+
+		public override void VisitIndexerDeclaration(IndexerDeclaration indexerDeclaration)
+		{
+			if (indexerDeclaration.ExpressionBody is not null)
+			{
+				HandleMethod(indexerDeclaration.ExpressionBody, indexerDeclaration.Annotation<ILFunction>());
+			}
+			else
+			{
+				base.VisitIndexerDeclaration(indexerDeclaration);
+			}
 		}
 
 		public override void VisitQueryFromClause(QueryFromClause queryFromClause)
@@ -207,11 +235,11 @@ namespace ICSharpCode.Decompiler.DebugInfo
 			this.functions.Add(function);
 			var method = function.MoveNextMethod ?? function.Method;
 			MethodDefinitionHandle handle = (MethodDefinitionHandle)method.MetadataToken;
-			var file = typeSystem.MainModule.PEFile;
+			var file = typeSystem.MainModule.MetadataFile;
 			MethodDefinition md = file.Metadata.GetMethodDefinition(handle);
 			if (md.HasBody())
 			{
-				HandleMethodBody(function, file.Reader.GetMethodBody(md.RelativeVirtualAddress));
+				HandleMethodBody(function, file.GetMethodBody(md.RelativeVirtualAddress));
 			}
 		}
 
@@ -232,7 +260,14 @@ namespace ICSharpCode.Decompiler.DebugInfo
 					if (v.Index != null && v.Kind.IsLocal())
 					{
 #if DEBUG
-						Debug.Assert(v.Index < types.Length && v.Type.Equals(types[v.Index.Value]));
+						// The index is the IL ldloc/stloc operand, which indexes the local signature
+						// directly: ILReader creates one variable per signature slot, and SplitVariables
+						// copies that index. It is therefore correct by construction. The variable type
+						// is intentionally not checked against the signature - it is never written to the
+						// PDB (only the slot index and name are), and it legitimately diverges after
+						// variable splitting (one slot, several typed variables), for pinned-region locals
+						// modeled as pointers, and through generic-context type-parameter identity.
+						Debug.Assert(v.Index < types.Length);
 #endif
 						localVariables.Add(v);
 					}

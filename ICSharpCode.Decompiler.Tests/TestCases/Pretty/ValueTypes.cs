@@ -1,4 +1,4 @@
-﻿// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -134,7 +134,11 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 #if !(ROSLYN && OPT) || COPY_PROPAGATION_FIXED
 		public static S InitObj1()
 		{
+#if CS71
+			S result = default;
+#else
 			S result = default(S);
+#endif
 			MakeArray();
 			return result;
 		}
@@ -142,12 +146,20 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 
 		public static S InitObj2()
 		{
+#if CS71
+			return default;
+#else
 			return default(S);
+#endif
 		}
 
 		public static void InitObj3(out S p)
 		{
+#if CS71
+			p = default;
+#else
 			p = default(S);
+#endif
 		}
 
 		public static S CallValueTypeCtor()
@@ -252,7 +264,11 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 
 		public static T Get<T>()
 		{
+#if CS71
+			return default;
+#else
 			return default(T);
+#endif
 		}
 
 		public static void CallOnTemporary()
@@ -281,5 +297,34 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		{
 			return ulong.MaxValue.ToString();
 		}
+
+		public static void InliningDefaultValue()
+		{
+			Test(default(DateTime).GetType());
+			Test(default(DateTime).ToString());
+		}
+
+		public static void Test(object x)
+		{
+		}
+
+#if CS120
+		public static void AcceptIn(in S o)
+		{
+		}
+
+		public static void AcceptRefReadOnly(ref readonly S o)
+		{
+		}
+
+		private static void Use(in S param)
+		{
+			AcceptIn(new S(5));
+			S o = new S(10);
+			AcceptRefReadOnly(in o);
+			AcceptIn(in param);
+			AcceptRefReadOnly(in param);
+		}
+#endif
 	}
 }

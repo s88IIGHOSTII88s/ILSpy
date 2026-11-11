@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2011 AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) 2011 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -58,9 +58,9 @@ namespace ICSharpCode.Decompiler.Disassembler
 	/// </summary>
 	public class ILStructure
 	{
-		public readonly PEFile Module;
+		public readonly MetadataFile Module;
 		public readonly MethodDefinitionHandle MethodHandle;
-		public readonly GenericContext GenericContext;
+		public readonly MetadataGenericContext GenericContext;
 		public readonly ILStructureType Type;
 
 		/// <summary>
@@ -88,7 +88,7 @@ namespace ICSharpCode.Decompiler.Disassembler
 		/// </summary>
 		public readonly List<ILStructure> Children = new List<ILStructure>();
 
-		public ILStructure(PEFile module, MethodDefinitionHandle handle, GenericContext genericContext, MethodBodyBlock body)
+		public ILStructure(MetadataFile module, MethodDefinitionHandle handle, MetadataGenericContext genericContext, MethodBodyBlock body)
 			: this(module, handle, genericContext, ILStructureType.Root, 0, body.GetILReader().Length)
 		{
 			// Build the tree of exception structures:
@@ -142,7 +142,7 @@ namespace ICSharpCode.Decompiler.Disassembler
 			SortChildren();
 		}
 
-		public ILStructure(PEFile module, MethodDefinitionHandle handle, GenericContext genericContext, ILStructureType type, int startOffset, int endOffset, ExceptionRegion handler = default)
+		public ILStructure(MetadataFile module, MethodDefinitionHandle handle, MetadataGenericContext genericContext, ILStructureType type, int startOffset, int endOffset, ExceptionRegion handler = default)
 		{
 			Debug.Assert(startOffset < endOffset);
 			this.Module = module;
@@ -154,7 +154,7 @@ namespace ICSharpCode.Decompiler.Disassembler
 			this.ExceptionHandler = handler;
 		}
 
-		public ILStructure(PEFile module, MethodDefinitionHandle handle, GenericContext genericContext, ILStructureType type, int startOffset, int endOffset, int loopEntryPoint)
+		public ILStructure(MetadataFile module, MethodDefinitionHandle handle, MetadataGenericContext genericContext, ILStructureType type, int startOffset, int endOffset, int loopEntryPoint)
 		{
 			Debug.Assert(startOffset < endOffset);
 			this.Module = module;
@@ -170,6 +170,8 @@ namespace ICSharpCode.Decompiler.Disassembler
 		{
 			// special case: don't consider the loop-like structure of "continue;" statements to be nested loops
 			if (this.Type == ILStructureType.Loop && newStructure.Type == ILStructureType.Loop && newStructure.StartOffset == this.StartOffset)
+				return false;
+			if (newStructure.StartOffset < 0)
 				return false;
 
 			// use <= for end-offset comparisons because both end and EndOffset are exclusive

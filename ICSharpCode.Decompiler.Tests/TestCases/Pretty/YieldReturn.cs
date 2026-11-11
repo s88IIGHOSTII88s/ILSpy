@@ -1,4 +1,4 @@
-﻿// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -101,24 +101,23 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			yield return 2;
 		}
 
-#if TODO
-		// TODO: adjust lock-pattern for this case
 		public static IEnumerable<int> YieldReturnInLock1(object o)
 		{
-			lock (o) {
+			lock (o)
+			{
 				yield return 1;
 			}
 		}
 
 		public static IEnumerable<int> YieldReturnInLock2(object o)
 		{
-			lock (o) {
+			lock (o)
+			{
 				yield return 1;
 				o = null;
 				yield return 2;
 			}
 		}
-#endif
 
 		public static IEnumerable<string> YieldReturnWithNestedTryFinally(bool breakInMiddle)
 		{
@@ -440,6 +439,14 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 					throw new InvalidOperationException("Found evil number");
 				}
 				yield return i;
+			}
+		}
+
+		internal static IEnumerable<T> GenericRepeat<T>(T value, int count)
+		{
+			for (int i = 0; i < count; i++)
+			{
+				yield return value;
 			}
 		}
 	}

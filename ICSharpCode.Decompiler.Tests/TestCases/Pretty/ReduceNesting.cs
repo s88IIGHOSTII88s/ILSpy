@@ -1,4 +1,5 @@
-﻿using System;
+using System;
+using System.Collections.Generic;
 
 namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 {
@@ -199,7 +200,6 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 						Console.WriteLine("case 1");
 						return;
 				}
-
 				if (B(1))
 				{
 					Console.WriteLine(1);
@@ -566,6 +566,20 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 					throw;
 				}
 			}
+		}
+
+		private static string ShouldNotDuplicateReturnStatementIntoTry(IDictionary<int, string> dict)
+		{
+			string value;
+			lock (dict)
+			{
+				if (!dict.TryGetValue(1, out value))
+				{
+					value = "test";
+					dict.Add(1, value);
+				}
+			}
+			return value;
 		}
 	}
 }

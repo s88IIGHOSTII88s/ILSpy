@@ -1,4 +1,4 @@
-﻿// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -19,7 +19,6 @@
 // compile:
 //     csc ShortCircuit.cs /t:Library && ildasm /text ShortCircuit.dll >ShortCircuit.il
 //     csc ShortCircuit.cs /t:Library /o /out:ShortCircuit.opt.dll && ildasm /text ShortCircuit.opt.dll >ShortCircuit.opt.il
-
 
 namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 {
@@ -320,26 +319,28 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			if (!F(1))
 			{
 			}
-			if (F(2) && F(3))
-			{
-			}
 			if (F(4) || F(5))
-			{
-			}
-			if (F(0) && F(1) && !F(2) && (F(3) || F(4)))
 			{
 			}
 			E();
 		}
 #endif
 
-		public void PreferLogicalToBitwise(bool a, bool b, int i, float f)
+		public void BitwiseBooleanOperators(bool a, bool b, int i, float f)
 		{
-			B(a && b);
+			B(a & b);
+			B(a & (i == 1));
+			B((i == 1) & a);
+			B((i > i - 3) & a);
+			B((f < 0.1f) & a);
+			B(a | b);
 			B(a && i == 1);
-			B(i == 1 && a);
-			B(i > i - 3 && a);
-			B(f < 0.1f && a);
+			B(a || i == 1);
+		}
+
+		public bool BitwiseOrWithComparisons(char c)
+		{
+			return (c == 'a') | (c == 'b');
 		}
 	}
 }

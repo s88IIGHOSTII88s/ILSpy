@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2011-2016 Siegfried Pammer
+// Copyright (c) 2011-2016 Siegfried Pammer
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -16,7 +16,6 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-using System;
 using System.Linq;
 
 using ICSharpCode.Decompiler.TypeSystem;
@@ -32,27 +31,41 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			this.context = context;
 			if (!context.Settings.AnonymousMethods)
 				return;
-			for (int i = block.Instructions.Count - 1; i >= 0; i--)
+			for (int i = context.IndexOfFirstAlreadyTransformedInstruction - 1; i >= 0; i--)
 			{
 				if (block.Instructions[i] is IfInstruction inst)
 				{
 					if (CachedDelegateInitializationWithField(inst))
 					{
-						block.Instructions.RemoveAt(i);
+						context.IndexOfFirstAlreadyTransformedInstruction = block.Instructions.Count;
 						continue;
 					}
 					if (CachedDelegateInitializationWithLocal(inst))
 					{
 						ILInlining.InlineOneIfPossible(block, i, InliningOptions.Aggressive, context);
+						context.IndexOfFirstAlreadyTransformedInstruction = block.Instructions.Count;
 						continue;
 					}
 					if (CachedDelegateInitializationRoslynInStaticWithLocal(inst) || CachedDelegateInitializationRoslynWithLocal(inst))
 					{
 						block.Instructions.RemoveAt(i);
+						context.IndexOfFirstAlreadyTransformedInstruction = block.Instructions.Count;
 						continue;
 					}
 					if (CachedDelegateInitializationVB(inst))
 					{
+						context.IndexOfFirstAlreadyTransformedInstruction = block.Instructions.Count;
+						continue;
+					}
+					if (CachedDelegateInitializationVBWithReturn(inst))
+					{
+						block.Instructions.RemoveAt(i);
+						context.IndexOfFirstAlreadyTransformedInstruction = block.Instructions.Count;
+						continue;
+					}
+					if (CachedDelegateInitializationVBWithClosure(inst))
+					{
+						context.IndexOfFirstAlreadyTransformedInstruction = block.Instructions.Count;
 						continue;
 					}
 				}
@@ -81,13 +94,23 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			if (!DelegateConstruction.MatchDelegateConstruction(value.UnwrapConv(ConversionKind.Invalid) as NewObj, out _, out _, out _, true))
 				return false;
 			var nextInstruction = inst.Parent.Children.ElementAtOrDefault(inst.ChildIndex + 1);
-			if (nextInstruction == null)
-				return false;
-			var usages = nextInstruction.Descendants.Where(i => i.MatchLdsFld(field)).ToArray();
+			var usages = nextInstruction?.Descendants.Where(i => i.MatchLdsFld(field)).ToArray() ?? [];
+			if (usages.Length == 0)
+			{
+				// A discarded method-group conversion ("_ = (Action)M;") caches the
+				// delegate without ever reading the cache back. Keep the conversion,
+				// which still allocates, and drop the caching around it.
+				context.Step("CachedDelegateInitializationWithField (unused)", inst);
+				inst.ReplaceWith(value);
+				context.EndStep(value);
+				return true;
+			}
 			if (usages.Length != 1)
 				return false;
 			context.Step("CachedDelegateInitializationWithField", inst);
 			usages[0].ReplaceWith(value);
+			((Block)inst.Parent).Instructions.RemoveAt(inst.ChildIndex);
+			context.EndStep(value);
 			return true;
 		}
 
@@ -127,6 +150,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			context.Step("CachedDelegateInitializationWithLocal", inst);
 			((Block)otherStore.Parent).Instructions.Remove(otherStore);
 			inst.ReplaceWith(storeInst);
+			context.EndStep(storeInst);
 			return true;
 		}
 
@@ -214,7 +238,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			{
 				return false;
 			}
-			if (s.Kind != VariableKind.StackSlot || s.StoreCount != 2 || s.LoadCount != 1)
+			if (s.Kind != VariableKind.StackSlot || s.StoreCount != 2)
 				return false;
 			if (!(trueInitValue is StObj stobj) || !(falseInitValue is LdObj ldobj))
 				return false;
@@ -233,7 +257,82 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			if (!DelegateConstruction.MatchDelegateConstruction(delegateConstruction, out _, out _, out _, true))
 				return false;
 			context.Step("CachedDelegateInitializationVB", inst);
-			inst.ReplaceWith(new StLoc(s, delegateConstruction));
+			var stloc = new StLoc(s, delegateConstruction);
+			inst.ReplaceWith(stloc);
+			context.EndStep(stloc);
+			return true;
+		}
+
+		/// <summary>
+		/// if (comp.o(ldsfld CachedAnonMethodDelegate != ldnull)) {
+		///		leave IL_0005 (ldsfld CachedAnonMethodDelegate)
+		/// }
+		///	leave IL_0005 (stsfld CachedAnonMethodDelegate(DelegateConstruction))
+		/// =>
+		/// leave IL_0005 (DelegateConstruction)
+		/// </summary>
+		bool CachedDelegateInitializationVBWithReturn(IfInstruction inst)
+		{
+			if (!inst.Condition.MatchCompNotEqualsNull(out var arg) || !arg.MatchLdsFld(out var field))
+				return false;
+			if (!inst.FalseInst.MatchNop())
+				return false;
+			if (!inst.TrueInst.MatchReturn(out arg) || !arg.MatchLdsFld(field))
+				return false;
+			var leaveAfterIf = inst.Parent.Children.ElementAtOrDefault(inst.ChildIndex + 1) as Leave;
+			if (leaveAfterIf is null || !leaveAfterIf.IsLeavingFunction)
+				return false;
+			if (!leaveAfterIf.Value.MatchStsFld(out var field2, out var delegateConstruction) || !field.Equals(field2))
+				return false;
+			if (!DelegateConstruction.MatchDelegateConstruction(delegateConstruction, out _, out _, out _, true))
+				return false;
+			context.Step("CachedDelegateInitializationVBWithReturn", inst);
+			leaveAfterIf.Value = delegateConstruction;
+			return true;
+		}
+
+		/// <summary>
+		/// if (comp.o(ldobj delegateType(ldflda CachedAnonMethodDelegate(ldloc closure)) != ldnull)) Block {
+		/// 	stloc s(ldobj delegateType(ldflda CachedAnonMethodDelegate(ldloc closure)))
+		/// } else Block {
+		/// 	stloc s(stobj delegateType(ldflda CachedAnonMethodDelegate(ldloc closure), DelegateConstruction))
+		/// }
+		/// =>
+		///	stloc s(DelegateConstruction)
+		/// </summary>
+		bool CachedDelegateInitializationVBWithClosure(IfInstruction inst)
+		{
+			if (!(inst.TrueInst is Block trueInst && inst.FalseInst is Block falseInst))
+				return false;
+			if (trueInst.Instructions.Count != 1 || falseInst.Instructions.Count != 1)
+				return false;
+			if (!(trueInst.Instructions[0].MatchStLoc(out var s, out var trueInitValue)
+				  && falseInst.Instructions[0].MatchStLoc(s, out var falseInitValue)))
+			{
+				return false;
+			}
+			if (s.Kind != VariableKind.StackSlot || s.StoreCount != 2)
+				return false;
+			if (!(falseInitValue is StObj stobj) || !(trueInitValue is LdObj ldobj))
+				return false;
+			if (!(stobj.Value is NewObj delegateConstruction))
+				return false;
+			if (!stobj.Target.MatchLdFlda(out var target1, out var field1)
+				|| !ldobj.Target.MatchLdFlda(out var target2, out var field2)
+				|| !field1.Equals(field2) || !target1.Match(target2).Success)
+			{
+				return false;
+			}
+			if (!inst.Condition.MatchCompNotEqualsNull(out ILInstruction left))
+				return false;
+			if (!ldobj.Match(left).Success)
+				return false;
+			if (!DelegateConstruction.MatchDelegateConstruction(delegateConstruction, out _, out _, out _, true))
+				return false;
+			context.Step("CachedDelegateInitializationVBWithClosure", inst);
+			var stloc = new StLoc(s, delegateConstruction);
+			inst.ReplaceWith(stloc);
+			context.EndStep(stloc);
 			return true;
 		}
 	}

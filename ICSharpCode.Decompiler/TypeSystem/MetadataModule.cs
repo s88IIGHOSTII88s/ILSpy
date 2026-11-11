@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2018 Daniel Grunwald
+// Copyright (c) 2018 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -51,10 +51,10 @@ namespace ICSharpCode.Decompiler.TypeSystem
 		readonly MetadataEvent[] eventDefs;
 		readonly IModule[] referencedAssemblies;
 
-		internal MetadataModule(ICompilation compilation, Metadata.PEFile peFile, TypeSystemOptions options)
+		internal MetadataModule(ICompilation compilation, MetadataFile peFile, TypeSystemOptions options)
 		{
 			this.Compilation = compilation;
-			this.PEFile = peFile;
+			this.MetadataFile = peFile;
 			this.metadata = peFile.Metadata;
 			this.options = options;
 			this.TypeProvider = new TypeProvider(this);
@@ -66,6 +66,7 @@ namespace ICSharpCode.Decompiler.TypeSystem
 				try
 				{
 					this.AssemblyName = metadata.GetString(asmdef.Name);
+					this.AssemblyVersion = asmdef.Version;
 					this.FullAssemblyName = metadata.GetFullAssemblyName();
 				}
 				catch (BadImageFormatException)
@@ -90,7 +91,17 @@ namespace ICSharpCode.Decompiler.TypeSystem
 			var customAttrs = metadata.GetModuleDefinition().GetCustomAttributes();
 			this.NullableContext = customAttrs.GetNullableContext(metadata) ?? Nullability.Oblivious;
 			this.minAccessibilityForNRT = FindMinimumAccessibilityForNRT(metadata, customAttrs);
-			this.rootNamespace = new MetadataNamespace(this, null, string.Empty, metadata.GetNamespaceDefinitionRoot());
+			this.UseUpdatedEscapeRules = HasRefSafetyRulesVersion(customAttrs, 11);
+			NamespaceDefinition? rootNamespace;
+			try
+			{
+				rootNamespace = metadata.GetNamespaceDefinitionRoot();
+			}
+			catch (Exception ex) when (ex is BadImageFormatException or ArgumentOutOfRangeException)
+			{
+				rootNamespace = null;
+			}
+			this.rootNamespace = new MetadataNamespace(this, null, string.Empty, rootNamespace);
 
 			if (!options.HasFlag(TypeSystemOptions.Uncached))
 			{
@@ -111,12 +122,50 @@ namespace ICSharpCode.Decompiler.TypeSystem
 
 		public TypeSystemOptions TypeSystemOptions => options;
 
-		#region IAssembly interface
-		public PEFile PEFile { get; }
+		/// <summary>
+		/// Gets whether the module declares the C# 11 ref-safety rules.
+		/// </summary>
+		internal bool UseUpdatedEscapeRules { get; }
+
+		bool HasRefSafetyRulesVersion(CustomAttributeHandleCollection attributes, int expectedVersion)
+		{
+			foreach (var attributeHandle in attributes)
+			{
+				var attribute = metadata.GetCustomAttribute(attributeHandle);
+				if (!attribute.IsKnownAttribute(metadata, KnownAttribute.RefSafetyRules))
+					continue;
+
+				CustomAttributeValue<IType> value;
+				try
+				{
+					value = attribute.DecodeValue(Metadata.MetadataExtensions.MinimalAttributeTypeProvider);
+				}
+				catch (BadImageFormatException)
+				{
+					continue;
+				}
+				catch (Metadata.EnumUnderlyingTypeResolveException)
+				{
+					continue;
+				}
+				if (value.FixedArguments.Length == 1
+					&& value.FixedArguments[0].Value is int version)
+				{
+					// Roslyn recognizes exactly version 11; missing and unknown versions use legacy rules.
+					return version == expectedVersion;
+				}
+			}
+
+			return false;
+		}
+
+		#region IModule interface
+		public MetadataFile MetadataFile { get; }
 
 		public bool IsMainModule => this == Compilation.MainModule;
 
 		public string AssemblyName { get; }
+		public Version AssemblyVersion { get; }
 		public string FullAssemblyName { get; }
 		string ISymbol.Name => AssemblyName;
 		SymbolKind ISymbol.SymbolKind => SymbolKind.Module;
@@ -127,10 +176,10 @@ namespace ICSharpCode.Decompiler.TypeSystem
 
 		public ITypeDefinition GetTypeDefinition(TopLevelTypeName topLevelTypeName)
 		{
-			var typeDefHandle = PEFile.GetTypeDefinition(topLevelTypeName);
+			var typeDefHandle = MetadataFile.GetTypeDefinition(topLevelTypeName);
 			if (typeDefHandle.IsNil)
 			{
-				var forwarderHandle = PEFile.GetTypeForwarder(topLevelTypeName);
+				var forwarderHandle = MetadataFile.GetTypeForwarder(topLevelTypeName);
 				if (!forwarderHandle.IsNil)
 				{
 					var forwarder = metadata.GetExportedType(forwarderHandle);
@@ -272,7 +321,7 @@ namespace ICSharpCode.Decompiler.TypeSystem
 				return new MetadataProperty(this, handle);
 			int row = MetadataTokens.GetRowNumber(handle);
 			Debug.Assert(row != 0);
-			if (row >= methodDefs.Length)
+			if (row >= propertyDefs.Length)
 				HandleOutOfRange(handle);
 			var property = LazyInit.VolatileRead(ref propertyDefs[row]);
 			if (property != null)
@@ -289,7 +338,7 @@ namespace ICSharpCode.Decompiler.TypeSystem
 				return new MetadataEvent(this, handle);
 			int row = MetadataTokens.GetRowNumber(handle);
 			Debug.Assert(row != 0);
-			if (row >= methodDefs.Length)
+			if (row >= eventDefs.Length)
 				HandleOutOfRange(handle);
 			var ev = LazyInit.VolatileRead(ref eventDefs[row]);
 			if (ev != null)
@@ -326,7 +375,7 @@ namespace ICSharpCode.Decompiler.TypeSystem
 
 		IModule ResolveModuleUncached(AssemblyReferenceHandle handle)
 		{
-			var asmRef = new Metadata.AssemblyReference(metadata, handle);
+			var asmRef = new Metadata.AssemblyReference(MetadataFile, handle);
 			return Compilation.FindModuleByReference(asmRef);
 		}
 
@@ -400,8 +449,9 @@ namespace ICSharpCode.Decompiler.TypeSystem
 		IType ResolveDeclaringType(EntityHandle declaringTypeReference, GenericContext context)
 		{
 			// resolve without substituting dynamic/tuple types
-			var ty = ResolveType(declaringTypeReference, context,
-				options & ~(TypeSystemOptions.Dynamic | TypeSystemOptions.Tuple | TypeSystemOptions.NullabilityAnnotations));
+			const TypeSystemOptions removedOptions = TypeSystemOptions.Dynamic | TypeSystemOptions.Tuple
+				| TypeSystemOptions.NullabilityAnnotations | TypeSystemOptions.NativeIntegers | TypeSystemOptions.NativeIntegersWithoutAttribute;
+			var ty = ResolveType(declaringTypeReference, context, options & ~removedOptions);
 			// but substitute tuple types in type arguments:
 			ty = ApplyAttributeTypeVisitor.ApplyAttributesToType(ty, Compilation, null, metadata, options, Nullability.Oblivious, typeChildrenOnly: true);
 			return ty;
@@ -471,7 +521,10 @@ namespace ICSharpCode.Decompiler.TypeSystem
 		IMethod ResolveMethodReference(MemberReferenceHandle memberRefHandle, GenericContext context, IReadOnlyList<IType> methodTypeArguments = null, bool expandVarArgs = true)
 		{
 			var memberRef = metadata.GetMemberReference(memberRefHandle);
-			Debug.Assert(memberRef.GetKind() == MemberReferenceKind.Method);
+			if (memberRef.GetKind() != MemberReferenceKind.Method)
+			{
+				throw new BadImageFormatException($"Member reference must be method, but was: {memberRef.GetKind()}");
+			}
 			MethodSignature<IType> signature;
 			IReadOnlyList<IType> classTypeArguments = null;
 			IMethod method;
@@ -493,53 +546,7 @@ namespace ICSharpCode.Decompiler.TypeSystem
 				string name = metadata.GetString(memberRef.Name);
 				signature = memberRef.DecodeMethodSignature(TypeProvider,
 					new GenericContext(declaringTypeDefinition?.TypeParameters));
-				if (declaringTypeDefinition != null)
-				{
-					// Find the set of overloads to search:
-					IEnumerable<IMethod> methods;
-					if (name == ".ctor")
-					{
-						methods = declaringTypeDefinition.GetConstructors();
-					}
-					else if (name == ".cctor")
-					{
-						methods = declaringTypeDefinition.Methods.Where(m => m.IsConstructor && m.IsStatic);
-					}
-					else
-					{
-						methods = declaringTypeDefinition.GetMethods(m => m.Name == name, GetMemberOptions.IgnoreInheritedMembers)
-							.Concat(declaringTypeDefinition.GetAccessors(m => m.Name == name, GetMemberOptions.IgnoreInheritedMembers));
-					}
-					// Determine the expected parameters from the signature:
-					ImmutableArray<IType> parameterTypes;
-					if (signature.Header.CallingConvention == SignatureCallingConvention.VarArgs)
-					{
-						parameterTypes = signature.ParameterTypes
-							.Take(signature.RequiredParameterCount)
-							.Concat(new[] { SpecialType.ArgList })
-							.ToImmutableArray();
-					}
-					else
-					{
-						parameterTypes = signature.ParameterTypes;
-					}
-					// Search for the matching method:
-					method = null;
-					foreach (var m in methods)
-					{
-						if (m.TypeParameters.Count != signature.GenericParameterCount)
-							continue;
-						if (CompareSignatures(m.Parameters, parameterTypes) && CompareTypes(m.ReturnType, signature.ReturnType))
-						{
-							method = m;
-							break;
-						}
-					}
-				}
-				else
-				{
-					method = null;
-				}
+				method = declaringTypeDefinition != null ? FindMethod(declaringTypeDefinition, name, signature) : null;
 				if (method == null)
 				{
 					method = CreateFakeMethod(declaringType, name, signature);
@@ -554,6 +561,81 @@ namespace ICSharpCode.Decompiler.TypeSystem
 				method = new VarArgInstanceMethod(method, signature.ParameterTypes.Skip(signature.RequiredParameterCount));
 			}
 			return method;
+		}
+
+		/// <summary>
+		/// Resolves a method on <paramref name="declaringType"/> by name and signature.
+		/// If the type declares no such method - because the reference is missing, or the
+		/// method does not exist on the version at hand - a fake method carrying the requested
+		/// signature is returned, as for a method reference that cannot be resolved.
+		/// </summary>
+		/// <remarks>
+		/// The signature is matched against the members of <paramref name="declaringType"/> as
+		/// they are seen from the outside, so for a parameterized type it is written in terms of
+		/// the type arguments, not the type parameters. This is the lookup a decompiler step
+		/// needs when it has to name a specific method - a conversion operator, say - rather
+		/// than one it read from metadata.
+		/// </remarks>
+		public IMethod ResolveMethod(IType declaringType, string name, MethodSignature<IType> signature)
+		{
+			if (declaringType == null)
+				throw new ArgumentNullException(nameof(declaringType));
+			if (name == null)
+				throw new ArgumentNullException(nameof(name));
+			return FindMethod(declaringType, name, signature)
+				?? CreateFakeMethod(declaringType, name, signature);
+		}
+
+		/// <summary>
+		/// The single method on <paramref name="declaringType"/> that matches the name and the
+		/// signature, or null. Only the methods the type itself declares are candidates, because
+		/// a signature always names the type that declares the method.
+		/// </summary>
+		static IMethod FindMethod(IType declaringType, string name, MethodSignature<IType> signature)
+		{
+			// Find the set of overloads to search:
+			IEnumerable<IMethod> candidates;
+			if (name == ".ctor")
+			{
+				candidates = declaringType.GetConstructors();
+			}
+			else if (name == ".cctor")
+			{
+				// GetConstructors() only returns instance constructors.
+				candidates = declaringType.GetDefinition()?.Methods.Where(m => m.IsConstructor && m.IsStatic) ?? [];
+			}
+			else
+			{
+				candidates = declaringType.GetMethods(m => m.Name == name, GetMemberOptions.IgnoreInheritedMembers)
+					.Concat(declaringType.GetAccessors(m => m.Name == name, GetMemberOptions.IgnoreInheritedMembers));
+			}
+			// Determine the expected parameters from the signature: a vararg signature is matched
+			// against its required parameters plus __arglist.
+			ImmutableArray<IType> parameterTypes;
+			if (signature.Header.CallingConvention == SignatureCallingConvention.VarArgs)
+			{
+				parameterTypes = signature.ParameterTypes
+					.Take(signature.RequiredParameterCount)
+					.Concat(new[] { SpecialType.ArgList })
+					.ToImmutableArray();
+			}
+			else
+			{
+				parameterTypes = signature.ParameterTypes;
+			}
+			// Search for the matching method:
+			foreach (var method in candidates)
+			{
+				if (method.TypeParameters.Count != signature.GenericParameterCount)
+					continue;
+				if (signature.Header.IsInstance != !method.IsStatic)
+					continue;
+				if (CompareSignatures(method.Parameters, parameterTypes) && CompareTypes(method.ReturnType, signature.ReturnType))
+				{
+					return method;
+				}
+			}
+			return null;
 		}
 
 		static readonly NormalizeTypeVisitor normalizeTypeVisitor = new NormalizeTypeVisitor {
@@ -588,12 +670,11 @@ namespace ICSharpCode.Decompiler.TypeSystem
 			SymbolKind symbolKind = SymbolKind.Method;
 			if (name == ".ctor" || name == ".cctor")
 				symbolKind = SymbolKind.Constructor;
-			var m = new FakeMethod(Compilation, symbolKind);
-			m.DeclaringType = declaringType;
-			m.Name = name;
-			m.ReturnType = signature.ReturnType;
-			m.IsStatic = !signature.Header.IsInstance;
-
+			var m = new FakeMethod(Compilation, symbolKind) {
+				DeclaringType = declaringType,
+				Name = name,
+				IsStatic = !signature.Header.IsInstance
+			};
 			TypeParameterSubstitution substitution = null;
 			if (signature.GenericParameterCount > 0)
 			{
@@ -609,19 +690,134 @@ namespace ICSharpCode.Decompiler.TypeSystem
 			{
 				substitution = declaringType.GetSubstitution();
 			}
+
+			m.ReturnType = ApplyAttributesAndSubstitutionToType(signature.ReturnType, substitution);
+
 			var parameters = new List<IParameter>();
 			for (int i = 0; i < signature.RequiredParameterCount; i++)
 			{
-				var type = signature.ParameterTypes[i];
-				if (substitution != null)
-				{
-					// replace the dummy method type parameters with the owned instances we just created
-					type = type.AcceptVisitor(substitution);
-				}
+				var type = ApplyAttributesAndSubstitutionToType(signature.ParameterTypes[i], substitution);
 				parameters.Add(new DefaultParameter(type, ""));
 			}
 			m.Parameters = parameters;
+
+			GuessFakeMethodAccessor(declaringType, m);
+
 			return m;
+		}
+
+		private IType ApplyAttributesAndSubstitutionToType(IType type, TypeParameterSubstitution substitution = null)
+		{
+			type = ApplyAttributeTypeVisitor.ApplyAttributesToType(type, Compilation, null, metadata, options, Nullability.Oblivious);
+			if (substitution != null)
+			{
+				// replace the dummy method type parameters with the owned instances we just created
+				type = type.AcceptVisitor(substitution);
+			}
+			return type;
+		}
+
+		private void GuessFakeMethodAccessor(IType declaringType, FakeMethod m)
+		{
+			if (m.TypeParameters.Count > 0)
+				return;
+
+			string name = m.Name;
+			var parameters = m.Parameters;
+
+			var guessedGetter = name.StartsWith("get_", StringComparison.Ordinal);
+			var guessedSetter = name.StartsWith("set_", StringComparison.Ordinal);
+			if (guessedGetter || guessedSetter)
+			{
+				var propertyName = name.Substring(4);
+
+				var fakeProperty = new FakeProperty(Compilation) {
+					Name = propertyName,
+					DeclaringType = declaringType,
+					IsStatic = m.IsStatic,
+				};
+
+				if (guessedGetter)
+				{
+					if (m.ReturnType.Kind == TypeKind.Void)
+						return;
+
+					m.AccessorKind = MethodSemanticsAttributes.Getter;
+					m.AccessorOwner = fakeProperty;
+					fakeProperty.Getter = m;
+					fakeProperty.ReturnType = m.ReturnType;
+					fakeProperty.IsIndexer = parameters.Count > 0;
+					fakeProperty.Parameters = parameters;
+					return;
+				}
+
+				if (guessedSetter)
+				{
+					if (parameters.Count < 1 || m.ReturnType.Kind != TypeKind.Void)
+						return;
+
+					m.AccessorKind = MethodSemanticsAttributes.Setter;
+					m.AccessorOwner = fakeProperty;
+					fakeProperty.Setter = m;
+					fakeProperty.ReturnType = parameters.Last().Type;
+					fakeProperty.IsIndexer = parameters.Count > 1;
+					fakeProperty.Parameters = parameters.SkipLast(1).ToArray();
+					return;
+				}
+			}
+
+			const string addPrefix = "add_";
+			const string removePrefix = "remove_";
+			const string raisePrefix = "raise_";
+			var guessedAdd = name.StartsWith(addPrefix, StringComparison.Ordinal);
+			var guessedRemove = name.StartsWith(removePrefix, StringComparison.Ordinal);
+			var guessedRaise = name.StartsWith(raisePrefix, StringComparison.Ordinal);
+			if (guessedAdd || guessedRemove || guessedRaise)
+			{
+				var fakeEvent = new FakeEvent(Compilation) {
+					DeclaringType = declaringType,
+					IsStatic = m.IsStatic,
+				};
+
+				if (guessedAdd)
+				{
+					if (parameters.Count != 1)
+						return;
+
+					m.AccessorKind = MethodSemanticsAttributes.Adder;
+					m.AccessorOwner = fakeEvent;
+
+					fakeEvent.Name = name.Substring(addPrefix.Length);
+					fakeEvent.AddAccessor = m;
+					fakeEvent.ReturnType = parameters.Single().Type;
+
+					return;
+				}
+
+				if (guessedRemove)
+				{
+					if (parameters.Count != 1)
+						return;
+
+					m.AccessorKind = MethodSemanticsAttributes.Remover;
+					m.AccessorOwner = fakeEvent;
+
+					fakeEvent.Name = name.Substring(removePrefix.Length);
+					fakeEvent.RemoveAccessor = m;
+					fakeEvent.ReturnType = parameters.Single().Type;
+
+					return;
+				}
+
+				if (guessedRaise)
+				{
+					fakeEvent.Name = name.Substring(raisePrefix.Length);
+					fakeEvent.InvokeAccessor = m;
+					m.AccessorKind = MethodSemanticsAttributes.Raiser;
+					m.AccessorOwner = fakeEvent;
+					return;
+				}
+			}
 		}
 		#endregion
 
@@ -646,7 +842,9 @@ namespace ICSharpCode.Decompiler.TypeSystem
 				case HandleKind.TypeDefinition:
 				case HandleKind.TypeSpecification:
 				case HandleKind.ExportedType:
-					return ResolveType(entityHandle, context).GetDefinition();
+					// Using ResolveDeclaringType() here because ResolveType() might return
+					// nint/nuint which are SpecialTypes without a definition.
+					return ResolveDeclaringType(entityHandle, context).GetDefinition();
 				case HandleKind.MemberReference:
 					var memberReferenceHandle = (MemberReferenceHandle)entityHandle;
 					switch (metadata.GetMemberReference(memberReferenceHandle).GetKind())
@@ -688,13 +886,8 @@ namespace ICSharpCode.Decompiler.TypeSystem
 				GetMemberOptions.IgnoreInheritedMembers).FirstOrDefault();
 			if (field == null)
 			{
-				// If it's a field in a generic type, we need to substitute the type arguments:
-				if (declaringType.TypeArguments.Count > 0)
-				{
-					signature = signature.AcceptVisitor(declaringType.GetSubstitution());
-				}
 				field = new FakeField(Compilation) {
-					ReturnType = signature,
+					ReturnType = ApplyAttributesAndSubstitutionToType(signature, declaringType.GetSubstitution()),
 					Name = name,
 					DeclaringType = declaringType,
 				};
@@ -789,6 +982,16 @@ namespace ICSharpCode.Decompiler.TypeSystem
 					{
 						return td;
 					}
+				}
+				else
+				{
+					// The chain of forwarders came back to this module, so nothing in it defines the
+					// type and the assemblies involved disagree about where it lives - mismatched
+					// facades from two frameworks, typically. Recorded once per reference: a facade
+					// forwards hundreds of types, and they all fail together.
+					(Compilation as DecompilerTypeSystem)?.ReferenceLoadInfo?.AddMessageOnce(
+						module.FullAssemblyName, MessageKind.Warning,
+						$"Could not follow the type forwarders for {typeName.ReflectionName}: they lead back to {AssemblyName}.");
 				}
 			}
 			return new UnknownType(typeName);

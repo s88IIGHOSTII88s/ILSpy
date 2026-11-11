@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2016 Daniel Grunwald
+// Copyright (c) 2016 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -45,11 +45,11 @@ namespace ICSharpCode.Decompiler.Tests
 
 			protected internal override void VisitTryFinally(TryFinally inst)
 			{
-				Assert.IsTrue(IsPotentiallyUninitialized(state, v));
+				Assert.That(IsPotentiallyUninitialized(state, v));
 				base.VisitTryFinally(inst);
-				Assert.IsTrue(state.IsReachable);
-				Assert.AreEqual(1, GetStores(state, v).Count());
-				Assert.IsFalse(IsPotentiallyUninitialized(state, v));
+				Assert.That(state.IsReachable);
+				Assert.That(GetStores(state, v).Count(), Is.EqualTo(1));
+				Assert.That(!IsPotentiallyUninitialized(state, v));
 			}
 		}
 

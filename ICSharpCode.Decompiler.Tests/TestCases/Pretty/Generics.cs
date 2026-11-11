@@ -1,4 +1,4 @@
-﻿// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -20,6 +20,27 @@ using System.Collections.Generic;
 
 namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 {
+	internal class DerivedFromGenericBase : GenericBase<string>
+	{
+		public override string Get()
+		{
+			return "x";
+		}
+
+		public override void Set(string value)
+		{
+		}
+	}
+
+	internal abstract class GenericBase<T>
+	{
+		public abstract T Get();
+
+		public virtual void Set(T value)
+		{
+		}
+	}
+
 	internal class Generics
 	{
 		private class GenericClass<T>
@@ -84,6 +105,11 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		{
 			void Method1<T>() where T : class;
 			void Method2<T>() where T : class;
+
+			void Method3(int a, string b, Type c);
+#if CS72
+			void Method4(in int a);
+#endif
 		}
 
 		public abstract class Base : IInterface
@@ -95,6 +121,16 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			void IInterface.Method2<T>()
 			{
 			}
+
+			void IInterface.Method3(int a, string b, Type c)
+			{
+			}
+
+#if CS72
+			void IInterface.Method4(in int a)
+			{
+			}
+#endif
 		}
 
 		public class Derived : Base
@@ -278,6 +314,12 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		}
 #endif
 
+#if NET90
+		public static void AllowsRefStruct<T>() where T : allows ref struct
+		{
+		}
+#endif
+
 		public static void Issue1959(int a, int b, int? c)
 		{
 			// This line requires parentheses around `a < b` to avoid a grammar ambiguity.
@@ -286,5 +328,55 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			Console.WriteLine("{}, {}", a < b, a > b);
 			Console.WriteLine("{}, {}", a < Environment.GetLogicalDrives().Length, a > (c ?? b));
 		}
+
+		public static Type Issue2231<T>()
+		{
+			return default(T).GetType();
+		}
+
+		public static string Issue2231b<T>()
+		{
+			return default(T).ToString();
+		}
+
+		public static void ConstrainedCall<T>(T x, ref T y) where T : IDisposable
+		{
+			x.Dispose();
+			y.Dispose();
+		}
+
+		// prior to C# 7.0 UseRefLocalsForAccurateOrderOfEvaluation is disabled, so we will inline.
+		// Roslyn 4 generates the explicit ldobj.if.ref pattern, so we can also inline.
+		// The versions in between, we don't inline, so the code doesn't look pretty.
+#if ROSLYN4 || !CS70
+		public static int[] Issue3438<T>(T[] array)
+		{
+			List<int> list = new List<int>();
+			for (int i = 0; i < array.Length; i++)
+			{
+				if (!array[i].Equals(default(T)))
+				{
+					list.Add(i);
+				}
+			}
+			return list.ToArray();
+		}
+		public void Issue3438b<T>(T[] item1, T item2, int item3) where T : IInterface
+		{
+			item1[CastToInt(item2)].Method3(CastToInt(item2), CastToString(item2), TestTypeOf()[1]);
+		}
+		public void Issue3438c<T>(T item, T item2, int item3) where T : IInterface
+		{
+			CastFromInt<T>(item3).Method3(CastToInt(item2), CastToString(item2), TestTypeOf()[1]);
+		}
+		//#if CS72
+		// Disabled because ILInlining does not support inlining ldloca currently.
+		//		public void Issue3438d<T>(T[] item1, T item2, int item3) where T : IInterface
+		//		{
+		//			item1[CastToInt(item2)].Method4(CastToInt(item2));
+		//		}
+		//#endif
+#endif
 	}
+
 }

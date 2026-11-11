@@ -1,14 +1,14 @@
-﻿// Copyright (c) 2011 AlphaSierraPapa for the SharpDevelop Team
-// 
+// Copyright (c) 2026 AlphaSierraPapa for the SharpDevelop Team
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
 // without restriction, including without limitation the rights to use, copy, modify, merge,
 // publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
 // to whom the Software is furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in all copies or
 // substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
 // INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
 // PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
@@ -24,114 +24,83 @@ using System.Reflection.Metadata.Ecma335;
 
 using ICSharpCode.Decompiler;
 using ICSharpCode.Decompiler.Disassembler;
-using ICSharpCode.Decompiler.IL;
 using ICSharpCode.Decompiler.Metadata;
-using ICSharpCode.Decompiler.TypeSystem;
-using ICSharpCode.ILSpy.TreeNodes;
 
-namespace ICSharpCode.ILSpy.Metadata
+namespace ICSharpCode.ILSpy.Metadata.CorTables
 {
-	internal class TypeDefTableTreeNode : MetadataTableTreeNode
+	/// <summary>
+	/// View of the TypeDef table — every type the module defines. The first row is the
+	/// pseudo-type &lt;Module&gt;, owning module-scoped fields and methods. Each row carries
+	/// attributes (visibility, layout, semantics), the optional base type, and pointers
+	/// into the FieldList / MethodList for the type's members.
+	/// </summary>
+	public sealed class TypeDefTableTreeNode : MetadataTableTreeNode<TypeDefTableTreeNode.TypeDefEntry>
 	{
-		public TypeDefTableTreeNode(PEFile module)
-			: base(HandleKind.TypeDefinition, module)
+		public TypeDefTableTreeNode(MetadataFile metadataFile)
+			: base(TableIndex.TypeDef, metadataFile)
 		{
 		}
 
-		public override object Text => $"02 TypeDef ({module.Metadata.GetTableRowCount(TableIndex.TypeDef)})";
-
-		public override object Icon => Images.Literal;
-
-		public override bool View(ViewModels.TabPageModel tabPage)
+		protected override IReadOnlyList<TypeDefEntry> LoadTable()
 		{
-			tabPage.Title = Text.ToString();
-			tabPage.SupportsLanguageSwitching = false;
-
-			var view = Helpers.PrepareDataGrid(tabPage, this);
-			var metadata = module.Metadata;
-
 			var list = new List<TypeDefEntry>();
-			TypeDefEntry scrollTargetEntry = default;
-
-			foreach (var row in metadata.TypeDefinitions)
+			// FieldList/MethodList come from the raw rows (GetTypeDefListColumns): the computed
+			// member ranges (TypeDefinition.GetFields/GetMethods) are empty for a memberless type,
+			// but the stored column value is the running list position (the next type's first
+			// member row, or one past the member table's end), never 0.
+			foreach (var (handle, fieldList, methodList) in metadataFile.Metadata.GetTypeDefListColumns())
 			{
-				TypeDefEntry entry = new TypeDefEntry(module, row);
-				if (entry.RID == this.scrollTarget)
-				{
-					scrollTargetEntry = entry;
-				}
-				list.Add(entry);
+				list.Add(new TypeDefEntry(metadataFile, handle, fieldList, methodList));
 			}
-
-			view.ItemsSource = list;
-
-			tabPage.Content = view;
-
-			if (scrollTargetEntry.RID > 0)
-			{
-				ScrollItemIntoView(view, scrollTargetEntry);
-			}
-
-			return true;
+			return list;
 		}
 
-		struct TypeDefEntry : IMemberTreeNode
+		public sealed class TypeDefEntry
 		{
-			readonly int metadataOffset;
-			readonly PEFile module;
-			readonly MetadataReader metadata;
+			readonly MetadataFile metadataFile;
 			readonly TypeDefinitionHandle handle;
 			readonly TypeDefinition typeDef;
 
 			public int RID => MetadataTokens.GetRowNumber(handle);
 
+			[ColumnInfo("X8")]
 			public int Token => MetadataTokens.GetToken(handle);
 
-			public int Offset => metadataOffset
-				+ metadata.GetTableMetadataOffset(TableIndex.TypeDef)
-				+ metadata.GetTableRowSize(TableIndex.TypeDef) * (RID - 1);
+			[ColumnInfo("X8")]
+			public int Offset => GetRowOffset(metadataFile, TableIndex.TypeDef, RID);
 
-			[StringFormat("X8")]
+			[ColumnInfo("X8")]
 			public TypeAttributes Attributes => typeDef.Attributes;
 
-			const TypeAttributes otherFlagsMask = ~(TypeAttributes.VisibilityMask | TypeAttributes.LayoutMask | TypeAttributes.ClassSemanticsMask | TypeAttributes.StringFormatMask | TypeAttributes.CustomFormatMask);
+			public object AttributesTooltip => FlagsTooltip.ForTypeAttributes(typeDef.Attributes);
 
-			public object AttributesTooltip => new FlagsTooltip {
-				FlagGroup.CreateSingleChoiceGroup(typeof(TypeAttributes), "Visibility: ", (int)TypeAttributes.VisibilityMask, (int)(typeDef.Attributes & TypeAttributes.VisibilityMask), new Flag("NotPublic (0000)", 0, false), includeAny: false),
-				FlagGroup.CreateSingleChoiceGroup(typeof(TypeAttributes), "Class layout: ", (int)TypeAttributes.LayoutMask, (int)(typeDef.Attributes & TypeAttributes.LayoutMask), new Flag("AutoLayout (0000)", 0, false), includeAny: false),
-				FlagGroup.CreateSingleChoiceGroup(typeof(TypeAttributes), "Class semantics: ", (int)TypeAttributes.ClassSemanticsMask, (int)(typeDef.Attributes & TypeAttributes.ClassSemanticsMask), new Flag("Class (0000)", 0, false), includeAny: false),
-				FlagGroup.CreateSingleChoiceGroup(typeof(TypeAttributes), "String format: ", (int)TypeAttributes.StringFormatMask, (int)(typeDef.Attributes & TypeAttributes.StringFormatMask), new Flag("AnsiClass (0000)", 0, false), includeAny: false),
-				FlagGroup.CreateSingleChoiceGroup(typeof(TypeAttributes), "Custom format: ", (int)TypeAttributes.CustomFormatMask, (int)(typeDef.Attributes & TypeAttributes.CustomFormatMask), new Flag("Value0 (0000)", 0, false), includeAny: false),
-				FlagGroup.CreateMultipleChoiceGroup(typeof(TypeAttributes), "Flags:", (int)otherFlagsMask, (int)(typeDef.Attributes & otherFlagsMask), includeAll: false),
-			};
+			public string Name => metadataFile.Metadata.GetString(typeDef.Name);
 
 			public string NameTooltip => $"{MetadataTokens.GetHeapOffset(typeDef.Name):X} \"{Name}\"";
 
-			public string Name => metadata.GetString(typeDef.Name);
+			public string Namespace => metadataFile.Metadata.GetString(typeDef.Namespace);
 
 			public string NamespaceTooltip => $"{MetadataTokens.GetHeapOffset(typeDef.Namespace):X} \"{Namespace}\"";
 
-			public string Namespace => metadata.GetString(typeDef.Namespace);
-
-			[StringFormat("X8")]
+			[ColumnInfo("X8", Kind = ColumnKind.Token)]
 			public int BaseType => MetadataTokens.GetToken(typeDef.BaseType);
 
-			public string BaseTypeTooltip {
+			public string? BaseTypeTooltip {
 				get {
 					var output = new PlainTextOutput();
-					var provider = new DisassemblerSignatureTypeProvider(module, output);
+					var provider = new DisassemblerSignatureTypeProvider(metadataFile, output);
 					if (typeDef.BaseType.IsNil)
 						return null;
 					switch (typeDef.BaseType.Kind)
 					{
 						case HandleKind.TypeDefinition:
-							provider.GetTypeFromDefinition(module.Metadata, (TypeDefinitionHandle)typeDef.BaseType, 0)(ILNameSyntax.Signature);
+							provider.GetTypeFromDefinition(metadataFile.Metadata, (TypeDefinitionHandle)typeDef.BaseType, 0)(ILNameSyntax.Signature);
 							return output.ToString();
 						case HandleKind.TypeReference:
-							provider.GetTypeFromReference(module.Metadata, (TypeReferenceHandle)typeDef.BaseType, 0)(ILNameSyntax.Signature);
+							provider.GetTypeFromReference(metadataFile.Metadata, (TypeReferenceHandle)typeDef.BaseType, 0)(ILNameSyntax.Signature);
 							return output.ToString();
 						case HandleKind.TypeSpecification:
-							provider.GetTypeFromSpecification(module.Metadata, new Decompiler.Metadata.GenericContext(default(TypeDefinitionHandle), module), (TypeSpecificationHandle)typeDef.BaseType, 0)(ILNameSyntax.Signature);
+							provider.GetTypeFromSpecification(metadataFile.Metadata, new MetadataGenericContext(default(TypeDefinitionHandle), metadataFile.Metadata), (TypeSpecificationHandle)typeDef.BaseType, 0)(ILNameSyntax.Signature);
 							return output.ToString();
 						default:
 							return null;
@@ -139,51 +108,43 @@ namespace ICSharpCode.ILSpy.Metadata
 				}
 			}
 
-			[StringFormat("X8")]
-			public int FieldList => MetadataTokens.GetToken(typeDef.GetFields().FirstOrDefault());
+			[ColumnInfo("X8", Kind = ColumnKind.Token)]
+			public int FieldList => 0x04000000 | fieldList;
 
-			public string FieldListTooltip {
+			string? fieldListTooltip;
+			public string? FieldListTooltip {
 				get {
-					var field = typeDef.GetFields().FirstOrDefault();
-					if (field.IsNil)
-						return null;
-					ITextOutput output = new PlainTextOutput();
-					var context = new Decompiler.Metadata.GenericContext(default(TypeDefinitionHandle), module);
-					((EntityHandle)field).WriteTo(module, output, context);
-					return output.ToString();
+					var @field = typeDef.GetFields().FirstOrDefault();
+					if (@field.IsNil)
+						return "(type has no fields; the stored value is the start of its empty field list: the next type's first field row, or one past the end of the Field table)";
+					return GenerateTooltip(ref fieldListTooltip, metadataFile, @field);
 				}
 			}
 
-			[StringFormat("X8")]
-			public int MethodList => MetadataTokens.GetToken(typeDef.GetMethods().FirstOrDefault());
+			[ColumnInfo("X8", Kind = ColumnKind.Token)]
+			public int MethodList => 0x06000000 | methodList;
 
-			public string MethodListTooltip {
+			string? methodListTooltip;
+			public string? MethodListTooltip {
 				get {
 					var method = typeDef.GetMethods().FirstOrDefault();
 					if (method.IsNil)
-						return null;
-					ITextOutput output = new PlainTextOutput();
-					var context = new Decompiler.Metadata.GenericContext(default(TypeDefinitionHandle), module);
-					((EntityHandle)method).WriteTo(module, output, context);
-					return output.ToString();
+						return "(type has no methods; the stored value is the start of its empty method list: the next type's first method row, or one past the end of the MethodDef table)";
+					return GenerateTooltip(ref methodListTooltip, metadataFile, method);
 				}
 			}
 
-			IEntity IMemberTreeNode.Member => ((MetadataModule)module.GetTypeSystemWithCurrentOptionsOrNull()?.MainModule).GetDefinition(handle);
+			readonly int fieldList;
+			readonly int methodList;
 
-			public TypeDefEntry(PEFile module, TypeDefinitionHandle handle)
+			public TypeDefEntry(MetadataFile metadataFile, TypeDefinitionHandle handle, int fieldList, int methodList)
 			{
-				this.metadataOffset = module.Reader.PEHeaders.MetadataStartOffset;
-				this.module = module;
-				this.metadata = module.Metadata;
+				this.metadataFile = metadataFile;
 				this.handle = handle;
-				this.typeDef = metadata.GetTypeDefinition(handle);
+				this.fieldList = fieldList;
+				this.methodList = methodList;
+				typeDef = metadataFile.Metadata.GetTypeDefinition(handle);
 			}
-		}
-
-		public override void Decompile(Language language, ITextOutput output, DecompilationOptions options)
-		{
-			language.WriteCommentLine(output, "TypeDefs");
 		}
 	}
 }

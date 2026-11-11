@@ -1,4 +1,4 @@
-﻿// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -17,10 +17,10 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System;
-using System.CodeDom.Compiler;
 using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Threading.Tasks;
 
 using ICSharpCode.Decompiler.Tests.Helpers;
 
@@ -45,74 +45,144 @@ namespace ICSharpCode.Decompiler.Tests
 				if (file.Extension == ".txt" || file.Extension == ".exe" || file.Extension == ".config")
 					continue;
 				var testName = Path.GetFileNameWithoutExtension(file.Name);
-				Assert.Contains(testName, testNames);
+				Assert.That(testNames, Has.Member(testName));
 			}
 		}
 
-		static readonly CompilerOptions[] noMonoOptions =
+		static readonly CompilerOptions[] noMonoOptions = Tester.SupportedOnCurrentPlatform(new[]
 		{
 			CompilerOptions.None,
 			CompilerOptions.Optimize,
+			CompilerOptions.UseRoslyn1_3_2 | CompilerOptions.TargetNet40,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslyn1_3_2 | CompilerOptions.TargetNet40,
+			CompilerOptions.UseRoslyn2_10_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslyn2_10_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.UseRoslyn3_11_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslyn3_11_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.UseRoslyn4_14_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslyn4_14_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.UseRoslynLatest | CompilerOptions.TargetNet40,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslynLatest | CompilerOptions.TargetNet40,
 			CompilerOptions.UseRoslyn1_3_2,
 			CompilerOptions.Optimize | CompilerOptions.UseRoslyn1_3_2,
 			CompilerOptions.UseRoslyn2_10_0,
 			CompilerOptions.Optimize | CompilerOptions.UseRoslyn2_10_0,
+			CompilerOptions.UseRoslyn3_11_0,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslyn3_11_0,
+			CompilerOptions.UseRoslyn4_14_0,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslyn4_14_0,
 			CompilerOptions.UseRoslynLatest,
 			CompilerOptions.Optimize | CompilerOptions.UseRoslynLatest,
-		};
+		}, executesCompiledOutput: true);
 
-		static readonly CompilerOptions[] defaultOptions =
+		static readonly CompilerOptions[] net40OnlyOptions = Tester.SupportedOnCurrentPlatform(new[]
 		{
 			CompilerOptions.None,
 			CompilerOptions.Optimize,
+			CompilerOptions.UseRoslyn1_3_2 | CompilerOptions.TargetNet40,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslyn1_3_2 | CompilerOptions.TargetNet40,
+			CompilerOptions.UseRoslyn2_10_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslyn2_10_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.UseRoslyn3_11_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslyn3_11_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.UseRoslyn4_14_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslyn4_14_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.UseRoslynLatest | CompilerOptions.TargetNet40,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslynLatest | CompilerOptions.TargetNet40,
+		}, executesCompiledOutput: true);
+
+		static readonly CompilerOptions[] defaultOptions = Tester.SupportedOnCurrentPlatform(new[]
+		{
+			CompilerOptions.None,
+			CompilerOptions.Optimize,
+			CompilerOptions.UseRoslyn1_3_2 | CompilerOptions.TargetNet40,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslyn1_3_2 | CompilerOptions.TargetNet40,
+			CompilerOptions.UseRoslyn2_10_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslyn2_10_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.UseRoslyn3_11_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslyn3_11_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.UseRoslyn4_14_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslyn4_14_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.UseRoslynLatest | CompilerOptions.TargetNet40,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslynLatest | CompilerOptions.TargetNet40,
 			CompilerOptions.UseRoslyn1_3_2,
 			CompilerOptions.Optimize | CompilerOptions.UseRoslyn1_3_2,
 			CompilerOptions.UseRoslyn2_10_0,
 			CompilerOptions.Optimize | CompilerOptions.UseRoslyn2_10_0,
+			CompilerOptions.UseRoslyn3_11_0,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslyn3_11_0,
+			CompilerOptions.UseRoslyn4_14_0,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslyn4_14_0,
 			CompilerOptions.UseRoslynLatest,
 			CompilerOptions.Optimize | CompilerOptions.UseRoslynLatest,
-			CompilerOptions.UseMcs,
-			CompilerOptions.Optimize | CompilerOptions.UseMcs
-		};
+			CompilerOptions.UseMcs2_6_4,
+			CompilerOptions.Optimize | CompilerOptions.UseMcs2_6_4,
+			CompilerOptions.UseMcs5_23,
+			CompilerOptions.Optimize | CompilerOptions.UseMcs5_23
+		}, executesCompiledOutput: true);
 
-		static readonly CompilerOptions[] roslynOnlyOptions =
-{
+		static readonly CompilerOptions[] roslynOnlyOptions = Tester.SupportedOnCurrentPlatform(new[]
+		{
+			CompilerOptions.UseRoslyn1_3_2 | CompilerOptions.TargetNet40,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslyn1_3_2 | CompilerOptions.TargetNet40,
+			CompilerOptions.UseRoslyn2_10_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslyn2_10_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.UseRoslyn3_11_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslyn3_11_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.UseRoslyn4_14_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslyn4_14_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.UseRoslynLatest | CompilerOptions.TargetNet40,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslynLatest | CompilerOptions.TargetNet40,
 			CompilerOptions.UseRoslyn1_3_2,
 			CompilerOptions.Optimize | CompilerOptions.UseRoslyn1_3_2,
 			CompilerOptions.UseRoslyn2_10_0,
 			CompilerOptions.Optimize | CompilerOptions.UseRoslyn2_10_0,
+			CompilerOptions.UseRoslyn3_11_0,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslyn3_11_0,
+			CompilerOptions.UseRoslyn4_14_0,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslyn4_14_0,
 			CompilerOptions.UseRoslynLatest,
 			CompilerOptions.Optimize | CompilerOptions.UseRoslynLatest,
-		};
+		}, executesCompiledOutput: true);
 
-		static readonly CompilerOptions[] roslyn2OrNewerOptions =
+		static readonly CompilerOptions[] roslyn2OrNewerOptions = Tester.SupportedOnCurrentPlatform(new[]
 		{
+			CompilerOptions.UseRoslyn2_10_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslyn2_10_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.UseRoslyn3_11_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslyn3_11_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.UseRoslyn4_14_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslyn4_14_0 | CompilerOptions.TargetNet40,
+			CompilerOptions.UseRoslynLatest | CompilerOptions.TargetNet40,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslynLatest | CompilerOptions.TargetNet40,
 			CompilerOptions.UseRoslyn2_10_0,
 			CompilerOptions.Optimize | CompilerOptions.UseRoslyn2_10_0,
+			CompilerOptions.UseRoslyn3_11_0,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslyn3_11_0,
+			CompilerOptions.UseRoslyn4_14_0,
+			CompilerOptions.Optimize | CompilerOptions.UseRoslyn4_14_0,
 			CompilerOptions.UseRoslynLatest,
 			CompilerOptions.Optimize | CompilerOptions.UseRoslynLatest,
-		};
-
-		static readonly CompilerOptions[] roslynLatestOnlyOptions =
-		{
-			CompilerOptions.UseRoslynLatest,
-			CompilerOptions.Optimize | CompilerOptions.UseRoslynLatest,
-		};
+		}, executesCompiledOutput: true);
 
 		[Test]
-		public void Comparisons([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		public async Task Comparisons([ValueSource(nameof(defaultOptions))] CompilerOptions options)
 		{
-			RunCS(options: options);
+			await RunCS(options: options);
 		}
 
 		[Test]
-		public void Conversions([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		public async Task Conversions([ValueSource(nameof(defaultOptions))] CompilerOptions options)
 		{
-			RunCS(options: options);
+			await RunCS(options: options);
 		}
 
+		// 32-bit execution requires a 32-bit runtime, which only exists on Windows.
+		static readonly int[] supportedBitness = OperatingSystem.IsWindows() ? new[] { 32, 64 } : new[] { 64 };
+		static readonly bool[] supportedForce32Bit = OperatingSystem.IsWindows() ? new[] { false, true } : new[] { false };
+
 		[Test]
-		public void FloatingPointArithmetic([ValueSource(nameof(noMonoOptions))] CompilerOptions options, [Values(32, 64)] int bits)
+		public async Task FloatingPointArithmetic([ValueSource(nameof(noMonoOptions))] CompilerOptions options, [ValueSource(nameof(supportedBitness))] int bits)
 		{
 			// The behavior of the #1794 incorrect `(float)(double)val` cast only causes test failures
 			// for some runtime+compiler combinations.
@@ -120,125 +190,143 @@ namespace ICSharpCode.Decompiler.Tests
 				options |= CompilerOptions.Force32Bit;
 			// Mono is excluded because we never use it for the second pass, so the test ends up failing
 			// due to some Mono vs. Roslyn compiler differences.
-			RunCS(options: options);
+			await RunCS(options: options);
 		}
 
 		[Test]
-		public void HelloWorld([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		public async Task HelloWorld([ValueSource(nameof(defaultOptions))] CompilerOptions options)
 		{
-			RunCS(options: options);
+			await RunCS(options: options);
 		}
 
 		[Test]
-		public void ControlFlow([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		public async Task ControlFlow([ValueSource(nameof(defaultOptions))] CompilerOptions options)
 		{
-			RunCS(options: options);
+			await RunCS(options: options);
 		}
 
 		[Test]
-		public void CompoundAssignment([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		public async Task CompoundAssignment([ValueSource(nameof(defaultOptions))] CompilerOptions options)
 		{
-			RunCS(options: options);
+			await RunCS(options: options);
 		}
 
 		[Test]
-		public void PropertiesAndEvents([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		public async Task PropertiesAndEvents([ValueSource(nameof(defaultOptions))] CompilerOptions options)
 		{
-			RunCS(options: options);
+			await RunCS(options: options);
 		}
 
 		[Test]
-		public void Switch([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		public async Task Switch([ValueSource(nameof(defaultOptions))] CompilerOptions options)
 		{
-			RunCS(options: options);
+			await RunCS(options: options);
 		}
 
 		[Test]
-		public void Using([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		public async Task Using([ValueSource(nameof(defaultOptions))] CompilerOptions options)
 		{
-			RunCS(options: options);
+			await RunCS(options: options);
 		}
 
 		[Test]
-		public void Loops([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		public async Task Loops([ValueSource(nameof(defaultOptions))] CompilerOptions options)
 		{
-			RunCS(options: options);
+			await RunCS(options: options);
 		}
 
 		[Test]
-		public void NullableTests([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		public async Task NullableTests([ValueSource(nameof(defaultOptions))] CompilerOptions options)
 		{
-			RunCS(options: options);
+			await RunCS(options: options);
 		}
 
 		[Test]
-		public void Generics([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		public async Task Generics([ValueSource(nameof(defaultOptions))] CompilerOptions options)
 		{
-			RunCS(options: options);
+			await RunCS(options: options);
 		}
 
 		[Test]
-		public void ValueTypeCall([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		public async Task ValueTypeCall([ValueSource(nameof(defaultOptions))] CompilerOptions options)
 		{
-			RunCS(options: options);
+			await RunCS(options: options);
 		}
 
 		[Test]
-		public void InitializerTests([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		public async Task InitializerTests([ValueSource(nameof(defaultOptions))] CompilerOptions options)
 		{
-			RunCS(options: options);
+			await RunCS(options: options);
 		}
 
 		[Test]
-		public void DecimalFields([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		public async Task DecimalFields([ValueSource(nameof(defaultOptions))] CompilerOptions options)
 		{
-			RunCS(options: options);
+			await RunCS(options: options);
 		}
 
-		[Test]
-		public void UndocumentedExpressions([ValueSource(nameof(noMonoOptions))] CompilerOptions options)
+		[Test, Platform("Win")] // uses __arglist; CoreCLR only supports the vararg calling convention on Windows
+		public async Task UndocumentedExpressions([ValueSource(nameof(noMonoOptions))] CompilerOptions options)
 		{
-			RunCS(options: options);
+			await RunCS(options: options);
 		}
 
 		[Test]
-		public void Uninit([ValueSource(nameof(noMonoOptions))] CompilerOptions options)
+		public async Task Uninit([ValueSource(nameof(noMonoOptions))] CompilerOptions options)
 		{
-			RunVB(options: options);
+			await RunVB(options: options);
 		}
 
 		[Test]
-		public void MemberLookup([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		public async Task VBOnErrorCorrectness([ValueSource(nameof(noMonoOptions))] CompilerOptions options)
 		{
-			RunCS(options: options);
+			await RunVB(options: options);
 		}
 
 		[Test]
-		public void OverloadResolution([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		public async Task VBWithEventsWinFormsCorrectness([ValueSource(nameof(roslyn2OrNewerOptions))] CompilerOptions options)
 		{
-			RunCS(options: options);
+			await RunVB(options: options);
 		}
 
 		[Test]
-		public void ExpressionTrees([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		public async Task MemberLookup([ValueSource(nameof(defaultOptions))] CompilerOptions options)
 		{
-			RunCS(options: options);
+			await RunCS(options: options);
 		}
 
 		[Test]
-		public void NullPropagation([ValueSource(nameof(roslynOnlyOptions))] CompilerOptions options)
+		public async Task OverloadResolution([ValueSource(nameof(defaultOptions))] CompilerOptions options)
 		{
-			RunCS(options: options);
+			await RunCS(options: options);
 		}
 
 		[Test]
-		public void DeconstructionTests([ValueSource(nameof(roslyn2OrNewerOptions))] CompilerOptions options)
+		public async Task ExpressionTrees([ValueSource(nameof(defaultOptions))] CompilerOptions options)
 		{
-			RunCS(options: options);
+			await RunCS(options: options);
 		}
 
 		[Test]
-		public void BitNot([Values(false, true)] bool force32Bit)
+		public async Task LambdaOptionalAndParamsParameters([ValueSource(nameof(roslynOnlyOptions))] CompilerOptions options)
+		{
+			await RunCS(options: options);
+		}
+
+		[Test]
+		public async Task NullPropagation([ValueSource(nameof(roslynOnlyOptions))] CompilerOptions options)
+		{
+			await RunCS(options: options);
+		}
+
+		[Test]
+		public async Task DeconstructionTests([ValueSource(nameof(roslyn2OrNewerOptions))] CompilerOptions options)
+		{
+			await RunCS(options: options);
+		}
+
+		[Test]
+		public async Task BitNot([ValueSource(nameof(supportedForce32Bit))] bool force32Bit)
 		{
 			CompilerOptions compiler = CompilerOptions.UseDebug;
 			AssemblerOptions asm = AssemblerOptions.None;
@@ -247,23 +335,30 @@ namespace ICSharpCode.Decompiler.Tests
 				compiler |= CompilerOptions.Force32Bit;
 				asm |= AssemblerOptions.Force32Bit;
 			}
-			RunIL("BitNot.il", compiler, asm);
+			await RunIL("BitNot.il", compiler, asm);
 		}
 
 		[Test]
-		public void Jmp()
+		public async Task Jmp()
 		{
-			RunIL("Jmp.il");
+			await RunIL("Jmp.il");
 		}
 
 		[Test]
-		public void StackTests()
+		public async Task NonGenericConstrainedCallVirt()
 		{
-			RunIL("StackTests.il");
+			await RunIL("NonGenericConstrainedCallVirt.il", CompilerOptions.UseRoslynLatest);
+		}
+
+		[Test, Platform("Win")] // 32BITREQUIRED needs the Windows 32-bit runtime
+		public async Task StackTests()
+		{
+			// IL contains .corflags = 32BITREQUIRED
+			await RunIL("StackTests.il", CompilerOptions.Force32Bit, AssemblerOptions.Force32Bit);
 		}
 
 		[Test]
-		public void StackTypes([Values(false, true)] bool force32Bit)
+		public async Task StackTypes([ValueSource(nameof(supportedForce32Bit))] bool force32Bit)
 		{
 			CompilerOptions compiler = CompilerOptions.UseRoslynLatest | CompilerOptions.UseDebug;
 			AssemblerOptions asm = AssemblerOptions.None;
@@ -272,98 +367,110 @@ namespace ICSharpCode.Decompiler.Tests
 				compiler |= CompilerOptions.Force32Bit;
 				asm |= AssemblerOptions.Force32Bit;
 			}
-			RunIL("StackTypes.il", compiler, asm);
+			await RunIL("StackTypes.il", compiler, asm);
 		}
 
 		[Test]
-		public void UnsafeCode([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		public async Task UnsafeCode([ValueSource(nameof(defaultOptions))] CompilerOptions options)
 		{
-			if (options.HasFlag(CompilerOptions.UseMcs))
+			await RunCS(options: options);
+		}
+
+		[Test]
+		public async Task UncheckedConstants([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		{
+			await RunCS(options: options);
+		}
+
+		[Test]
+		public async Task ConditionalAttr([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		{
+			await RunCS(options: options);
+		}
+
+		[Test]
+		public async Task TrickyTypes([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		{
+			await RunCS(options: options);
+		}
+
+		[Test]
+		public async Task Capturing([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		{
+			await RunCS(options: options);
+		}
+
+		[Test]
+		public async Task YieldReturn([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		{
+			if ((options & CompilerOptions.UseMcsMask) != 0)
 			{
 				Assert.Ignore("Decompiler bug with mono!");
 			}
-			RunCS(options: options);
+			await RunCS(options: options);
 		}
 
 		[Test]
-		public void ConditionalAttr([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		public async Task Async([ValueSource(nameof(noMonoOptions))] CompilerOptions options)
 		{
-			RunCS(options: options);
+			await RunCS(options: options);
 		}
 
 		[Test]
-		public void TrickyTypes([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		public async Task AsyncAwaitPatterns([ValueSource(nameof(noMonoOptions))] CompilerOptions options)
 		{
-			RunCS(options: options);
+			await RunCS(options: options);
 		}
 
 		[Test]
-		public void Capturing([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		public async Task LINQRaytracer([ValueSource(nameof(defaultOptions))] CompilerOptions options)
 		{
-			RunCS(options: options);
+			await RunCS(options: options);
 		}
 
 		[Test]
-		public void YieldReturn([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		public async Task StringConcat([ValueSource(nameof(defaultOptions))] CompilerOptions options)
 		{
-			if (options.HasFlag(CompilerOptions.UseMcs))
-			{
-				Assert.Ignore("Decompiler bug with mono!");
-			}
-			RunCS(options: options);
+			await RunCS(options: options);
 		}
 
 		[Test]
-		public void Async([ValueSource(nameof(noMonoOptions))] CompilerOptions options)
+		public async Task DynamicTests([ValueSource(nameof(noMonoOptions))] CompilerOptions options)
 		{
-			RunCS(options: options);
+			await RunCS(options: options);
 		}
 
 		[Test]
-		public void LINQRaytracer([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		public async Task MiniJSON([ValueSource(nameof(defaultOptions))] CompilerOptions options)
 		{
-			RunCS(options: options);
+			await RunCS(options: options);
 		}
 
 		[Test]
-		public void StringConcat([ValueSource(nameof(defaultOptions))] CompilerOptions options)
+		public async Task ComInterop([ValueSource(nameof(net40OnlyOptions))] CompilerOptions options)
 		{
-			RunCS(options: options);
+			await RunCS(options: options);
 		}
 
-		[Test]
-		public void DynamicTests([ValueSource(nameof(noMonoOptions))] CompilerOptions options)
+		async Task RunCS([CallerMemberName] string testName = null, CompilerOptions options = CompilerOptions.UseDebug)
 		{
-			RunCS(options: options);
-		}
-
-		[Test]
-		public void MiniJSON([ValueSource(nameof(defaultOptions))] CompilerOptions options)
-		{
-			if (options.HasFlag(CompilerOptions.UseMcs))
-			{
-				Assert.Ignore("Decompiler bug with mono!");
-			}
-			RunCS(options: options);
-		}
-
-		void RunCS([CallerMemberName] string testName = null, CompilerOptions options = CompilerOptions.UseDebug)
-		{
+			if ((options & CompilerOptions.UseRoslynMask) != 0 && (options & CompilerOptions.TargetNet40) == 0)
+				options |= CompilerOptions.UseTestRunner;
 			string testFileName = testName + ".cs";
-			string testOutputFileName = testName + Tester.GetSuffix(options) + ".exe";
-			CompilerResults outputFile = null, decompiledOutputFile = null;
+			string testOutputFileName = TestsAssemblyOutput.GetFilePath(TestCasePath, testName, Tester.GetSuffix(options) + ".exe");
+			Helpers.CompilerResults outputFile = null, decompiledOutputFile = null;
 
 			try
 			{
-				outputFile = Tester.CompileCSharp(Path.Combine(TestCasePath, testFileName), options,
-					outputFileName: Path.Combine(TestCasePath, testOutputFileName));
-				string decompiledCodeFile = Tester.DecompileCSharp(outputFile.PathToAssembly, Tester.GetSettings(options));
-				if (options.HasFlag(CompilerOptions.UseMcs))
+				outputFile = await Tester.CompileCSharp(Path.Combine(TestCasePath, testFileName), options,
+					outputFileName: testOutputFileName).ConfigureAwait(false);
+				string decompiledCodeFile = await Tester.DecompileCSharp(outputFile.PathToAssembly, Tester.GetSettings(options)).ConfigureAwait(false);
+				if ((options & CompilerOptions.UseMcsMask) != 0)
 				{
 					// For second pass, use roslyn instead of mcs.
 					// mcs has some compiler bugs that cause it to not accept ILSpy-generated code,
 					// for example when there's unreachable code due to other compiler bugs in the first mcs run.
-					options &= ~CompilerOptions.UseMcs;
+					options &= ~CompilerOptions.UseMcsMask;
 					options |= CompilerOptions.UseRoslynLatest;
 					// Also, add an .exe.config so that we consistently use the .NET 4.x runtime.
 					File.WriteAllText(outputFile.PathToAssembly + ".config", @"<?xml version=""1.0"" encoding=""utf-8""?>
@@ -372,71 +479,92 @@ namespace ICSharpCode.Decompiler.Tests
 		<supportedRuntime version=""v4.0"" sku="".NETFramework,Version=v4.0,Profile=Client"" />
 	</startup>
 </configuration>");
+					options |= CompilerOptions.TargetNet40;
 				}
-				decompiledOutputFile = Tester.CompileCSharp(decompiledCodeFile, options);
+				decompiledOutputFile = await Tester.CompileCSharp(decompiledCodeFile, options).ConfigureAwait(false);
 
-				Tester.RunAndCompareOutput(testFileName, outputFile.PathToAssembly, decompiledOutputFile.PathToAssembly, decompiledCodeFile);
-
+				await Tester.RunAndCompareOutput(testFileName, outputFile.PathToAssembly, decompiledOutputFile.PathToAssembly, decompiledCodeFile, (options & CompilerOptions.UseTestRunner) != 0, (options & CompilerOptions.Force32Bit) != 0);
 				Tester.RepeatOnIOError(() => File.Delete(decompiledCodeFile));
-				Tester.RepeatOnIOError(() => File.Delete(decompiledOutputFile.PathToAssembly));
 			}
 			finally
 			{
 				if (outputFile != null)
-					outputFile.TempFiles.Delete();
+					outputFile.DeleteTempFiles();
 				if (decompiledOutputFile != null)
-					decompiledOutputFile.TempFiles.Delete();
+					decompiledOutputFile.DeleteTempFiles();
 			}
 		}
 
-		void RunVB([CallerMemberName] string testName = null, CompilerOptions options = CompilerOptions.UseDebug)
+		async Task RunVB([CallerMemberName] string testName = null, CompilerOptions options = CompilerOptions.UseDebug)
 		{
 			options |= CompilerOptions.ReferenceVisualBasic;
+			if ((options & CompilerOptions.UseRoslynMask) != 0)
+				options |= CompilerOptions.UseTestRunner;
 			string testFileName = testName + ".vb";
-			string testOutputFileName = testName + Tester.GetSuffix(options) + ".exe";
-			CompilerResults outputFile = null, decompiledOutputFile = null;
+			string testOutputFileName = TestsAssemblyOutput.GetFilePath(TestCasePath, testName, Tester.GetSuffix(options) + ".exe");
+			Helpers.CompilerResults outputFile = null, decompiledOutputFile = null;
 
 			try
 			{
-				outputFile = Tester.CompileVB(Path.Combine(TestCasePath, testFileName), options,
-					outputFileName: Path.Combine(TestCasePath, testOutputFileName));
-				string decompiledCodeFile = Tester.DecompileCSharp(outputFile.PathToAssembly, Tester.GetSettings(options));
-				decompiledOutputFile = Tester.CompileCSharp(decompiledCodeFile, options);
+				outputFile = await Tester.CompileVB(Path.Combine(TestCasePath, testFileName), options,
+					outputFileName: testOutputFileName).ConfigureAwait(false);
+				string decompiledCodeFile = await Tester.DecompileCSharp(outputFile.PathToAssembly, Tester.GetSettings(options)).ConfigureAwait(false);
+				if ((options & CompilerOptions.UseRoslynMask) == 0)
+				{
+					// For second pass, use roslyn instead of the legacy csc.
+					// VB error handling compiles to exception filters, which C# 5 cannot express.
+					options |= CompilerOptions.UseRoslynLatest | CompilerOptions.TargetNet40;
+				}
+				else if ((options & CompilerOptions.UseRoslyn2_10_0) != 0 && (options & CompilerOptions.TargetNet40) == 0)
+				{
+					// The .NET Core 2.2 Microsoft.VisualBasic.dll lacks most of the VB runtime
+					// that decompiled VB code calls, such as Information.Err.
+					options = (options & ~CompilerOptions.UseRoslyn2_10_0) | CompilerOptions.UseRoslynLatest;
+				}
+				decompiledOutputFile = await Tester.CompileCSharp(decompiledCodeFile, options).ConfigureAwait(false);
 
-				Tester.RunAndCompareOutput(testFileName, outputFile.PathToAssembly, decompiledOutputFile.PathToAssembly, decompiledCodeFile);
-
+				await Tester.RunAndCompareOutput(testFileName, outputFile.PathToAssembly, decompiledOutputFile.PathToAssembly, decompiledCodeFile, (options & CompilerOptions.UseTestRunner) != 0, (options & CompilerOptions.Force32Bit) != 0);
 				Tester.RepeatOnIOError(() => File.Delete(decompiledCodeFile));
-				Tester.RepeatOnIOError(() => File.Delete(decompiledOutputFile.PathToAssembly));
 			}
 			finally
 			{
 				if (outputFile != null)
-					outputFile.TempFiles.Delete();
+					outputFile.DeleteTempFiles();
 				if (decompiledOutputFile != null)
-					decompiledOutputFile.TempFiles.Delete();
+					decompiledOutputFile.DeleteTempFiles();
 			}
 		}
 
-		void RunIL(string testFileName, CompilerOptions options = CompilerOptions.UseDebug, AssemblerOptions asmOptions = AssemblerOptions.None)
+		async Task RunIL(string testFileName, CompilerOptions options = CompilerOptions.UseDebug, AssemblerOptions asmOptions = AssemblerOptions.None)
 		{
 			string outputFile = null;
-			CompilerResults decompiledOutputFile = null;
+			Helpers.CompilerResults decompiledOutputFile = null;
+
+			bool optionsForce32Bit = options.HasFlag(CompilerOptions.Force32Bit);
+			bool asmOptionsForce32Bit = asmOptions.HasFlag(AssemblerOptions.Force32Bit);
+
+			Assert.That(asmOptionsForce32Bit, Is.EqualTo(optionsForce32Bit), "Inconsistent architecture.");
 
 			try
 			{
-				outputFile = Tester.AssembleIL(Path.Combine(TestCasePath, testFileName), asmOptions);
-				string decompiledCodeFile = Tester.DecompileCSharp(outputFile, Tester.GetSettings(options));
-				decompiledOutputFile = Tester.CompileCSharp(decompiledCodeFile, options);
+				options |= CompilerOptions.UseTestRunner;
+				if (!OperatingSystem.IsWindows() && (options & CompilerOptions.UseRoslynMask) == 0)
+				{
+					// The default (legacy csc) recompilation of the decompiled output is only
+					// available on Windows; elsewhere use the current Roslyn instead.
+					options |= CompilerOptions.UseRoslynLatest;
+				}
+				outputFile = await Tester.AssembleIL(Path.Combine(TestCasePath, testFileName), asmOptions).ConfigureAwait(false);
+				string decompiledCodeFile = await Tester.DecompileCSharp(outputFile, Tester.GetSettings(options)).ConfigureAwait(false);
+				decompiledOutputFile = await Tester.CompileCSharp(decompiledCodeFile, options).ConfigureAwait(false);
 
-				Tester.RunAndCompareOutput(testFileName, outputFile, decompiledOutputFile.PathToAssembly, decompiledCodeFile);
-
+				await Tester.RunAndCompareOutput(testFileName, outputFile, decompiledOutputFile.PathToAssembly, decompiledCodeFile, (options & CompilerOptions.UseTestRunner) != 0, (options & CompilerOptions.Force32Bit) != 0).ConfigureAwait(false);
 				Tester.RepeatOnIOError(() => File.Delete(decompiledCodeFile));
-				Tester.RepeatOnIOError(() => File.Delete(decompiledOutputFile.PathToAssembly));
 			}
 			finally
 			{
 				if (decompiledOutputFile != null)
-					decompiledOutputFile.TempFiles.Delete();
+					decompiledOutputFile.DeleteTempFiles();
 			}
 		}
 	}

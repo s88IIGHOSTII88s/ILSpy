@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) 2010-2013 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -45,13 +45,9 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 			AddSubstitution(substitution);
 		}
 
-		public bool IsReadOnly {
-			get { return fieldDefinition.IsReadOnly; }
-		}
-
-		public bool IsVolatile {
-			get { return fieldDefinition.IsVolatile; }
-		}
+		public bool IsReadOnly => fieldDefinition.IsReadOnly;
+		public bool ReturnTypeIsRefReadOnly => fieldDefinition.ReturnTypeIsRefReadOnly;
+		public bool IsVolatile => fieldDefinition.IsVolatile;
 
 		IType IVariable.Type {
 			get { return this.ReturnType; }

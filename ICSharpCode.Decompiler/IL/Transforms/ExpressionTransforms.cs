@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2014-2017 Daniel Grunwald
+// Copyright (c) 2014-2017 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -92,20 +92,28 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			// "logic.not(arg)" is sugar for "comp(arg != ldc.i4 0)"
 			if (inst.MatchLogicNot(out var arg))
 			{
-				VisitLogicNot(inst, arg);
+				var toVisit = HandleLogicNot(inst, arg, context);
+				(toVisit ?? arg).AcceptVisitor(this);
 				return;
 			}
 			else if (inst.Kind == ComparisonKind.Inequality && inst.LiftingKind == ComparisonLiftingKind.None
-			  && inst.Right.MatchLdcI4(0) && (IfInstruction.IsInConditionSlot(inst) || inst.Left is Comp)
-		  )
+				&& inst.Right.MatchLdcI4(0)
+				&& (inst.Left.InferType(context.TypeSystem).IsKnownType(KnownTypeCode.Boolean)
+				   || inst.Left.MatchLdcI4(0) || inst.Left.MatchLdcI4(1)))
 			{
-				// if (comp(x != 0)) ==> if (x)
-				// comp(comp(...) != 0) => comp(...)
+				// When `x` is known to be 0 or 1:
+				// `comp(x != 0) => x`
 				context.Step("Remove redundant comp(... != 0)", inst);
 				inst.Left.AddILRange(inst);
-				inst.ReplaceWith(inst.Left);
-				inst.Left.AcceptVisitor(this);
+				var left = inst.Left;
+				inst.ReplaceWith(left);
+				context.EndStep(left);
+				left.AcceptVisitor(this);
 				return;
+			}
+			if (context.Settings.LiftNullables)
+			{
+				new NullableLiftingTransform(context).Run(inst);
 			}
 
 			base.VisitComp(inst);
@@ -113,32 +121,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			{
 				return;
 			}
-			if (inst.Right.MatchLdNull())
-			{
-				if (inst.Kind == ComparisonKind.GreaterThan)
-				{
-					context.Step("comp(left > ldnull)  => comp(left != ldnull)", inst);
-					inst.Kind = ComparisonKind.Inequality;
-				}
-				else if (inst.Kind == ComparisonKind.LessThanOrEqual)
-				{
-					context.Step("comp(left <= ldnull) => comp(left == ldnull)", inst);
-					inst.Kind = ComparisonKind.Equality;
-				}
-			}
-			else if (inst.Left.MatchLdNull())
-			{
-				if (inst.Kind == ComparisonKind.LessThan)
-				{
-					context.Step("comp(ldnull < right)  => comp(ldnull != right)", inst);
-					inst.Kind = ComparisonKind.Inequality;
-				}
-				else if (inst.Kind == ComparisonKind.GreaterThanOrEqual)
-				{
-					context.Step("comp(ldnull >= right) => comp(ldnull == right)", inst);
-					inst.Kind = ComparisonKind.Equality;
-				}
-			}
+			EarlyExpressionTransforms.FixComparisonKindLdNull(inst, context);
 
 			var rightWithoutConv = inst.Right.UnwrapConv(ConversionKind.SignExtend).UnwrapConv(ConversionKind.ZeroExtend);
 			if (rightWithoutConv.MatchLdcI4(0)
@@ -172,29 +155,15 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					inst.Left.ReplaceWith(new LdLen(StackType.I4, array).WithILRange(inst.Left));
 					inst.Right = rightWithoutConv;
 				}
-				else if (inst.Left is Conv conv && conv.TargetType == PrimitiveType.I && conv.Argument.ResultType == StackType.O)
+				else if (inst.Left is Conv conv && conv.TargetType == PrimitiveType.I && conv.Argument.ResultType == StackType.Obj)
 				{
 					// C++/CLI sometimes uses this weird comparison with null:
 					context.Step("comp(conv o->i (ldloc obj) == conv i4->i <sign extend>(ldc.i4 0))", inst);
 					// -> comp(ldloc obj == ldnull)
-					inst.InputType = StackType.O;
+					inst.InputType = StackType.Obj;
 					inst.Left = conv.Argument;
 					inst.Right = new LdNull().WithILRange(inst.Right);
 					inst.Right.AddILRange(rightWithoutConv);
-				}
-			}
-
-			if (inst.Right.MatchLdNull() && inst.Left.MatchBox(out arg, out var type) && type.Kind == TypeKind.TypeParameter)
-			{
-				if (inst.Kind == ComparisonKind.Equality)
-				{
-					context.Step("comp(box T(..) == ldnull) -> comp(.. == ldnull)", inst);
-					inst.Left = arg;
-				}
-				if (inst.Kind == ComparisonKind.Inequality)
-				{
-					context.Step("comp(box T(..) != ldnull) -> comp(.. != ldnull)", inst);
-					inst.Left = arg;
 				}
 			}
 		}
@@ -207,7 +176,9 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			{
 				context.Step("conv.i4(ldlen array) => ldlen.i4(array)", inst);
 				inst.AddILRange(inst.Argument);
-				inst.ReplaceWith(new LdLen(inst.TargetType.GetStackType(), array).WithILRange(inst));
+				var ldLen = new LdLen(inst.TargetType.GetStackType(), array).WithILRange(inst);
+				inst.ReplaceWith(ldLen);
+				context.EndStep(ldLen);
 				return;
 			}
 			if (inst.TargetType.IsFloatType() && inst.Argument is Conv conv
@@ -217,7 +188,9 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				// so the C# compiler usually follows it with an explicit conv.r4 or conv.r8.
 				// To avoid emitting '(float)(double)val', we combine these two conversions:
 				context.Step("conv.rN(conv.r.un(...)) => conv.rN.un(...)", inst);
-				inst.ReplaceWith(new Conv(conv.Argument, conv.InputType, conv.InputSign, inst.TargetType, inst.CheckForOverflow, inst.IsLifted | conv.IsLifted));
+				var newConv = new Conv(conv.Argument, conv.InputType, conv.InputSign, inst.TargetType, inst.CheckForOverflow, inst.IsLifted | conv.IsLifted);
+				inst.ReplaceWith(newConv);
+				context.EndStep(newConv);
 				return;
 			}
 		}
@@ -230,7 +203,9 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				// For reference types, box is a no-op.
 				context.Step("box ref-type(arg) => arg", inst);
 				inst.Argument.AddILRange(inst);
-				inst.ReplaceWith(inst.Argument);
+				var arg = inst.Argument;
+				inst.ReplaceWith(arg);
+				context.EndStep(arg);
 			}
 		}
 
@@ -259,13 +234,17 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				{
 					context.Step("Remove conv.i from array index", index);
 					index.ReplaceWith(conv.Argument);
+					context.EndStep(conv.Argument);
 				}
 			}
 		}
 
-		void VisitLogicNot(Comp inst, ILInstruction arg)
+		/// <summary>
+		/// Handles combining negations with comparisons and logical operations.
+		/// Returns the instruction that `inst` was replaced with; or null is no transformation was made.
+		/// </summary>
+		static ILInstruction HandleLogicNot(Comp inst, ILInstruction arg, ILTransformContext context)
 		{
-			ILInstruction lhs, rhs;
 			if (arg is Comp comp)
 			{
 				if ((!comp.InputType.IsFloatType() && !comp.IsLifted) || comp.Kind.IsEqualityOrInequality())
@@ -274,10 +253,11 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					comp.Kind = comp.Kind.Negate();
 					comp.AddILRange(inst);
 					inst.ReplaceWith(comp);
+					context.EndStep(comp);
+					return comp;
 				}
-				comp.AcceptVisitor(this);
 			}
-			else if (arg.MatchLogicAnd(out lhs, out rhs))
+			else if (arg.MatchLogicAnd(out var lhs, out var rhs))
 			{
 				// logic.not(if (lhs) rhs else ldc.i4 0)
 				// ==> if (logic.not(lhs)) ldc.i4 1 else logic.not(rhs)
@@ -289,7 +269,8 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				ifInst.TrueInst = new LdcI4(1).WithILRange(ldc0);
 				ifInst.FalseInst = Comp.LogicNot(rhs).WithILRange(inst);
 				inst.ReplaceWith(ifInst);
-				ifInst.AcceptVisitor(this);
+				context.EndStep(ifInst);
+				return ifInst;
 			}
 			else if (arg.MatchLogicOr(out lhs, out rhs))
 			{
@@ -303,65 +284,80 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				ifInst.TrueInst = Comp.LogicNot(rhs).WithILRange(inst);
 				ifInst.FalseInst = new LdcI4(0).WithILRange(ldc1);
 				inst.ReplaceWith(ifInst);
-				ifInst.AcceptVisitor(this);
+				context.EndStep(ifInst);
+				return ifInst;
 			}
-			else
-			{
-				arg.AcceptVisitor(this);
-			}
+			return null;
 		}
 
 		protected internal override void VisitCall(Call inst)
 		{
+			if (NullableLiftingTransform.MatchGetValueOrDefault(inst, out var nullableValue, out var fallback)
+				&& SemanticHelper.IsPure(fallback.Flags))
+			{
+				context.Step("call Nullable{T}.GetValueOrDefault(a, b) -> a ?? b", inst);
+				var ldObj = new LdObj(nullableValue, inst.Method.DeclaringType);
+				var replacement = new NullCoalescingInstruction(
+					NullableType.GetUnderlyingType(inst.Method.DeclaringType),
+					NullCoalescingKind.NullableWithValueFallback, ldObj, fallback);
+				inst.ReplaceWith(replacement.WithILRange(inst));
+				context.EndStep(replacement);
+				replacement.AcceptVisitor(this);
+				return;
+			}
+			if (TransformArrayInitializers.TransformRuntimeHelpersCreateSpanInitialization(inst, context, out var replacement2))
+			{
+				context.Step("TransformRuntimeHelpersCreateSpanInitialization: single-dim", inst);
+				inst.ReplaceWith(replacement2);
+				context.EndStep(replacement2);
+				replacement2.AcceptVisitor(this);
+				return;
+			}
 			base.VisitCall(inst);
-			TransformAssignment.HandleCompoundAssign(inst, context);
+			if (context.Settings.InlineArrays && InlineArrayTransform.RunOnExpression(inst, context))
+			{
+				return;
+			}
+			if (TransformAssignment.HandleCompoundAssign(inst, context))
+				return;
+			if (TransformCollectionAndObjectInitializers.HandleEmptyWith(inst, context))
+				return;
 		}
 
 		protected internal override void VisitCallVirt(CallVirt inst)
 		{
 			base.VisitCallVirt(inst);
-			TransformAssignment.HandleCompoundAssign(inst, context);
+			if (TransformAssignment.HandleCompoundAssign(inst, context))
+				return;
+			if (TransformCollectionAndObjectInitializers.HandleEmptyWith(inst, context))
+				return;
 		}
 
 		protected internal override void VisitNewObj(NewObj inst)
 		{
-			if (TransformDecimalCtorToConstant(inst, out LdcDecimal decimalConstant))
-			{
-				context.Step("TransformDecimalCtorToConstant", inst);
-				inst.ReplaceWith(decimalConstant);
-				return;
-			}
-			Block block;
 			if (TransformSpanTCtorContainingStackAlloc(inst, out ILInstruction locallocSpan))
 			{
 				context.Step("new Span<T>(stackalloc) -> stackalloc Span<T>", inst);
 				inst.ReplaceWith(locallocSpan);
-				block = null;
-				ILInstruction stmt = locallocSpan;
-				while (stmt.Parent != null)
-				{
-					if (stmt.Parent is Block b)
-					{
-						block = b;
-						break;
-					}
-					stmt = stmt.Parent;
-				}
+				context.EndStep(locallocSpan);
+				ILInstruction stmt = Block.GetContainingStatement(locallocSpan);
 				// Special case to eliminate extra store
 				if (stmt.GetNextSibling() is StLoc storeStmt && storeStmt.Value is LdLoc)
-					ILInlining.InlineIfPossible(block, stmt.ChildIndex, context);
+					ILInlining.InlineIfPossible((Block)stmt.Parent, stmt.ChildIndex, context);
 				return;
 			}
-			if (TransformArrayInitializers.TransformSpanTArrayInitialization(inst, context, out block))
+			if (TransformArrayInitializers.TransformSpanTArrayInitialization(inst, context, out var replacement))
 			{
 				context.Step("TransformSpanTArrayInitialization: single-dim", inst);
-				inst.ReplaceWith(block);
+				inst.ReplaceWith(replacement);
+				context.EndStep(replacement);
 				return;
 			}
 			if (TransformDelegateCtorLdVirtFtnToLdVirtDelegate(inst, out LdVirtDelegate ldVirtDelegate))
 			{
 				context.Step("new Delegate(target, ldvirtftn Method) -> ldvirtdelegate Delegate Method(target)", inst);
 				inst.ReplaceWith(ldVirtDelegate);
+				context.EndStep(ldVirtDelegate);
 				return;
 			}
 			base.VisitNewObj(inst);
@@ -427,22 +423,16 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			{
 				if (!initializer.Instructions[0].MatchStLoc(out var initializerVariable, out var value))
 					return false;
+				if (!TypeUtils.IsCompatiblePointerTypeForMemoryAccess(initializerVariable.Type, elementType))
+					return false;
 				if (!(value.MatchLocAlloc(out sizeInBytes) && MatchesElementCount(sizeInBytes, elementType, newObj.Arguments[1])))
 					return false;
-				var newVariable = initializerVariable.Function.RegisterVariable(VariableKind.InitializerTarget, type);
-				foreach (var load in initializerVariable.LoadInstructions.ToArray())
-				{
-					ILInstruction newInst = new LdLoc(newVariable);
-					newInst.AddILRange(load);
-					if (load.Parent != initializer)
-						newInst = new Conv(newInst, PrimitiveType.I, false, Sign.None);
-					load.ReplaceWith(newInst);
-				}
-				foreach (var store in initializerVariable.StoreInstructions.ToArray())
-				{
-					store.Variable = newVariable;
-				}
-				value.ReplaceWith(new LocAllocSpan(newObj.Arguments[1], type));
+				// The block addresses the allocation through the localloc pointer and only its
+				// result is the span, so the constructor becomes the block's final instruction
+				// instead of retyping the initializer variable to Span&lt;T&gt;.
+				initializer.FinalInstruction = new NewObj(newObj.Method) {
+					Arguments = { new LdLoc(initializerVariable), newObj.Arguments[1] }
+				}.WithILRange(newObj);
 				locallocSpan = initializer;
 				return true;
 			}
@@ -456,36 +446,6 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			if (elementCountInstr == null || !elementCountInstr.UnwrapConv(ConversionKind.ZeroExtend).Match(elementCountInstr2).Success)
 				return false;
 			return true;
-		}
-
-		bool TransformDecimalCtorToConstant(NewObj inst, out LdcDecimal result)
-		{
-			IType t = inst.Method.DeclaringType;
-			result = null;
-			if (!t.IsKnownType(KnownTypeCode.Decimal))
-				return false;
-			var args = inst.Arguments;
-			if (args.Count == 1)
-			{
-				int val;
-				if (args[0].MatchLdcI4(out val))
-				{
-					result = new LdcDecimal(val);
-					return true;
-				}
-			}
-			else if (args.Count == 5)
-			{
-				int lo, mid, hi, isNegative, scale;
-				if (args[0].MatchLdcI4(out lo) && args[1].MatchLdcI4(out mid) &&
-					args[2].MatchLdcI4(out hi) && args[3].MatchLdcI4(out isNegative) &&
-					args[4].MatchLdcI4(out scale))
-				{
-					result = new LdcDecimal(new decimal(lo, mid, hi, isNegative != 0, (byte)scale));
-					return true;
-				}
-			}
-			return false;
 		}
 
 		bool TransformDecimalFieldToConstant(LdObj inst, out LdcDecimal result)
@@ -525,6 +485,33 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			{
 				context.Step("TransformDecimalFieldToConstant", inst);
 				inst.ReplaceWith(decimalConstant);
+				context.EndStep(decimalConstant);
+				return;
+			}
+		}
+
+		protected internal override void VisitLdObjIfRef(LdObjIfRef inst)
+		{
+			base.VisitLdObjIfRef(inst);
+			if (inst.Target is AddressOf)
+			{
+				context.Step("ldobj.if.ref(addressof(...)) -> addressof(...)", inst);
+				// there already is a temporary, so the ldobj.if.ref is a no-op in both cases
+				var target = inst.Target;
+				inst.ReplaceWith(target);
+				context.EndStep(target);
+				return;
+			}
+			if (inst.Target.MatchLdLoc(out var s) && s.IsSingleDefinition && s.LoadCount == 1
+				&& s.StoreInstructions.SingleOrDefault() is StLoc {
+					Value: LdLoca { Variable: { AddressCount: 1, StoreCount: 1 } }
+				})
+			{
+				context.Step("Single use of ldobj.if.ref(ldloc v) -> ldloc v", inst);
+				// there already is a temporary, so the ldobj.if.ref is a no-op in both cases
+				var target = inst.Target;
+				inst.ReplaceWith(target);
+				context.EndStep(target);
 				return;
 			}
 		}
@@ -570,9 +557,11 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			inst.Condition.AcceptVisitor(this);
 
 			if (new NullableLiftingTransform(context).Run(inst))
+			{
 				return;
+			}
 
-			if (TransformDynamicAddAssignOrRemoveAssign(inst))
+			if (TransformDynamicAddAssignOrRemoveAssign(inst, context))
 				return;
 			if (inst.MatchIfInstructionPositiveCondition(out var condition, out var trueInst, out var falseInst))
 			{
@@ -586,28 +575,53 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					context.Step("User-defined short-circuiting logic operator (roslyn pattern)", condition);
 					transformed.AddILRange(inst);
 					inst.ReplaceWith(transformed);
+					context.EndStep(transformed);
 					return;
 				}
+			}
+			if (MatchInstruction.IsPatternMatch(inst.Condition, out _, context.Settings)
+				&& inst.TrueInst.MatchLdcI4(1) && inst.FalseInst.MatchLdcI4(0))
+			{
+				context.Step("match(x) ? true : false -> match(x)", inst);
+				inst.Condition.AddILRange(inst);
+				var matchCondition = inst.Condition;
+				inst.ReplaceWith(matchCondition);
+				context.EndStep(matchCondition);
+				return;
 			}
 		}
 
 		IfInstruction HandleConditionalOperator(IfInstruction inst)
 		{
-			// if (cond) stloc (A, V1) else stloc (A, V2) --> stloc (A, if (cond) V1 else V2)
-			Block trueInst = inst.TrueInst as Block;
-			if (trueInst == null || trueInst.Instructions.Count != 1)
+			// if (cond) stloc A(V1) else stloc A(V2) --> stloc A(if (cond) V1 else V2)
+			if (inst.TrueInst is not Block trueInst || trueInst.Instructions.Count != 1)
 				return inst;
-			Block falseInst = inst.FalseInst as Block;
-			if (falseInst == null || falseInst.Instructions.Count != 1)
+			if (inst.FalseInst is not Block falseInst || falseInst.Instructions.Count != 1)
 				return inst;
 			ILVariable v;
 			ILInstruction value1, value2;
-			if (trueInst.Instructions[0].MatchStLoc(out v, out value1) && falseInst.Instructions[0].MatchStLoc(v, out value2))
+			if (trueInst.Instructions[0].MatchStLoc(out v, out value1)
+				&& falseInst.Instructions[0].MatchStLoc(v, out value2))
 			{
 				context.Step("conditional operator", inst);
-				var newIf = new IfInstruction(Comp.LogicNot(inst.Condition), value2, value1);
+				IType type = v.Type;
+				// Try to tighten the type to `bool`; this matters esp. for logic.and/logic.or:
+				IType type1 = value1.InferType(context.TypeSystem);
+				IType type2 = value2.InferType(context.TypeSystem);
+				if (type1.IsKnownType(KnownTypeCode.Boolean)
+					&& (type2.IsKnownType(KnownTypeCode.Boolean) || value2 is LdcI4 { Value: 0 or 1 }))
+				{
+					type = type1;
+				}
+				else if (type2.IsKnownType(KnownTypeCode.Boolean) && value1 is LdcI4 { Value: 0 or 1 })
+				{
+					type = type2;
+				}
+				var newIf = new IfInstruction(Comp.LogicNot(inst.Condition), value2, value1, type);
 				newIf.AddILRange(inst);
-				inst.ReplaceWith(new StLoc(v, newIf));
+				var stLoc = new StLoc(v, newIf);
+				inst.ReplaceWith(stLoc);
+				context.EndStep(stLoc);
 				context.RequestRerun();  // trigger potential inlining of the newly created StLoc
 				return newIf;
 			}
@@ -621,7 +635,6 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			Debug.Assert(container.Kind == ContainerKind.Switch);
 			Debug.Assert(container.ResultType == StackType.Void);
 			var defaultSection = switchInst.GetDefaultSection();
-			StackType resultType = StackType.Void;
 			BlockContainer leaveTarget = null;
 			ILVariable resultVariable = null;
 			foreach (var section in switchInst.Sections)
@@ -650,7 +663,6 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 							return;
 						leaveTarget ??= leave.TargetContainer;
 						Debug.Assert(leaveTarget == leave.TargetContainer);
-						resultType = leave.Value.ResultType;
 					}
 					else
 					{
@@ -666,7 +678,6 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					resultVariable ??= v;
 					if (resultVariable != v)
 						return;
-					resultType = resultVariable.StackType;
 				}
 				else
 				{
@@ -675,6 +686,10 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			}
 			// Exactly one of resultVariable/leaveTarget must be null
 			if ((resultVariable == null) == (leaveTarget == null))
+				return;
+			IType resultType = resultVariable?.Type ?? leaveTarget?.ExpectedResultType;
+			// C# has no ref-returning switch expression: an arm cannot be `0 => ref x`.
+			if (resultType.Kind == TypeKind.ByReference)
 				return;
 			if (switchInst.Value is StringToInt str2int)
 			{
@@ -696,7 +711,6 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				{
 					if (block.Instructions[0] is Throw t)
 					{
-						t.resultType = resultType;
 						section.Body = t;
 					}
 					else if (block.Instructions[0] is Leave leave)
@@ -715,11 +729,15 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			}
 			if (resultVariable != null)
 			{
-				container.ReplaceWith(new StLoc(resultVariable, switchInst));
+				var stLoc = new StLoc(resultVariable, switchInst);
+				container.ReplaceWith(stLoc);
+				context.EndStep(stLoc);
 			}
 			else
 			{
-				container.ReplaceWith(new Leave(leaveTarget, switchInst));
+				var leaveInst = new Leave(leaveTarget, switchInst);
+				container.ReplaceWith(leaveInst);
+				context.EndStep(leaveInst);
 			}
 			context.RequestRerun(); // new StLoc might trigger inlining
 		}
@@ -734,7 +752,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 		/// =>
 		/// dynamic.compound.op (dynamic.getmember Name(target), value)
 		/// </summary>
-		bool TransformDynamicAddAssignOrRemoveAssign(IfInstruction inst)
+		internal static bool TransformDynamicAddAssignOrRemoveAssign(IfInstruction inst, ILTransformContext context)
 		{
 			if (!inst.MatchIfInstructionPositiveCondition(out var condition, out var trueInst, out var falseInst))
 				return false;
@@ -773,6 +791,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				return false;
 			context.Step("+= / -= dynamic.isevent pattern -> dynamic.compound.op", inst);
 			inst.ReplaceWith(dynamicCompoundAssign);
+			context.EndStep(dynamicCompoundAssign);
 			return true;
 		}
 
@@ -802,7 +821,9 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			if (inst.Name != dynamicGetMember.Name || !DynamicCompoundAssign.IsExpressionTypeSupported(binaryOp.Operation))
 				return;
 			context.Step("dynamic.setmember.compound -> dynamic.compound.op", inst);
-			inst.ReplaceWith(new DynamicCompoundAssign(binaryOp.Operation, binaryOp.BinderFlags, binaryOp.Left, binaryOp.LeftArgumentInfo, binaryOp.Right, binaryOp.RightArgumentInfo));
+			var compoundAssign = new DynamicCompoundAssign(binaryOp.Operation, binaryOp.BinderFlags, binaryOp.Left, binaryOp.LeftArgumentInfo, binaryOp.Right, binaryOp.RightArgumentInfo);
+			inst.ReplaceWith(compoundAssign);
+			context.EndStep(compoundAssign);
 		}
 
 		/// <summary>
@@ -833,7 +854,9 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			if (!DynamicCompoundAssign.IsExpressionTypeSupported(binaryOp.Operation))
 				return;
 			context.Step("dynamic.setindex.compound -> dynamic.compound.op", inst);
-			inst.ReplaceWith(new DynamicCompoundAssign(binaryOp.Operation, binaryOp.BinderFlags, binaryOp.Left, binaryOp.LeftArgumentInfo, binaryOp.Right, binaryOp.RightArgumentInfo));
+			var compoundAssign = new DynamicCompoundAssign(binaryOp.Operation, binaryOp.BinderFlags, binaryOp.Left, binaryOp.LeftArgumentInfo, binaryOp.Right, binaryOp.RightArgumentInfo);
+			inst.ReplaceWith(compoundAssign);
+			context.EndStep(compoundAssign);
 		}
 
 		protected internal override void VisitBinaryNumericInstruction(BinaryNumericInstruction inst)
@@ -844,7 +867,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				case BinaryNumericOperator.ShiftLeft:
 				case BinaryNumericOperator.ShiftRight:
 					if (inst.Right.MatchBinaryNumericInstruction(BinaryNumericOperator.BitAnd, out var lhs, out var rhs)
-						&& rhs.MatchLdcI4(inst.ResultType == StackType.I8 ? 63 : 31))
+						&& MatchExpectedShiftSize(rhs))
 					{
 						// a << (b & 31) => a << b
 						context.Step("Combine bit.and into shift", inst);
@@ -852,8 +875,12 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					}
 					break;
 				case BinaryNumericOperator.BitAnd:
-					if (inst.Left.InferType(context.TypeSystem).IsKnownType(KnownTypeCode.Boolean)
-						&& inst.Right.InferType(context.TypeSystem).IsKnownType(KnownTypeCode.Boolean))
+				{
+					IType leftType = inst.Left.InferType(context.TypeSystem);
+					IType rightType = inst.Right.InferType(context.TypeSystem);
+					DetectImprovedTypeForForBitOp(inst, leftType, rightType);
+					if (leftType.IsKnownType(KnownTypeCode.Boolean)
+						&& rightType.IsKnownType(KnownTypeCode.Boolean))
 					{
 						if (new NullableLiftingTransform(context).Run(inst))
 						{
@@ -861,6 +888,48 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 						}
 					}
 					break;
+				}
+				case BinaryNumericOperator.BitOr:
+				case BinaryNumericOperator.BitXor:
+				{
+					IType leftType = inst.Left.InferType(context.TypeSystem);
+					IType rightType = inst.Right.InferType(context.TypeSystem);
+					DetectImprovedTypeForForBitOp(inst, leftType, rightType);
+					break;
+				}
+			}
+
+			bool MatchExpectedShiftSize(ILInstruction rhs)
+			{
+				switch (inst.ResultType)
+				{
+					case StackType.I4:
+						return rhs.MatchLdcI4(31);
+					case StackType.I8:
+						return rhs.MatchLdcI4(63);
+					case StackType.I:
+						// sizeof(IntPtr) * 8 - 1
+						return rhs.MatchBinaryNumericInstruction(BinaryNumericOperator.Sub, out var mult, out var one)
+							&& mult.MatchBinaryNumericInstruction(BinaryNumericOperator.Mul, out var size, out var eight)
+							&& size.MatchSizeOf(out var sizeofType) && sizeofType.GetStackType() == StackType.I
+							&& eight.MatchLdcI4(8) && one.MatchLdcI4(1);
+					default:
+						return false;
+				}
+			}
+		}
+
+		// Given bit.or(a, b), promotes the "known to be bool/short" information from the operands to bit.or
+		void DetectImprovedTypeForForBitOp(BinaryNumericInstruction inst, IType leftType, IType rightType)
+		{
+			if (leftType.Equals(rightType) && (leftType.IsCSharpPrimitiveIntegerType() || leftType.IsCSharpNativeIntegerType() || leftType.IsKnownType(KnownTypeCode.Boolean)))
+			{
+				if (!leftType.Equals(inst.CSharpResultType))
+				{
+					context.Step("DetectImprovedTypeForForBitOp", inst);
+					inst.CSharpResultType = leftType;
+					context.EndStep(inst);
+				}
 			}
 		}
 
@@ -902,7 +971,9 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 					if (inlinedUnboxAny.Type.Equals(handler.Variable.Type))
 					{
 						context.Step("TransformCatchVariable - remove inlined UnboxAny", inlinedUnboxAny);
-						inlinedUnboxAny.ReplaceWith(inlinedUnboxAny.Argument);
+						var unboxArgument = inlinedUnboxAny.Argument;
+						inlinedUnboxAny.ReplaceWith(unboxArgument);
+						context.EndStep(unboxArgument);
 						foreach (var range in inlinedUnboxAny.ILRanges)
 							handler.AddExceptionSpecifierILRange(range);
 					}
@@ -931,7 +1002,9 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			}
 			context.Step("TransformCatchVariable", entryPoint.Instructions[0]);
 			exceptionVar.Kind = VariableKind.ExceptionLocal;
+			exceptionVar.Name = handler.Variable.Name;
 			exceptionVar.Type = handler.Variable.Type;
+			exceptionVar.HasGeneratedName = handler.Variable.HasGeneratedName;
 			handler.Variable = exceptionVar;
 			if (isCatchBlock)
 			{
@@ -951,6 +1024,25 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			{
 				context.Step("TransformCatchWhen", entryPoint.Instructions[0]);
 				handler.Filter = condition;
+				context.EndStep(condition);
+			}
+		}
+
+		protected internal override void VisitMatchInstruction(MatchInstruction inst)
+		{
+			inst.TestedOperand.AcceptVisitor(this);
+			// Do not recurse into the sub-patterns: patterns are restricted to use only certain ILInstructions,
+			// and arbitrary transforms might not stay within that allowed set of instructions.
+			foreach (var subPattern in inst.SubPatterns)
+			{
+				// However, we still need to simplify negations:
+				foreach (var potentialNegation in subPattern.Descendants.OfType<Comp>())
+				{
+					if (potentialNegation.MatchLogicNot(out var arg))
+					{
+						HandleLogicNot(potentialNegation, arg, context);
+					}
+				}
 			}
 		}
 	}

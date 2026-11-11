@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2011 AlphaSierraPapa for the SharpDevelop Team
+// Copyright (c) 2011 AlphaSierraPapa for the SharpDevelop Team
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -53,6 +53,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			public int bottom;
 		}
 
+#pragma warning disable CS0618 // Type or member is obsolete
 		public static decimal MarshalAttributesOnPropertyAccessors {
 			[return: MarshalAs(UnmanagedType.Currency)]
 			get {
@@ -62,6 +63,7 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			set {
 			}
 		}
+#pragma warning restore CS0618 // Type or member is obsolete
 
 		[DllImport("xyz.dll", CharSet = CharSet.Auto)]
 		[return: MarshalAs(UnmanagedType.Bool)]
@@ -87,9 +89,14 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		{
 		}
 
+#if CS110 && NET70
+		[DllImport("ws2_32.dll", SetLastError = true)]
+		internal static extern nint ioctlsocket([In] nint socketHandle, [In] int cmd, [In][Out] ref int argp);
+
+#else
 		[DllImport("ws2_32.dll", SetLastError = true)]
 		internal static extern IntPtr ioctlsocket([In] IntPtr socketHandle, [In] int cmd, [In][Out] ref int argp);
-
+#endif
 		public void CallMethodWithInOutParameter()
 		{
 			int argp = 0;

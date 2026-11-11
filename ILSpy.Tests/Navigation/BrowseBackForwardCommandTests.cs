@@ -1,0 +1,262 @@
+// Copyright (c) 2026 AlphaSierraPapa for the SharpDevelop Team
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy of this
+// software and associated documentation files (the "Software"), to deal in the Software
+// without restriction, including without limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
+// to whom the Software is furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all copies or
+// substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
+// FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
+using System.Linq;
+using System.Threading.Tasks;
+
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Headless;
+using Avalonia.Headless.NUnit;
+using Avalonia.Input;
+using Avalonia.Interactivity;
+using Avalonia.VisualTree;
+
+using AwesomeAssertions;
+
+using ICSharpCode.ILSpy.Properties;
+
+using ICSharpCode.ILSpy.AppEnv;
+using ICSharpCode.ILSpy.AssemblyTree;
+using ICSharpCode.ILSpy.Commands;
+using ICSharpCode.ILSpy.Docking;
+using ICSharpCode.ILSpy.TextView;
+using ICSharpCode.ILSpy.TreeNodes;
+using ICSharpCode.ILSpy.ViewModels;
+using ICSharpCode.ILSpy.Views;
+
+using NUnit.Framework;
+
+namespace ICSharpCode.ILSpy.Tests;
+
+[TestFixture]
+public class BrowseBackForwardCommandTests
+{
+	[AvaloniaTest]
+	public async Task BrowseBack_MenuItem_Forwards_CanExecute_And_Execute_To_DockWorkspace()
+	{
+		// The menu-attached BrowseBack command should be a thin wrapper over
+		// DockWorkspace.NavigateBackCommand: CanExecute mirrors the back-stack state, and
+		// Execute pops one entry. Verifies via the live MenuItem that ends up in the View menu.
+
+		// Arrange — boot the window, load assemblies, expand Enumerable, capture two methods.
+		var (window, vm) = await TestHarness.BootAsync(3);
+
+		var typeNode = await vm.OpenSampleAsync(typeof(DecompileSample));
+		typeNode.IsExpanded = true;
+		var firstMethod = typeNode.Children.OfType<MethodTreeNode>()
+			.Single(m => m.MethodDefinition.Name == nameof(DecompileSample.Describe));
+		var secondMethod = typeNode.Children.OfType<MethodTreeNode>()
+			.First(m => m.MethodDefinition.Name == nameof(DecompileSample.Twice));
+
+		// Locate the View > Back NativeMenuItem.
+		var nativeMenu = NativeMenu.GetMenu(window)
+			?? throw new System.InvalidOperationException("MainMenu.Attach should have set NativeMenu on the window");
+		var viewMenu = nativeMenu.Items.OfType<NativeMenuItem>()
+			.Single(m => string.Equals(m.Header, Resources._View, System.StringComparison.Ordinal));
+		var backItem = viewMenu.Menu!.Items.OfType<NativeMenuItem>()
+			.Single(m => string.Equals(m.Header, Resources.Back, System.StringComparison.Ordinal));
+
+		// Initially nothing on the stack — back must be disabled.
+		backItem.Command!.CanExecute(null).Should().BeFalse(
+			"with no navigation history, BrowseBack must report CanExecute=false");
+
+		// Build history: select two methods with a delay so they record as separate entries.
+		vm.AssemblyTreeModel.SelectNode(firstMethod);
+		await vm.DockWorkspace.WaitForDecompiledTextAsync();
+		TestCapture.Step("first-method-decompiled");
+		vm.AssemblyTreeModel.SelectNode(secondMethod);
+		await vm.DockWorkspace.WaitForDecompiledTextAsync();
+		TestCapture.Step("second-method-decompiled");
+
+		// Act — fire the menu command (mirrors clicking View → Back).
+		backItem.Command.CanExecute(null).Should().BeTrue();
+		backItem.Command.Execute(null);
+		TestCapture.Step("navigated-back");
+
+		// Assert — selection rewinds to the first method (NavigateBack walked one step).
+		await Waiters.WaitForAsync(() => ReferenceEquals(vm.AssemblyTreeModel.SelectedItem, firstMethod));
+		vm.DockWorkspace.NavigateForwardCommand.CanExecute(null).Should().BeTrue(
+			"after one back-step the forward stack should be non-empty");
+	}
+
+	[AvaloniaTest]
+	public async Task Mouse_Back_And_Forward_Buttons_Navigate_The_History()
+	{
+		// The extra mouse buttons (XButton1 = back, XButton2 = forward) drive the same history
+		// as Alt+Left / Alt+Right, matching browsers and the WPF version (where WPF itself
+		// translated the buttons into BrowseBack/BrowseForward commands). Avalonia has no such
+		// translation, so MainWindow routes the pointer events to the navigation commands.
+
+		// Arrange — build a two-entry history exactly like the menu-driven test above.
+		var (window, vm) = await TestHarness.BootAsync(3);
+		var (firstMethod, secondMethod) = await BuildTwoEntryHistoryAsync(vm);
+
+		// Act — click mouse-back anywhere in the window.
+		var point = new Point(100, 100);
+		window.MouseDown(point, MouseButton.XButton1);
+		window.MouseUp(point, MouseButton.XButton1);
+
+		// Assert — selection rewinds, then mouse-forward replays the step.
+		await Waiters.WaitForAsync(() => ReferenceEquals(vm.AssemblyTreeModel.SelectedItem, firstMethod),
+			description: "XButton1 must navigate back one history entry");
+		await Waiters.WaitForAsync(() => vm.DockWorkspace.NavigateForwardCommand.CanExecute(null),
+			description: "after one back-step the forward stack should be non-empty");
+
+		window.MouseDown(point, MouseButton.XButton2);
+		window.MouseUp(point, MouseButton.XButton2);
+
+		await Waiters.WaitForAsync(() => ReferenceEquals(vm.AssemblyTreeModel.SelectedItem, secondMethod),
+			description: "XButton2 must navigate forward one history entry");
+	}
+
+	[AvaloniaTest]
+	public async Task Mouse_Back_Button_Press_Does_Not_Reach_The_Control_Under_The_Pointer()
+	{
+		// The X buttons are navigation gestures, not clicks (WPF never delivered them to the
+		// control under the pointer). The press must not activate the pane under the pointer,
+		// move keyboard focus, or toggle a folding marker; only the release navigates, and the
+		// active pane stays where it was across the navigation.
+
+		// Arrange — two-entry history, assembly pane active, pointer over the editor.
+		var (window, vm) = await TestHarness.BootAsync(3);
+		var (firstMethod, _) = await BuildTwoEntryHistoryAsync(vm);
+		var view = await window.WaitForComponent<DecompilerTextView>();
+
+		vm.DockWorkspace.ShowToolPane(AssemblyTreeModel.PaneContentId);
+		var activePane = vm.DockWorkspace.Layout.FocusedDockable;
+		activePane.Should().NotBeNull("showing the assembly pane must make it the focused dockable");
+		var focusedElement = window.FocusManager?.GetFocusedElement();
+
+		int pressedInEditor = 0;
+		view.AddHandler(InputElement.PointerPressedEvent, (_, _) => pressedInEditor++,
+			RoutingStrategies.Tunnel | RoutingStrategies.Bubble);
+		var point = view.TranslatePoint(new Point(view.Bounds.Width / 2, view.Bounds.Height / 2), window);
+		point.Should().NotBeNull("the editor centre must map into the test window");
+
+		// Act / Assert — the press is swallowed at the window ...
+		window.MouseDown(point!.Value, MouseButton.XButton1);
+		pressedInEditor.Should().Be(0, "an X-button press must not reach the control under the pointer");
+		vm.DockWorkspace.Layout.FocusedDockable.Should().BeSameAs(activePane,
+			"pressing a mouse navigation button must not activate the pane under the pointer");
+		ReferenceEquals(window.FocusManager?.GetFocusedElement(), focusedElement).Should().BeTrue(
+			"pressing a mouse navigation button must not move keyboard focus");
+
+		// ... and the release navigates without moving the active pane to the editor.
+		window.MouseUp(point.Value, MouseButton.XButton1);
+		await Waiters.WaitForAsync(() => ReferenceEquals(vm.AssemblyTreeModel.SelectedItem, firstMethod),
+			description: "XButton1 must navigate back one history entry");
+		vm.DockWorkspace.Layout.FocusedDockable.Should().BeSameAs(activePane,
+			"navigating back must not move the active pane to the editor");
+	}
+
+	[AvaloniaTest]
+	public async Task Browse_Back_Keeps_The_Keyboard_Focus_In_The_Editor()
+	{
+		// Back/Forward select the tree node of the previous entry, which must only scroll it into
+		// view: WPF's SelectNodes never took the keyboard focus, so a user reading the code pane
+		// stays in the code pane after Alt+Left / Mouse4.
+		var (window, vm) = await TestHarness.BootAsync(3);
+		var (firstMethod, _) = await BuildTwoEntryHistoryAsync(vm);
+		var textArea = window.GetVisualDescendants().OfType<DecompilerTextView>().First().Editor.TextArea;
+		textArea.Focus();
+		Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+		var focusManager = TopLevel.GetTopLevel(window)!.FocusManager!;
+		focusManager.GetFocusedElement().Should().BeSameAs(textArea, "precondition: the editor must own the focus");
+
+		vm.DockWorkspace.NavigateBackCommand.Execute(null);
+
+		await Waiters.WaitForAsync(() => ReferenceEquals(vm.AssemblyTreeModel.SelectedItem, firstMethod),
+			description: "BrowseBack must navigate back one history entry");
+		await vm.DockWorkspace.WaitForDecompiledTextAsync();
+		await Waiters.WaitForIdleAsync();
+		focusManager.GetFocusedElement().Should().BeSameAs(textArea,
+			"navigating back must not move the keyboard focus to the tree row");
+	}
+
+	[AvaloniaTest]
+	public async Task Programmatic_Selection_Moves_The_Focus_Along_When_The_Tree_Owns_It()
+	{
+		// The scroll-only rule applies when the focus is elsewhere; a tree that already owns the
+		// keyboard focus follows the selection to the new row, so keyboard navigation inside the
+		// tree keeps working after a programmatic jump.
+		var (window, vm) = await TestHarness.BootAsync(3);
+		var (firstMethod, secondMethod) = await BuildTwoEntryHistoryAsync(vm);
+		var pane = await window.WaitForComponent<AssemblyListPane>();
+		var tree = await pane.WaitForComponent<ICSharpCode.ILSpy.Controls.TreeView.SharpTreeView>();
+		tree.FocusNode(secondMethod);
+		Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+		var focusManager = TopLevel.GetTopLevel(window)!.FocusManager!;
+		ReferenceEquals((focusManager.GetFocusedElement() as ICSharpCode.ILSpy.Controls.TreeView.SharpTreeViewItem)?.Node, secondMethod)
+			.Should().BeTrue("precondition: the tree row must own the focus");
+
+		vm.AssemblyTreeModel.SelectNode(firstMethod);
+		await vm.DockWorkspace.WaitForDecompiledTextAsync();
+		await Waiters.WaitForAsync(
+			() => (focusManager.GetFocusedElement() as ICSharpCode.ILSpy.Controls.TreeView.SharpTreeViewItem)?.Node == firstMethod,
+			description: "the focus must follow the selection to the newly selected row");
+	}
+
+	// Selects two methods of the sample type so the history records them as two separate
+	// entries; returns them in selection order.
+	static async Task<(MethodTreeNode First, MethodTreeNode Second)> BuildTwoEntryHistoryAsync(MainWindowViewModel vm)
+	{
+		var typeNode = await vm.OpenSampleAsync(typeof(DecompileSample));
+		typeNode.IsExpanded = true;
+		var firstMethod = typeNode.Children.OfType<MethodTreeNode>()
+			.Single(m => m.MethodDefinition.Name == nameof(DecompileSample.Describe));
+		var secondMethod = typeNode.Children.OfType<MethodTreeNode>()
+			.First(m => m.MethodDefinition.Name == nameof(DecompileSample.Twice));
+
+		vm.AssemblyTreeModel.SelectNode(firstMethod);
+		await vm.DockWorkspace.WaitForDecompiledTextAsync();
+		vm.AssemblyTreeModel.SelectNode(secondMethod);
+		await vm.DockWorkspace.WaitForDecompiledTextAsync();
+		return (firstMethod, secondMethod);
+	}
+
+	[AvaloniaTest]
+	public void BrowseBack_MenuItem_Carries_The_Alt_Left_Gesture()
+	{
+		// MEF metadata's InputGestureText flows through MainMenu.Attach into the
+		// NativeMenuItem.Gesture property -- this is what NativeMenuBar renders inline on
+		// Windows / Linux and what macOS projects into the system menu bar.
+
+		var window = AppComposition.Current.GetExport<MainWindow>();
+		window.Show();
+		var nativeMenu = NativeMenu.GetMenu(window)
+			?? throw new System.InvalidOperationException("MainMenu.Attach should have set NativeMenu on the window");
+		var viewMenu = nativeMenu.Items.OfType<NativeMenuItem>()
+			.Single(m => string.Equals(m.Header, Resources._View, System.StringComparison.Ordinal));
+		var backItem = viewMenu.Menu!.Items.OfType<NativeMenuItem>()
+			.Single(m => string.Equals(m.Header, Resources.Back, System.StringComparison.Ordinal));
+		var forwardItem = viewMenu.Menu!.Items.OfType<NativeMenuItem>()
+			.Single(m => string.Equals(m.Header, Resources.Forward, System.StringComparison.Ordinal));
+
+		backItem.Gesture.Should().Be(KeyGesture.Parse("Alt+Left"));
+		forwardItem.Gesture.Should().Be(KeyGesture.Parse("Alt+Right"));
+
+		// Both exports sit in the View menu's Navigation category, which is what groups them
+		// behind a separator.
+		var registry = AppComposition.Current.GetExport<MainMenuCommandRegistry>();
+		registry.Commands
+			.Where(c => c.Metadata.Header is nameof(Resources.Back) or nameof(Resources.Forward))
+			.Should().HaveCount(2)
+			.And.OnlyContain(c => c.Metadata.MenuCategory == nameof(Resources.Navigation));
+	}
+}

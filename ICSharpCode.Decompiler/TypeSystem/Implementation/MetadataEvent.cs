@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2018 Daniel Grunwald
+// Copyright (c) 2018 Daniel Grunwald
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -123,6 +123,30 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 			b.Add(eventDef.GetCustomAttributes(), SymbolKind.Event);
 			return b.Build();
 		}
+
+		public bool HasAttribute(KnownAttribute attribute)
+		{
+			if (!attribute.IsCustomAttribute())
+			{
+				return GetAttributes().Any(attr => attr.AttributeType.IsKnownType(attribute));
+			}
+			var b = new AttributeListBuilder(module);
+			var metadata = module.metadata;
+			var def = metadata.GetEventDefinition(handle);
+			return b.HasAttribute(metadata, def.GetCustomAttributes(), attribute, SymbolKind.Event);
+		}
+
+		public IAttribute GetAttribute(KnownAttribute attribute)
+		{
+			if (!attribute.IsCustomAttribute())
+			{
+				return GetAttributes().FirstOrDefault(attr => attr.AttributeType.IsKnownType(attribute));
+			}
+			var b = new AttributeListBuilder(module);
+			var metadata = module.metadata;
+			var def = metadata.GetEventDefinition(handle);
+			return b.GetAttribute(metadata, def.GetCustomAttributes(), attribute, SymbolKind.Event);
+		}
 		#endregion
 
 		public Accessibility Accessibility => AnyAccessor?.Accessibility ?? Accessibility.None;
@@ -144,14 +168,14 @@ namespace ICSharpCode.Decompiler.TypeSystem.Implementation
 		{
 			if (obj is MetadataEvent ev)
 			{
-				return handle == ev.handle && module.PEFile == ev.module.PEFile;
+				return handle == ev.handle && module.MetadataFile == ev.module.MetadataFile;
 			}
 			return false;
 		}
 
 		public override int GetHashCode()
 		{
-			return 0x7937039a ^ module.PEFile.GetHashCode() ^ handle.GetHashCode();
+			return 0x7937039a ^ module.MetadataFile.GetHashCode() ^ handle.GetHashCode();
 		}
 
 		bool IMember.Equals(IMember obj, TypeVisitor typeNormalization)

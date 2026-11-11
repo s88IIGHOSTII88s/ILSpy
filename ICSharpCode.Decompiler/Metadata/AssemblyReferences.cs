@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2018 Siegfried Pammer
+// Copyright (c) 2018 Siegfried Pammer
 // 
 // Permission is hereby granted, free of charge, to any person obtaining a copy of this
 // software and associated documentation files (the "Software"), to deal in the Software
@@ -19,10 +19,11 @@
 #nullable enable
 
 using System;
+using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Reflection;
 using System.Reflection.Metadata;
-using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -59,14 +60,26 @@ namespace ICSharpCode.Decompiler.Metadata
 	public interface IAssemblyResolver
 	{
 #if !VSADDIN
-		PEFile? Resolve(IAssemblyReference reference);
-		PEFile? ResolveModule(PEFile mainModule, string moduleName);
-		Task<PEFile?> ResolveAsync(IAssemblyReference reference);
-		Task<PEFile?> ResolveModuleAsync(PEFile mainModule, string moduleName);
+		MetadataFile? Resolve(IAssemblyReference reference);
+		MetadataFile? ResolveModule(MetadataFile mainModule, string moduleName);
+		Task<MetadataFile?> ResolveAsync(IAssemblyReference reference);
+		Task<MetadataFile?> ResolveModuleAsync(MetadataFile mainModule, string moduleName);
+
+		/// <summary>
+		/// Lets the resolver hold what it reads from the file system until the scope is disposed,
+		/// so that a whole reference closure asks the same directories once. Null to hold nothing.
+		/// </summary>
+		IDisposable? BeginSnapshot();
 #endif
 	}
 
-	public class AssemblyReferenceClassifier
+	public interface IAssemblyReferenceClassifier
+	{
+		bool IsGacAssembly(IAssemblyReference reference);
+		bool IsSharedAssembly(IAssemblyReference reference, [NotNullWhen(true)] out string? runtimePack);
+	}
+
+	public class AssemblyReferenceClassifier : IAssemblyReferenceClassifier
 	{
 		/// <summary>
 		/// For GAC assembly references, the WholeProjectDecompiler will omit the HintPath in the
@@ -81,7 +94,7 @@ namespace ICSharpCode.Decompiler.Metadata
 		/// For .NET Core framework references, the WholeProjectDecompiler will omit the
 		/// assembly reference if the runtimePack is already included as an SDK.
 		/// </summary>
-		public virtual bool IsSharedAssembly(IAssemblyReference reference, out string? runtimePack)
+		public virtual bool IsSharedAssembly(IAssemblyReference reference, [NotNullWhen(true)] out string? runtimePack)
 		{
 			runtimePack = null;
 			return false;
@@ -211,78 +224,140 @@ namespace ICSharpCode.Decompiler.Metadata
 #if !VSADDIN
 	public class AssemblyReference : IAssemblyReference
 	{
-		static readonly SHA1 sha1 = SHA1.Create();
-
 		readonly System.Reflection.Metadata.AssemblyReference entry;
 
-		public MetadataReader Metadata { get; }
 		public AssemblyReferenceHandle Handle { get; }
+
+		/// <summary>
+		/// The module that declares this reference. Assembly resolution is otherwise anchored on the
+		/// assembly being decompiled, no matter which assembly is asking; a resolver that has to tell
+		/// the two apart - to keep a chain of type forwarders inside the framework it started in,
+		/// say - needs to know who made the reference.
+		/// </summary>
+		public MetadataFile ReferencingModule { get; }
+
+		public MetadataReader Metadata => ReferencingModule.Metadata;
+
+		/// <summary>
+		/// Asks the resolver to look next to <see cref="ReferencingModule"/> before anywhere else.
+		/// Set while repairing a chain of type forwarders that resolution took out of the framework
+		/// it was walking through; ordinary references leave it alone and resolve as they always did.
+		/// </summary>
+		public bool PreferNextToReferencingModule { get; }
 
 		public bool IsWindowsRuntime => (entry.Flags & AssemblyFlags.WindowsRuntime) != 0;
 		public bool IsRetargetable => (entry.Flags & AssemblyFlags.Retargetable) != 0;
 
+		string? name;
+		string? fullName;
+
 		public string Name {
 			get {
-				try
+				if (name == null)
 				{
-					return Metadata.GetString(entry.Name);
+					try
+					{
+						name = Metadata.GetString(entry.Name);
+					}
+					catch (BadImageFormatException)
+					{
+						name = $"AR:{Handle}";
+					}
 				}
-				catch (BadImageFormatException)
-				{
-					return $"AR:{Handle}";
-				}
+				return name;
 			}
 		}
 
 		public string FullName {
 			get {
-				try
+				if (fullName == null)
 				{
-					return entry.GetFullAssemblyName(Metadata);
+					try
+					{
+						fullName = entry.GetFullAssemblyName(Metadata);
+					}
+					catch (BadImageFormatException)
+					{
+						fullName = $"fullname(AR:{Handle})";
+					}
 				}
-				catch (BadImageFormatException)
-				{
-					return $"fullname(AR:{Handle})";
-				}
+				return fullName;
 			}
 		}
 
 		public Version? Version => entry.Version;
 		public string Culture => Metadata.GetString(entry.Culture);
 		byte[]? IAssemblyReference.PublicKeyToken => GetPublicKeyToken();
+		byte[]? publicKeyToken;
 
 		public byte[]? GetPublicKeyToken()
 		{
 			if (entry.PublicKeyOrToken.IsNil)
 				return null;
-			var bytes = Metadata.GetBlobBytes(entry.PublicKeyOrToken);
-			if ((entry.Flags & AssemblyFlags.PublicKey) != 0)
+
+			if (publicKeyToken == null)
 			{
-				return sha1.ComputeHash(bytes).Skip(12).ToArray();
+				var bytes = Metadata.GetBlobBytes(entry.PublicKeyOrToken);
+				if ((entry.Flags & AssemblyFlags.PublicKey) != 0)
+				{
+					byte[] hash = new byte[20];
+					Sha1ForNonSecretPurposes.HashData(bytes, hash);
+					bytes = hash.Skip(12).ToArray();
+				}
+
+				publicKeyToken = bytes;
 			}
-			return bytes;
+
+			return publicKeyToken;
 		}
 
-		public AssemblyReference(MetadataReader metadata, AssemblyReferenceHandle handle)
-		{
-			if (metadata == null)
-				throw new ArgumentNullException(nameof(metadata));
-			if (handle.IsNil)
-				throw new ArgumentNullException(nameof(handle));
-			Metadata = metadata;
-			Handle = handle;
-			entry = metadata.GetAssemblyReference(handle);
+		ImmutableArray<TypeReferenceMetadata> typeReferences;
+		public ImmutableArray<TypeReferenceMetadata> TypeReferences {
+			get {
+				var value = typeReferences;
+				if (value.IsDefault)
+				{
+					value = Metadata.TypeReferences
+						.Select(r => new TypeReferenceMetadata(Metadata, r))
+						.Where(r => r.ResolutionScope == Handle)
+						.OrderBy(r => r.Namespace, StringComparer.Ordinal)
+						.ThenBy(r => r.Name)
+						.ToImmutableArray();
+					typeReferences = value;
+				}
+				return value;
+			}
 		}
 
-		public AssemblyReference(PEFile module, AssemblyReferenceHandle handle)
+		ImmutableArray<ExportedTypeMetadata> exportedTypes;
+		public ImmutableArray<ExportedTypeMetadata> ExportedTypes {
+			get {
+				var value = exportedTypes;
+				if (value.IsDefault)
+				{
+					value = Metadata.ExportedTypes
+						.Select(r => new ExportedTypeMetadata(Metadata, r))
+						.Where(r => r.Implementation == Handle)
+						.OrderBy(r => r.Namespace, StringComparer.Ordinal)
+						.ThenBy(r => r.Name)
+						.ToImmutableArray();
+					exportedTypes = value;
+				}
+				return value;
+			}
+		}
+
+		public AssemblyReference(MetadataFile module, AssemblyReferenceHandle handle,
+			bool preferNextToReferencingModule = false)
 		{
 			if (module == null)
 				throw new ArgumentNullException(nameof(module));
 			if (handle.IsNil)
 				throw new ArgumentNullException(nameof(handle));
-			Metadata = module.Metadata;
 			Handle = handle;
-			entry = Metadata.GetAssemblyReference(handle);
+			ReferencingModule = module;
+			PreferNextToReferencingModule = preferNextToReferencingModule;
+			entry = module.Metadata.GetAssemblyReference(handle);
 		}
 
 		public override string ToString()
